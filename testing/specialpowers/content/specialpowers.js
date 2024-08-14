@@ -28,6 +28,7 @@ function SpecialPowers(window) {
   this._createFilesOnSuccess = null;
   this.SP_SYNC_MESSAGES = ["SPChromeScriptMessage",
                            "SPLoadChromeScript",
+                           "SPImportInMainProcess",
                            "SPObserverService",
                            "SPPermissionManager",
                            "SPPrefService",
@@ -220,6 +221,12 @@ SpecialPowers.prototype.nestedFrameSetup = function() {
       mm.loadFrameScript("data:," + frameScript, false);
     }
   }, "remote-browser-shown", false);
+};
+
+SpecialPowers.prototype.isServiceWorkerRegistered = function() {
+  var swm = Components.classes["@mozilla.org/serviceworkers/manager;1"]
+                      .getService(Components.interfaces.nsIServiceWorkerManager);
+  return swm.getAllRegistrations().length != 0;
 };
 
 // Attach our API to the window.

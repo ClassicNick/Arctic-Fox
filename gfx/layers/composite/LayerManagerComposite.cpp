@@ -133,13 +133,6 @@ LayerManagerComposite::~LayerManagerComposite()
 }
 
 
-bool
-LayerManagerComposite::Initialize()
-{
-  bool result = mCompositor->Initialize();
-  return result;
-}
-
 void
 LayerManagerComposite::Destroy()
 {
@@ -202,19 +195,6 @@ LayerManagerComposite::BeginTransactionWithDrawTarget(DrawTarget* aTarget, const
   mCompositor->SetTargetContext(aTarget, aRect);
   mTarget = aTarget;
   mTargetBounds = aRect;
-}
-
-template<typename RectType>
-Maybe<RectType>
-IntersectMaybeRects(const Maybe<RectType>& aRect1, const Maybe<RectType>& aRect2)
-{
-  if (aRect1) {
-    if (aRect2) {
-      return Some(aRect1->Intersect(*aRect2));
-    }
-    return aRect1;
-  }
-  return aRect2;
 }
 
 /**
@@ -369,7 +349,7 @@ LayerManagerComposite::PostProcessLayers(Layer* aLayer,
   if (integerTranslation &&
       !aLayer->HasMaskLayers() &&
       aLayer->IsOpaqueForVisibility()) {
-    if (aLayer->GetContentFlags() & Layer::CONTENT_OPAQUE) {
+    if (aLayer->IsOpaque()) {
       localOpaque.OrWith(composite->GetFullyRenderedRegion());
     }
     localOpaque.MoveBy(*integerTranslation);
@@ -432,6 +412,10 @@ LayerManagerComposite::UpdateAndRender()
   nsIntRegion invalid;
   bool didEffectiveTransforms = false;
 
+  nsIntRegion opaque;
+  LayerIntRegion visible;
+  PostProcessLayers(mRoot, opaque, visible, Nothing());
+
   if (mClonedLayerTreeProperties) {
     // Effective transforms are needed by ComputeDifferences().
     mRoot->ComputeEffectiveTransforms(gfx::Matrix4x4());
@@ -485,11 +469,7 @@ LayerManagerComposite::UpdateAndRender()
     mRoot->ComputeEffectiveTransforms(gfx::Matrix4x4());
   }
 
-  nsIntRegion opaque;
-  LayerIntRegion visible;
-  PostProcessLayers(mRoot, opaque, visible, Nothing());
-
-  Render(invalid);
+  Render(invalid, opaque);
 #if defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_GONK)
   RenderToPresentationSurface();
 #endif
@@ -821,7 +801,7 @@ ClearLayerFlags(Layer* aLayer) {
 }
 
 void
-LayerManagerComposite::Render(const nsIntRegion& aInvalidRegion)
+LayerManagerComposite::Render(const nsIntRegion& aInvalidRegion, const nsIntRegion& aOpaqueRegion)
 {
   PROFILER_LABEL("LayerManagerComposite", "Render",
     js::ProfileEntry::Category::GRAPHICS);
@@ -848,7 +828,7 @@ LayerManagerComposite::Render(const nsIntRegion& aInvalidRegion)
 
   // Dump to console
   if (gfxPrefs::LayersDump()) {
-    this->Dump();
+    this->Dump(/* aSorted= */true);
   } else if (profiler_feature_active("layersdump")) {
     std::stringstream ss;
     Dump(ss);
@@ -906,13 +886,14 @@ LayerManagerComposite::Render(const nsIntRegion& aInvalidRegion)
 
   CompositorBench(mCompositor, bounds);
 
+  MOZ_ASSERT(mRoot->GetOpacity() == 1);
   if (mRoot->GetClipRect()) {
     clipRect = *mRoot->GetClipRect();
     Rect rect(clipRect.x, clipRect.y, clipRect.width, clipRect.height);
-    mCompositor->BeginFrame(aInvalidRegion, &rect, bounds, nullptr, &actualBounds);
+    mCompositor->BeginFrame(aInvalidRegion, &rect, bounds, aOpaqueRegion, nullptr, &actualBounds);
   } else {
     gfx::Rect rect;
-    mCompositor->BeginFrame(aInvalidRegion, nullptr, bounds, &rect, &actualBounds);
+    mCompositor->BeginFrame(aInvalidRegion, nullptr, bounds, aOpaqueRegion, &rect, &actualBounds);
     clipRect = ParentLayerIntRect(rect.x, rect.y, rect.width, rect.height);
   }
 
@@ -1071,7 +1052,7 @@ LayerManagerComposite::RenderToPresentationSurface()
     AndroidBridge::Bridge()->SetPresentationSurface(surface);
   }
 
-  CompositorOGL* compositor = static_cast<CompositorOGL*>(mCompositor.get());
+  CompositorOGL* compositor = mCompositor->AsCompositorOGL();
   GLContext* gl = compositor->gl();
   GLContextEGL* egl = GLContextEGL::Cast(gl);
 
@@ -1082,7 +1063,7 @@ LayerManagerComposite::RenderToPresentationSurface()
   const IntSize windowSize = AndroidBridge::Bridge()->GetNativeWindowSize(window);
 
 #elif defined(MOZ_WIDGET_GONK)
-  CompositorOGL* compositor = static_cast<CompositorOGL*>(mCompositor.get());
+  CompositorOGL* compositor = mCompositor->AsCompositorOGL();
   nsScreenGonk* screen = static_cast<nsWindow*>(mCompositor->GetWidget())->GetScreen();
   if (!screen->IsPrimaryScreen()) {
     // Only primary screen support mirroring
@@ -1165,8 +1146,8 @@ LayerManagerComposite::RenderToPresentationSurface()
   nsIntRegion invalid;
   Rect bounds(0.0f, 0.0f, scale * pageWidth, (float)actualHeight);
   Rect rect, actualBounds;
-
-  mCompositor->BeginFrame(invalid, nullptr, bounds, &rect, &actualBounds);
+  MOZ_ASSERT(mRoot->GetOpacity() == 1);
+  mCompositor->BeginFrame(invalid, nullptr, bounds, nsIntRegion(), &rect, &actualBounds);
 
   // The Java side of Fennec sets a scissor rect that accounts for
   // chrome such as the URL bar. Override that so that the entire frame buffer
@@ -1469,8 +1450,7 @@ LayerManagerComposite::CreateRefLayerComposite()
 }
 
 LayerManagerComposite::AutoAddMaskEffect::AutoAddMaskEffect(Layer* aMaskLayer,
-                                                            EffectChain& aEffects,
-                                                            bool aIs3D)
+                                                            EffectChain& aEffects)
   : mCompositable(nullptr), mFailed(false)
 {
   if (!aMaskLayer) {
@@ -1484,7 +1464,7 @@ LayerManagerComposite::AutoAddMaskEffect::AutoAddMaskEffect(Layer* aMaskLayer,
     return;
   }
 
-  if (!mCompositable->AddMaskEffect(aEffects, aMaskLayer->GetEffectiveTransform(), aIs3D)) {
+  if (!mCompositable->AddMaskEffect(aEffects, aMaskLayer->GetEffectiveTransform())) {
     mCompositable = nullptr;
     mFailed = true;
   }
@@ -1497,6 +1477,14 @@ LayerManagerComposite::AutoAddMaskEffect::~AutoAddMaskEffect()
   }
 
   mCompositable->RemoveMaskEffect();
+}
+
+void
+LayerManagerComposite::ChangeCompositor(Compositor* aNewCompositor)
+{
+  mCompositor = aNewCompositor;
+  mTextRenderer = new TextRenderer(aNewCompositor);
+  mTwoPassTmpTarget = nullptr;
 }
 
 LayerComposite::LayerComposite(LayerManagerComposite *aManager)
@@ -1574,6 +1562,12 @@ LayerComposite::GetFullyRenderedRegion() {
   } else {
     return GetShadowVisibleRegion().ToUnknownRegion();
   }
+}
+
+bool
+LayerComposite::HasStaleCompositor() const
+{
+  return mCompositeManager->GetCompositor() != mCompositor;
 }
 
 #ifndef MOZ_HAVE_PLATFORM_SPECIFIC_LAYER_BUFFERS

@@ -96,7 +96,9 @@ EXPORTS += [
     'nsTextRunTransformations.h',
     'RubyUtils.h',
     'ScrollbarActivity.h',
-    'Selection.h',
+    'ScrollSnap.h',
+    'Visibility.h',
+    'VisibilityIPC.h',
 ]
 
 EXPORTS.mozilla += [
@@ -166,9 +168,9 @@ UNIFIED_SOURCES += [
     'nsViewportFrame.cpp',
     'RubyUtils.cpp',
     'ScrollbarActivity.cpp',
+    'ScrollSnap.cpp',
     'ScrollVelocityQueue.cpp',
     'StickyScrollContainer.cpp',
-    'SummaryFrame.cpp',
     'TextOverflow.cpp',
 ]
 
@@ -208,7 +210,7 @@ MOCHITEST_CHROME_MANIFESTS += ['test/chrome.ini']
 
 CXXFLAGS += CONFIG['MOZ_CAIRO_CFLAGS']
 
-if CONFIG['MOZ_WIDGET_GTK']:
+if 'gtk' in CONFIG['MOZ_WIDGET_TOOLKIT']:
     CXXFLAGS += CONFIG['TK_CFLAGS']
 
 if CONFIG['MOZ_ENABLE_QT']:

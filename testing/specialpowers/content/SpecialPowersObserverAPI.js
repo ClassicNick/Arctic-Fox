@@ -357,10 +357,6 @@ SpecialPowersObserverAPI.prototype = {
         let Webapps = {};
         Components.utils.import("resource://gre/modules/Webapps.jsm", Webapps);
         switch (aMessage.json.op) {
-          case "set-launchable":
-            let val = Webapps.DOMApplicationRegistry.allAppsLaunchable;
-            Webapps.DOMApplicationRegistry.allAppsLaunchable = aMessage.json.launchable;
-            return val;
           case "allow-unsigned-addons":
             {
               let utils = {};
@@ -489,6 +485,17 @@ SpecialPowersObserverAPI.prototype = {
             .filter(o => (o.name == name && o.id == id))
             .forEach(o => o.listener(message));
         return undefined;	// See comment at the beginning of this function.
+      }
+
+      case "SPImportInMainProcess": {
+        var message = { hadError: false, errorMessage: null };
+        try {
+          Components.utils.import(aMessage.data);
+        } catch (e) {
+          message.hadError = true;
+          message.errorMessage = e.toString();
+        }
+        return message;
       }
 
       case "SPCleanUpSTSData": {

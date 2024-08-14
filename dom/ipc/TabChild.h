@@ -313,9 +313,6 @@ public:
                            const BrowserConfiguration& aConfiguration,
                            const ShowInfo& aInfo) override;
 
-  virtual bool RecvOpenURI(const URIParams& aURI,
-                           const uint32_t& aFlags) override;
-
   virtual bool RecvCacheFileDescriptor(const nsString& aPath,
                                        const FileDescriptor& aFileDescriptor)
                                        override;
@@ -326,14 +323,17 @@ public:
            const TextureFactoryIdentifier& aTextureFactoryIdentifier,
            const uint64_t& aLayersId,
            PRenderFrameChild* aRenderFrame,
-           const bool& aParentIsActive) override;
+           const bool& aParentIsActive,
+           const nsSizeMode& aSizeMode) override;
 
   virtual bool
   RecvUpdateDimensions(const CSSRect& aRect,
                        const CSSSize& aSize,
-                       const nsSizeMode& aSizeMode,
                        const ScreenOrientationInternal& aOrientation,
+                       const LayoutDeviceIntPoint& aClientOffset,
                        const LayoutDeviceIntPoint& aChromeDisp) override;
+  virtual bool
+  RecvSizeModeChanged(const nsSizeMode& aSizeMode) override;
 
   virtual bool RecvActivate() override;
 
@@ -410,9 +410,9 @@ public:
                                     const bool& aRunInGlobalScope) override;
 
   virtual bool RecvAsyncMessage(const nsString& aMessage,
-                                const ClonedMessageData& aData,
                                 InfallibleTArray<CpowEntry>&& aCpows,
-                                const IPC::Principal& aPrincipal) override;
+                                const IPC::Principal& aPrincipal,
+                                const ClonedMessageData& aData) override;
 
   virtual bool RecvAppOfflineStatus(const uint32_t& aId,
                                     const bool& aOffline) override;
@@ -512,7 +512,11 @@ public:
   static inline TabChild*
   GetFrom(nsIDocShell* aDocShell)
   {
-    nsCOMPtr<nsITabChild> tc = do_GetInterface(aDocShell);
+    if (!aDocShell) {
+      return nullptr;
+    }
+
+    nsCOMPtr<nsITabChild> tc = aDocShell->GetTabChild();
     return static_cast<TabChild*>(tc.get());
   }
 
@@ -535,6 +539,8 @@ public:
   static TabChild* GetFrom(nsIPresShell* aPresShell);
   static TabChild* GetFrom(uint64_t aLayersId);
 
+  uint64_t LayersId() { return mLayersId; }
+
   void DidComposite(uint64_t aTransactionId,
                     const TimeStamp& aCompositeStart,
                     const TimeStamp& aCompositeEnd);
@@ -543,6 +549,8 @@ public:
                            const TimeStamp& aCompositeReqEnd);
 
   void ClearCachedResources();
+  void InvalidateLayers();
+  void CompositorUpdated(const TextureFactoryIdentifier& aNewIdentifier);
 
   static inline TabChild* GetFrom(nsIDOMWindow* aWindow)
   {
@@ -565,6 +573,12 @@ public:
                                                   const float& aVolume,
                                                   const bool& aMuted) override;
 
+  virtual bool RecvSetUseGlobalHistory(const bool& aUse) override;
+
+  virtual bool RecvHandledWindowedPluginKeyEvent(
+                 const mozilla::NativeEventData& aKeyEventData,
+                 const bool& aIsConsumed) override;
+
   /**
    * Native widget remoting protocol for use with windowed plugins with e10s.
    */
@@ -574,6 +588,7 @@ public:
 
   nsresult CreatePluginWidget(nsIWidget* aParent, nsIWidget** aOut);
 
+  LayoutDeviceIntPoint GetClientOffset() const { return mClientOffset; }
   LayoutDeviceIntPoint GetChromeDisplacement() const { return mChromeDisp; };
 
   bool IPCOpen() const { return mIPCOpen; }
@@ -725,6 +740,8 @@ private:
   SetAllowedTouchBehaviorCallback mSetAllowedTouchBehaviorCallback;
   bool mHasValidInnerSize;
   bool mDestroyed;
+  // Position of client area relative to the outer window
+  LayoutDeviceIntPoint mClientOffset;
   // Position of tab, relative to parent widget (typically the window)
   LayoutDeviceIntPoint mChromeDisp;
   TabId mUniqueId;
@@ -738,6 +755,7 @@ private:
   bool mAsyncPanZoomEnabled;
   CSSSize mUnscaledInnerSize;
   bool mDidSetRealShowInfo;
+  bool mDidLoadURLInit;
 
   AutoTArray<bool, NUMBER_OF_AUDIO_CHANNELS> mAudioChannelsActive;
 

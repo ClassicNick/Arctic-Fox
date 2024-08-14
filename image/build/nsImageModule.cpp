@@ -13,6 +13,7 @@
 #include "ImageFactory.h"
 #include "ShutdownTracker.h"
 #include "SurfaceCache.h"
+#include "SurfacePipe.h"
 
 #include "gfxPrefs.h"
 #include "imgLoader.h"
@@ -69,10 +70,6 @@ static const mozilla::Module::ContractIDEntry kImageContracts[] = {
 static const mozilla::Module::CategoryEntry kImageCategories[] = {
   { "Gecko-Content-Viewers", IMAGE_GIF, "@mozilla.org/content/document-loader-factory;1" },
   { "Gecko-Content-Viewers", IMAGE_JPEG, "@mozilla.org/content/document-loader-factory;1" },
-#ifdef MOZ_JXR
-  { "Gecko-Content-Viewers", IMAGE_JXR, "@mozilla.org/content/document-loader-factory;1" },
-  { "Gecko-Content-Viewers", IMAGE_MS_PHOTO, "@mozilla.org/content/document-loader-factory;1" },
-#endif
   { "Gecko-Content-Viewers", IMAGE_PJPEG, "@mozilla.org/content/document-loader-factory;1" },
   { "Gecko-Content-Viewers", IMAGE_JPG, "@mozilla.org/content/document-loader-factory;1" },
   { "Gecko-Content-Viewers", IMAGE_ICO, "@mozilla.org/content/document-loader-factory;1" },
@@ -99,6 +96,7 @@ mozilla::image::InitModule()
   mozilla::image::ImageFactory::Initialize();
   mozilla::image::DecodePool::Initialize();
   mozilla::image::SurfaceCache::Initialize();
+  mozilla::image::SurfacePipe::Initialize();
   imgLoader::GlobalInit();
   sInitialized = true;
   return NS_OK;

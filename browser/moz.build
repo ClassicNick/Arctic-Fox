@@ -9,6 +9,7 @@ CONFIGURE_SUBST_FILES += ['installer/Makefile']
 DIRS += [
     'base',
     'components',
+    'experiments',
     'fonts',
     'locales',
     'modules',
@@ -22,6 +23,10 @@ DIRS += [
 
 if CONFIG['MAKENSISU']:
     DIRS += ['installer/windows']
+
+TEST_DIRS += [
+    'tools/mozscreenshots',
+]
 
 DIST_SUBDIR = 'browser'
 export('DIST_SUBDIR')

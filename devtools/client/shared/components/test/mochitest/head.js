@@ -6,20 +6,23 @@ var { classes: Cc, interfaces: Ci, utils: Cu, results: Cr } = Components;
 
 Cu.import("resource://testing-common/Assert.jsm");
 Cu.import("resource://gre/modules/Task.jsm");
-var { Services } = Cu.import("resource://gre/modules/Services.jsm", {});
 
-var { Promise: promise } = Cu.import("resource://gre/modules/Promise.jsm", {});
-var { require } = Cu.import("resource://gre/modules/devtools/shared/Loader.jsm", {});
-var { gDevTools } = Cu.import("resource:///modules/devtools/gDevTools.jsm", {});
-var { DebuggerServer } = Cu.import("resource://gre/modules/devtools/dbg-server.jsm", {});
-var { DebuggerClient } = Cu.import("resource://gre/modules/devtools/dbg-client.jsm", {});
-var DevToolsUtils = require("devtools/shared/DevToolsUtils");
+var { require } = Cu.import("resource://devtools/shared/Loader.jsm", {});
+var { gDevTools } = require("devtools/client/framework/devtools");
 var { BrowserLoader } = Cu.import("resource://devtools/client/shared/browser-loader.js", {});
+var promise = require("promise");
+var Services = require("Services");
+var { DebuggerServer } = require("devtools/server/main");
+var { DebuggerClient } = require("devtools/shared/client/main");
+var DevToolsUtils = require("devtools/shared/DevToolsUtils");
 var { TargetFactory } = require("devtools/client/framework/target");
 var { Toolbox } = require("devtools/client/framework/toolbox");
 
 DevToolsUtils.testing = true;
-var { require: browserRequire } = BrowserLoader("resource://devtools/client/shared/", this);
+var { require: browserRequire } = BrowserLoader({
+  baseURI: "resource://devtools/client/shared/",
+  window: this
+});
 
 var EXAMPLE_URL = "http://example.com/browser/browser/devtools/shared/test/";
 
@@ -134,23 +137,30 @@ var TEST_TREE = {
 /**
  * Frame
  */
-function checkFrameString (component, file, line, column) {
-  let el = component.getDOMNode();
-  is(el.querySelector(".frame-link-filename").textContent, file);
-  is(+el.querySelector(".frame-link-line").textContent, +line);
-  if (column != null) {
-    is(+el.querySelector(".frame-link-column").textContent, +column);
-    is(el.querySelectorAll(".frame-link-colon").length, 2);
-  } else {
-    is(el.querySelector(".frame-link-column"), null,
-      "Should not render column when none specified");
-    is(el.querySelectorAll(".frame-link-colon").length, 1,
-      "Should only render one colon when no column specified");
-  }
-}
+function checkFrameString({ frame, file, line, column, shouldLink, tooltip }) {
+  let el = frame.getDOMNode();
+  let $ = selector => el.querySelector(selector);
 
-function checkFrameTooltips (component, mainTooltip, linkTooltip) {
-  let el = component.getDOMNode();
-  is(el.getAttribute("title"), mainTooltip);
-  is(el.querySelector("a.frame-link-filename").getAttribute("title"), linkTooltip);
+  let $source = $(".frame-link-source");
+  let $filename = $(".frame-link-filename");
+  let $line = $(".frame-link-line");
+  let $column = $(".frame-link-column");
+
+  is($filename.textContent, file, "Correct filename");
+  is(el.getAttribute("data-line"), line ? `${line}` : null, "Expected `data-line` found");
+  is(el.getAttribute("data-column"), column ? `${column}` : null, "Expected `data-column` found");
+  is($source.getAttribute("title"), tooltip, "Correct tooltip");
+  is($source.tagName, shouldLink ? "A" : "SPAN", "Correct linkable status");
+
+  if (line != null) {
+    is(+$line.textContent, +line);
+  } else {
+    ok(!$line, "Should not have an element for `line`");
+  }
+
+  if (column != null) {
+    is(+$column.textContent, +column);
+  } else {
+    ok(!$column, "Should not have an element for `column`");
+  }
 }

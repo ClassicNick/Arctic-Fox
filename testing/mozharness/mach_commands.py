@@ -53,6 +53,11 @@ class MozharnessRunner(MozbuildObject):
                            "--test-packages-url", self.test_packages_url]
             },
 
+            "mochitest-valgrind": {
+                "script": "desktop_unittest.py",
+                "config": desktop_unittest_config + [
+                    "--mochitest-suite", "valgrind-plain"]
+            },
             "mochitest": {
                 "script": "desktop_unittest.py",
                 "config": desktop_unittest_config + [
@@ -107,16 +112,6 @@ class MozharnessRunner(MozbuildObject):
                 "script": "desktop_unittest.py",
                 "config": desktop_unittest_config + [
                     "--cppunittest-suite", "cppunittest"]
-            },
-            "webapprt-chrome": {
-                "script": "desktop_unittest.py",
-                "config": desktop_unittest_config + [
-                    "--webapprt-suite", "chrome"]
-            },
-            "webapprt-content": {
-                "script": "desktop_unittest.py",
-                "config": desktop_unittest_config + [
-                    "--webapprt-suite", "content"]
             },
             "xpcshell": {
                 "script": "desktop_unittest.py",

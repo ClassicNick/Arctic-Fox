@@ -18,6 +18,7 @@
 #include "nsJSUtils.h"
 #include "plstr.h"
 
+#include "nsDocShell.h"
 #include "nsIBaseWindow.h"
 #include "nsIBrowserDOMWindow.h"
 #include "nsIDocShell.h"
@@ -81,6 +82,7 @@ struct nsWatcherWindowEntry
 {
 
   nsWatcherWindowEntry(mozIDOMWindowProxy* aWindow, nsIWebBrowserChrome* aChrome)
+    : mChrome(nullptr)
   {
 #ifdef USEWEAKREFS
     mWindow = do_GetWeakReference(aWindow);
@@ -367,7 +369,8 @@ nsWindowWatcher::OpenWindow(mozIDOMWindowProxy* aParent,
   return OpenWindowInternal(aParent, aUrl, aName, aFeatures,
                             /* calledFromJS = */ false, dialog,
                             /* navigate = */ true, nullptr, argv,
-                            /* aLoadInfo */ nullptr, aResult);
+                            /* aLoadInfo */ nullptr,
+                            /* openerFullZoom = */ nullptr, aResult);
 }
 
 struct SizeSpec
@@ -426,6 +429,8 @@ nsWindowWatcher::OpenWindow2(mozIDOMWindowProxy* aParent,
                              nsITabParent* aOpeningTab,
                              nsISupports* aArguments,
                              nsIDocShellLoadInfo* aLoadInfo,
+                             float aOpenerFullZoom,
+                             uint8_t aOptionalArgc,
                              mozIDOMWindowProxy** aResult)
 {
   nsCOMPtr<nsIArray> argv = ConvertArgsToArray(aArguments);
@@ -447,7 +452,38 @@ nsWindowWatcher::OpenWindow2(mozIDOMWindowProxy* aParent,
                             aCalledFromScript, dialog,
                             aNavigate, aOpeningTab, argv,
                             aLoadInfo,
+                            aOptionalArgc >= 1 ? &aOpenerFullZoom : nullptr,
                             aResult);
+}
+
+// This static function checks if the aDocShell uses an UserContextId equal to
+// nsIScriptSecurityManager::DEFAULT_USER_CONTEXT_ID or equal to the
+// userContextId of subjectPrincipal, if not null.
+static bool
+CheckUserContextCompatibility(nsIDocShell* aDocShell)
+{
+  MOZ_ASSERT(aDocShell);
+
+  uint32_t userContextId =
+    static_cast<nsDocShell*>(aDocShell)->GetOriginAttributes().mUserContextId;
+
+  if (userContextId == nsIScriptSecurityManager::DEFAULT_USER_CONTEXT_ID) {
+    return true;
+  }
+
+  nsCOMPtr<nsIPrincipal> subjectPrincipal =
+    nsContentUtils::GetCurrentJSContext()
+      ? nsContentUtils::SubjectPrincipal() : nullptr;
+
+  if (!subjectPrincipal) {
+    return false;
+  }
+
+  uint32_t principalUserContextId;
+  nsresult rv = subjectPrincipal->GetUserContextId(&principalUserContextId);
+  NS_ENSURE_SUCCESS(rv, false);
+
+  return principalUserContextId == userContextId;
 }
 
 nsresult
@@ -461,6 +497,7 @@ nsWindowWatcher::OpenWindowInternal(mozIDOMWindowProxy* aParent,
                                     nsITabParent* aOpeningTab,
                                     nsIArray* aArgv,
                                     nsIDocShellLoadInfo* aLoadInfo,
+                                    float* aOpenerFullZoom,
                                     mozIDOMWindowProxy** aResult)
 {
   nsresult rv = NS_OK;
@@ -603,6 +640,9 @@ nsWindowWatcher::OpenWindowInternal(mozIDOMWindowProxy* aParent,
   bool isCallerChrome =
     nsContentUtils::LegacyIsCallerChromeOrNativeCode() && !openedFromRemoteTab;
 
+  // XXXbz Why is an AutoJSAPI good enough here?  Wouldn't AutoEntryScript (so
+  // we affect the entry global) make more sense?  Or do we just want to affect
+  // GetSubjectPrincipal()?
   dom::AutoJSAPI jsapiChromeGuard;
 
   bool windowTypeIsChrome =
@@ -685,6 +725,19 @@ nsWindowWatcher::OpenWindowInternal(mozIDOMWindowProxy* aParent,
               do_QueryInterface(newDocShellItem);
             webNav->Stop(nsIWebNavigation::STOP_NETWORK);
           }
+
+          // If this is a new window, but it's incompatible with the current
+          // userContextId, we ignore it and we pretend that nothing has been
+          // returned by ProvideWindow.
+          if (!windowIsNew && newDocShellItem) {
+            nsCOMPtr<nsIDocShell> docShell = do_QueryInterface(newDocShellItem);
+            if (!CheckUserContextCompatibility(docShell)) {
+              newWindow = nullptr;
+              newDocShellItem = nullptr;
+              windowIsNew = false;
+            }
+          }
+
         } else if (rv == NS_ERROR_ABORT) {
           // NS_ERROR_ABORT means the window provider has flat-out rejected
           // the open-window call and we should bail.  Don't return an error
@@ -973,6 +1026,20 @@ nsWindowWatcher::OpenWindowInternal(mozIDOMWindowProxy* aParent,
     }
   }
 
+  // If this is a new window, we must set the userContextId from the
+  // subjectPrincipal.
+  if (windowIsNew && subjectPrincipal) {
+    uint32_t userContextId;
+    rv = subjectPrincipal->GetUserContextId(&userContextId);
+    NS_ENSURE_SUCCESS(rv, rv);
+
+    auto* docShell = static_cast<nsDocShell*>(newDocShell.get());
+
+    DocShellOriginAttributes attr = docShell->GetOriginAttributes();
+    attr.mUserContextId = userContextId;
+    docShell->SetOriginAttributes(attr);
+  }
+
   if (isNewToplevelWindow) {
     // Notify observers that the window is open and ready.
     // The window has not yet started to load a document.
@@ -982,6 +1049,10 @@ nsWindowWatcher::OpenWindowInternal(mozIDOMWindowProxy* aParent,
       obsSvc->NotifyObservers(*aResult, "toplevel-window-ready", nullptr);
     }
   }
+
+  // Before loading the URI we want to be 100% sure that we use the correct
+  // userContextId.
+  MOZ_ASSERT(CheckUserContextCompatibility(newDocShell));
 
   if (uriToLoad && aNavigate) {
     newDocShell->LoadURI(
@@ -1014,7 +1085,8 @@ nsWindowWatcher::OpenWindowInternal(mozIDOMWindowProxy* aParent,
   }
 
   if (isNewToplevelWindow) {
-    SizeOpenedDocShellItem(newDocShellItem, aParent, isCallerChrome, sizeSpec);
+    SizeOpenedDocShellItem(newDocShellItem, aParent, isCallerChrome, sizeSpec,
+                           aOpenerFullZoom);
   }
 
   // XXXbz isn't windowIsModal always true when windowIsModalContentDialog?
@@ -1613,7 +1685,7 @@ nsWindowWatcher::CalculateChromeFlags(mozIDOMWindowProxy* aParent,
     }
   }
 
-  if (aDialog && !presenceFlag) {
+  if (aDialog && aFeaturesSpecified && !presenceFlag) {
     chromeFlags = nsIWebBrowserChrome::CHROME_DEFAULT;
   }
 
@@ -1703,7 +1775,7 @@ nsWindowWatcher::CalculateChromeFlags(mozIDOMWindowProxy* aParent,
   // Disable CHROME_OPENAS_DIALOG if the window is inside <iframe mozbrowser>.
   // It's up to the embedder to interpret what dialog=1 means.
   nsCOMPtr<nsIDocShell> docshell = do_GetInterface(aParent);
-  if (docshell && docshell->GetIsInBrowserOrApp()) {
+  if (docshell && docshell->GetIsInMozBrowserOrApp()) {
     chromeFlags &= ~nsIWebBrowserChrome::CHROME_OPENAS_DIALOG;
   }
 
@@ -1994,7 +2066,8 @@ void
 nsWindowWatcher::SizeOpenedDocShellItem(nsIDocShellTreeItem* aDocShellItem,
                                         mozIDOMWindowProxy* aParent,
                                         bool aIsCallerChrome,
-                                        const SizeSpec& aSizeSpec)
+                                        const SizeSpec& aSizeSpec,
+                                        float* aOpenerFullZoom)
 {
   // position and size of window
   int32_t left = 0, top = 0, width = 100, height = 100;
@@ -2011,8 +2084,8 @@ nsWindowWatcher::SizeOpenedDocShellItem(nsIDocShellTreeItem* aDocShellItem,
     return;
   }
 
-  double openerZoom = 1.0;
-  if (aParent) {
+  double openerZoom = aOpenerFullZoom ? *aOpenerFullZoom : 1.0;
+  if (aParent && !aOpenerFullZoom) {
     nsCOMPtr<nsPIDOMWindowOuter> piWindow = nsPIDOMWindowOuter::From(aParent);
     if (nsIDocument* doc = piWindow->GetDoc()) {
       if (nsIPresShell* shell = doc->GetShell()) {
@@ -2117,8 +2190,14 @@ nsWindowWatcher::SizeOpenedDocShellItem(nsIDocShellTreeItem* aDocShellItem,
       int32_t winWidth = width + (sizeChromeWidth ? 0 : chromeWidth),
               winHeight = height + (sizeChromeHeight ? 0 : chromeHeight);
 
-      screen->GetAvailRectDisplayPix(&screenLeft, &screenTop, &screenWidth,
-                                     &screenHeight);
+      // Get screen dimensions (in device pixels)
+      screen->GetAvailRect(&screenLeft, &screenTop, &screenWidth,
+                           &screenHeight);
+      // Convert them to CSS pixels
+      screenLeft = NSToIntRound(screenLeft / scale);
+      screenTop = NSToIntRound(screenTop / scale);
+      screenWidth = NSToIntRound(screenWidth / scale);
+      screenHeight = NSToIntRound(screenHeight / scale);
 
       if (aSizeSpec.SizeSpecified()) {
         /* Unlike position, force size out-of-bounds check only if
@@ -2162,8 +2241,30 @@ nsWindowWatcher::SizeOpenedDocShellItem(nsIDocShellTreeItem* aDocShellItem,
   // size and position the window
 
   if (positionSpecified) {
-    treeOwnerAsWin->SetPosition(left * scale, top * scale);
-    // moving the window may have changed its scale factor
+    // Get the scale factor appropriate for the screen we're actually
+    // positioning on.
+    nsCOMPtr<nsIScreen> screen;
+    nsCOMPtr<nsIScreenManager> screenMgr(
+      do_GetService("@mozilla.org/gfx/screenmanager;1"));
+    if (screenMgr) {
+      screenMgr->ScreenForRect(left, top, 1, 1, getter_AddRefs(screen));
+    }
+    if (screen) {
+      screen->GetDefaultCSSScaleFactor(&scale);
+      int32_t screenLeft, screenTop, screenWd, screenHt;
+      screen->GetRectDisplayPix(&screenLeft, &screenTop, &screenWd, &screenHt);
+      // Adjust by desktop-pixel origin of the target screen to convert from
+      // per-screen CSS-px coordinates.
+      treeOwnerAsWin->SetPosition((left - screenLeft) * scale + screenLeft,
+                                  (top - screenTop) * scale + screenTop);
+    } else {
+      // Couldn't find screen? This shouldn't happen.
+      treeOwnerAsWin->SetPosition(left * scale, top * scale);
+    }
+    // This shouldn't be necessary, given the screen check above, but in case
+    // moving the window didn't put it where we expected (e.g. due to issues
+    // at the widget level, or whatever), let's re-fetch the scale factor for
+    // wherever it really ended up
     treeOwnerAsWin->GetUnscaledDevicePixelsPerCSSPixel(&scale);
   }
   if (aSizeSpec.SizeSpecified()) {

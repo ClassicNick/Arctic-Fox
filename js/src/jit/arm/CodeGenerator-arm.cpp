@@ -87,8 +87,10 @@ CodeGeneratorARM::visitCompare(LCompare* comp)
 
     if (right->isConstant())
         masm.ma_cmp(ToRegister(left), Imm32(ToInt32(right)));
+    else if (right->isRegister())
+        masm.ma_cmp(ToRegister(left), ToRegister(right));
     else
-        masm.ma_cmp(ToRegister(left), ToOperand(right));
+        masm.ma_cmp(ToRegister(left), Operand(ToAddress(right)));
     masm.ma_mov(Imm32(0), ToRegister(def));
     masm.ma_mov(Imm32(1), ToRegister(def), cond);
 }
@@ -97,10 +99,15 @@ void
 CodeGeneratorARM::visitCompareAndBranch(LCompareAndBranch* comp)
 {
     Assembler::Condition cond = JSOpToCondition(comp->cmpMir()->compareType(), comp->jsop());
-    if (comp->right()->isConstant())
-        masm.ma_cmp(ToRegister(comp->left()), Imm32(ToInt32(comp->right())));
+    const LAllocation* left = comp->left();
+    const LAllocation* right = comp->right();
+
+    if (right->isConstant())
+        masm.ma_cmp(ToRegister(left), Imm32(ToInt32(right)));
+    else if (right->isRegister())
+        masm.ma_cmp(ToRegister(left), ToRegister(right));
     else
-        masm.ma_cmp(ToRegister(comp->left()), ToOperand(comp->right()));
+        masm.ma_cmp(ToRegister(left), Operand(ToAddress(right)));
     emitBranch(cond, comp->ifTrue(), comp->ifFalse());
 }
 
@@ -338,8 +345,10 @@ CodeGeneratorARM::visitAddI(LAddI* ins)
 
     if (rhs->isConstant())
         masm.ma_add(ToRegister(lhs), Imm32(ToInt32(rhs)), ToRegister(dest), SetCC);
+    else if (rhs->isRegister())
+        masm.ma_add(ToRegister(lhs), ToRegister(rhs), ToRegister(dest), SetCC);
     else
-        masm.ma_add(ToRegister(lhs), ToOperand(rhs), ToRegister(dest), SetCC);
+        masm.ma_add(ToRegister(lhs), Operand(ToAddress(rhs)), ToRegister(dest), SetCC);
 
     if (ins->snapshot())
         bailoutIf(Assembler::Overflow, ins->snapshot());
@@ -354,8 +363,10 @@ CodeGeneratorARM::visitSubI(LSubI* ins)
 
     if (rhs->isConstant())
         masm.ma_sub(ToRegister(lhs), Imm32(ToInt32(rhs)), ToRegister(dest), SetCC);
+    else if (rhs->isRegister())
+        masm.ma_sub(ToRegister(lhs), ToRegister(rhs), ToRegister(dest), SetCC);
     else
-        masm.ma_sub(ToRegister(lhs), ToOperand(rhs), ToRegister(dest), SetCC);
+        masm.ma_sub(ToRegister(lhs), Operand(ToAddress(rhs)), ToRegister(dest), SetCC);
 
     if (ins->snapshot())
         bailoutIf(Assembler::Overflow, ins->snapshot());
@@ -454,7 +465,6 @@ CodeGeneratorARM::visitMulI(LMulI* ins)
     } else {
         Assembler::Condition c = Assembler::Overflow;
 
-        // masm.imull(ToOperand(rhs), ToRegister(lhs));
         if (mul->canOverflow())
             c = masm.ma_check_mul(ToRegister(lhs), ToRegister(rhs), ToRegister(dest), c);
         else
@@ -952,6 +962,43 @@ CodeGeneratorARM::visitClzI(LClzI* ins)
     Register output = ToRegister(ins->output());
 
     masm.ma_clz(input, output);
+}
+
+void
+CodeGeneratorARM::visitCtzI(LCtzI* ins)
+{
+    Register input = ToRegister(ins->input());
+    Register output = ToRegister(ins->output());
+    ScratchRegisterScope scratch(masm);
+
+    masm.ma_rsb(input, Imm32(0), scratch, SetCC);
+    masm.ma_and(input, scratch, input);
+    masm.ma_clz(input, output);
+    masm.ma_rsb(input, Imm32(0x1f), output, LeaveCC, Assembler::NotEqual);
+}
+
+void
+CodeGeneratorARM::visitPopcntI(LPopcntI* ins)
+{
+    Register input = ToRegister(ins->input());
+    Register output = ToRegister(ins->output());
+
+    // Equivalent to GCC output of mozilla::CountPopulation32()
+    Register tmp = ToRegister(ins->temp());
+
+    masm.ma_mov(input, output);
+    masm.as_mov(tmp, asr(output, 1));
+    masm.ma_and(Imm32(0x55555555), tmp);
+    masm.ma_sub(output, tmp, output);
+    masm.as_mov(tmp, asr(output, 2));
+    masm.ma_and(Imm32(0x33333333), output);
+    masm.ma_and(Imm32(0x33333333), tmp);
+    masm.ma_add(output, tmp, output);
+    masm.as_add(output, output, lsr(output, 4));
+    masm.ma_and(Imm32(0xF0F0F0F), output);
+    masm.as_add(output, output, lsl(output, 8));
+    masm.as_add(output, output, lsl(output, 16));
+    masm.as_mov(output, asr(output, 24));
 }
 
 void
@@ -2060,6 +2107,61 @@ CodeGeneratorARM::visitAtomicTypedArrayElementBinopForEffect(LAtomicTypedArrayEl
     } else {
         BaseIndex mem(elements, ToRegister(lir->index()), ScaleFromElemWidth(width));
         AtomicBinopToTypedArray(this, lir->mir()->operation(), arrayType, value, mem, flagTemp);
+    }
+}
+
+void
+CodeGeneratorARM::visitAsmSelect(LAsmSelect* ins)
+{
+    MIRType mirType = ins->mir()->type();
+
+    Register cond = ToRegister(ins->condExpr());
+    masm.ma_cmp(cond, Imm32(0));
+
+    if (mirType == MIRType_Int32) {
+        Register falseExpr = ToRegister(ins->falseExpr());
+        Register out = ToRegister(ins->output());
+        MOZ_ASSERT(ToRegister(ins->trueExpr()) == out, "true expr input is reused for output");
+        masm.ma_mov(falseExpr, out, LeaveCC, Assembler::Zero);
+        return;
+    }
+
+    FloatRegister out = ToFloatRegister(ins->output());
+    MOZ_ASSERT(ToFloatRegister(ins->trueExpr()) == out, "true expr input is reused for output");
+
+    FloatRegister falseExpr = ToFloatRegister(ins->falseExpr());
+
+    if (mirType == MIRType_Double)
+        masm.moveDouble(falseExpr, out, Assembler::Zero);
+    else if (mirType == MIRType_Float32)
+        masm.moveFloat32(falseExpr, out, Assembler::Zero);
+    else
+        MOZ_CRASH("unhandled type in visitAsmSelect!");
+}
+
+void
+CodeGeneratorARM::visitAsmReinterpret(LAsmReinterpret* lir)
+{
+    MOZ_ASSERT(gen->compilingAsmJS());
+    MAsmReinterpret* ins = lir->mir();
+
+    MIRType to = ins->type();
+    DebugOnly<MIRType> from = ins->input()->type();
+
+    switch (to) {
+      case MIRType_Int32:
+        MOZ_ASSERT(from == MIRType_Float32);
+        masm.ma_vxfer(ToFloatRegister(lir->input()), ToRegister(lir->output()));
+        break;
+      case MIRType_Float32:
+        MOZ_ASSERT(from == MIRType_Int32);
+        masm.ma_vxfer(ToRegister(lir->input()), ToFloatRegister(lir->output()));
+        break;
+      case MIRType_Double:
+      case MIRType_Int64:
+        MOZ_CRASH("not handled by this LIR opcode");
+      default:
+        MOZ_CRASH("unexpected AsmReinterpret");
     }
 }
 

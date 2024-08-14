@@ -8,9 +8,6 @@
 const TESTCASE_URI_HTML = TEST_BASE_HTTP + "simple.html";
 const TESTCASE_URI_CSS = TEST_BASE_HTTP + "simple.css";
 
-const Cc = Components.classes;
-const Ci = Components.interfaces;
-
 var tempScope = {};
 Components.utils.import("resource://gre/modules/FileUtils.jsm", tempScope);
 Components.utils.import("resource://gre/modules/NetUtil.jsm", tempScope);
@@ -65,18 +62,11 @@ function read(srcChromeURL) {
   let scriptableStream = Cc["@mozilla.org/scriptableinputstream;1"]
     .getService(Ci.nsIScriptableInputStream);
 
-  let channel = Services.io.newChannel2(srcChromeURL,
-                                        null,
-                                        null,
-                                        // aLoadingNode
-                                        null,
-                                        Services.scriptSecurityManager
-                                                .getSystemPrincipal(),
-                                        // aTriggeringPrincipal
-                                        null,
-                                        Ci.nsILoadInfo.SEC_NORMAL,
-                                        Ci.nsIContentPolicy.TYPE_OTHER);
-  let input = channel.open();
+  let channel = NetUtil.newChannel({
+    uri: srcChromeURL,
+    loadUsingSystemPrincipal: true
+  });
+  let input = channel.open2();
   scriptableStream.init(input);
 
   let data = "";

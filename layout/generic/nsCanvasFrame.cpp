@@ -310,8 +310,9 @@ nsDisplayCanvasBackgroundImage::Paint(nsDisplayListBuilder* aBuilder,
     dt = destDT->CreateSimilarDrawTarget(IntSize(ceil(destRect.width),
                                                  ceil(destRect.height)),
                                          SurfaceFormat::B8G8R8A8);
-    if (dt) {
-      RefPtr<gfxContext> ctx = new gfxContext(dt);
+    if (dt && dt->IsValid()) {
+      RefPtr<gfxContext> ctx = gfxContext::ForDrawTarget(dt);
+      MOZ_ASSERT(ctx); // already checked draw target above
       ctx->SetMatrix(ctx->CurrentMatrix().Translate(-destRect.x, -destRect.y));
       nsRenderingContext context(ctx);
       PaintInternal(aBuilder, &context, bgClipRect, &bgClipRect);
@@ -407,6 +408,9 @@ nsCanvasFrame::BuildDisplayList(nsDisplayListBuilder*   aBuilder,
       return;
     }
 
+    const DisplayItemScrollClip* scrollClip =
+      aBuilder->ClipState().GetCurrentInnermostScrollClip();
+
     bool needBlendContainer = false;
 
     // Create separate items for each background layer.
@@ -418,19 +422,30 @@ nsCanvasFrame::BuildDisplayList(nsDisplayListBuilder*   aBuilder,
       if (layers.mLayers[i].mBlendMode != NS_STYLE_BLEND_NORMAL) {
         needBlendContainer = true;
       }
+
+      nsDisplayList thisItemList;
       nsDisplayCanvasBackgroundImage* bgItem =
         new (aBuilder) nsDisplayCanvasBackgroundImage(aBuilder, this, i, bg);
       if (bgItem->ShouldFixToViewport(aBuilder)) {
-        aLists.BorderBackground()->AppendNewToTop(
+        thisItemList.AppendNewToTop(
           nsDisplayFixedPosition::CreateForFixedBackground(aBuilder, this, bgItem, i));
       } else {
-        aLists.BorderBackground()->AppendNewToTop(bgItem);
+        thisItemList.AppendNewToTop(bgItem);
       }
+
+      if (layers.mLayers[i].mBlendMode != NS_STYLE_BLEND_NORMAL) {
+        thisItemList.AppendNewToTop(
+          new (aBuilder) nsDisplayBlendMode(aBuilder, this, &thisItemList,
+                                            layers.mLayers[i].mBlendMode,
+                                            scrollClip, i + 1));
+      }
+      aLists.BorderBackground()->AppendToTop(&thisItemList);
     }
 
     if (needBlendContainer) {
       aLists.BorderBackground()->AppendNewToTop(
-        new (aBuilder) nsDisplayBlendContainer(aBuilder, this, aLists.BorderBackground()));
+        new (aBuilder) nsDisplayBlendContainer(aBuilder, this, aLists.BorderBackground(),
+                                               scrollClip));
     }
   }
 

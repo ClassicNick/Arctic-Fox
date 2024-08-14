@@ -42,11 +42,14 @@ struct DeviceAttachmentsD3D11;
 class CompositorD3D11 : public Compositor
 {
 public:
-  CompositorD3D11(nsIWidget* aWidget);
+  CompositorD3D11(CompositorBridgeParent* aParent, nsIWidget* aWidget);
   ~CompositorD3D11();
+
+  virtual CompositorD3D11* AsCompositorD3D11() override { return this; }
 
   virtual bool Initialize() override;
   virtual void Destroy() override {}
+  virtual void DetachWidget() override { mWidget = nullptr; }
 
   virtual TextureFactoryIdentifier
     GetTextureFactoryIdentifier() override;
@@ -111,6 +114,7 @@ public:
   virtual void BeginFrame(const nsIntRegion& aInvalidRegion,
                           const gfx::Rect *aClipRectIn,
                           const gfx::Rect& aRenderBounds,
+                          const nsIntRegion& aOpaqueRegion,
                           gfx::Rect *aClipRectOut = nullptr,
                           gfx::Rect *aRenderBoundsOut = nullptr) override;
 
@@ -142,6 +146,8 @@ public:
   virtual LayersBackend GetBackendType() const override {
     return LayersBackend::LAYERS_D3D11;
   }
+
+  virtual void ForcePresent() { mSwapChain->Present(0, 0); }
 
   virtual nsIWidget* GetWidget() const override { return mWidget; }
 

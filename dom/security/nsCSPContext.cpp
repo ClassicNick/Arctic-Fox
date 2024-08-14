@@ -296,6 +296,15 @@ nsCSPContext::GetPolicy(uint32_t aIndex, nsAString& outStr)
   return NS_OK;
 }
 
+const nsCSPPolicy*
+nsCSPContext::GetPolicy(uint32_t aIndex)
+{
+  if (aIndex >= mPolicies.Length()) {
+    return nullptr;
+  }
+  return mPolicies[aIndex];
+}
+
 NS_IMETHODIMP
 nsCSPContext::GetPolicyCount(uint32_t *outPolicyCount)
 {
@@ -310,6 +319,19 @@ nsCSPContext::GetUpgradeInsecureRequests(bool *outUpgradeRequest)
   for (uint32_t i = 0; i < mPolicies.Length(); i++) {
     if (mPolicies[i]->hasDirective(nsIContentSecurityPolicy::UPGRADE_IF_INSECURE_DIRECTIVE)) {
       *outUpgradeRequest = true;
+      return NS_OK;
+    }
+  }
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsCSPContext::GetBlockAllMixedContent(bool *outBlockAllMixedContent)
+{
+  *outBlockAllMixedContent = false;
+  for (uint32_t i = 0; i < mPolicies.Length(); i++) {
+    if (mPolicies[i]->hasDirective(nsIContentSecurityPolicy::BLOCK_ALL_MIXED_CONTENT)) {
+      *outBlockAllMixedContent = true;
       return NS_OK;
     }
   }
@@ -609,6 +631,9 @@ nsCSPContext::SetRequestContext(nsIDOMDocument* aDOMDocument,
     // console messages until it becomes available, see flushConsoleMessages
     mQueueUpMessages = !mInnerWindowID;
     mCallingChannelLoadGroup = doc->GetDocumentLoadGroup();
+
+    // set the flag on the document for CSP telemetry
+    doc->SetHasCSP(true);
   }
   else {
     NS_WARNING("No Document in SetRequestContext; can not query loadgroup; sending reports may fail.");

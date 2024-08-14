@@ -183,6 +183,10 @@ private:
   void SaveNetworkStats(bool aEnforce);
 #endif
 
+  // Helper for FireDataStringEvent/FireDataArrayEvent.
+  nsresult FireDataEvent(JSContext* aCx, const nsAString& aType,
+                         JS::Handle<JS::Value> aData);
+
   TCPReadyState mReadyState;
   // Whether to use strings or array buffers for the "data" event.
   bool mUseArrayBuffers;
@@ -242,8 +246,8 @@ private:
   uint32_t mRxBytes;
   // The app that owns this socket.
   uint32_t mAppId;
-  // Was this socket created inside of a mozbrowser frame?
-  bool mInBrowser;
+  // Was this socket created inside of an isolated browser frame?
+  bool mInIsolatedMozBrowser;
   // The name of the active network used by this socket.
   nsCOMPtr<nsINetworkInfo> mActiveNetworkInfo;
 #endif

@@ -295,12 +295,16 @@ Declaration::GetImageLayerValue(
 
     if (clip->mValue.GetIntValue() != NS_STYLE_IMAGELAYER_CLIP_BORDER ||
         origin->mValue.GetIntValue() != NS_STYLE_IMAGELAYER_ORIGIN_PADDING) {
-      MOZ_ASSERT(nsCSSProps::kKeywordTableTable[
-                   aTable[nsStyleImageLayers::origin]] ==
-                 nsCSSProps::kImageLayerOriginKTable);
-      MOZ_ASSERT(nsCSSProps::kKeywordTableTable[
-                   aTable[nsStyleImageLayers::clip]] ==
-                 nsCSSProps::kImageLayerOriginKTable);
+#ifdef DEBUG
+      for (size_t i = 0; nsCSSProps::kImageLayerOriginKTable[i].mValue != -1; i++) {
+        // For each keyword & value in kOriginKTable, ensure that
+        // kBackgroundKTable has a matching entry at the same position.
+        MOZ_ASSERT(nsCSSProps::kImageLayerOriginKTable[i].mKeyword ==
+                   nsCSSProps::kBackgroundClipKTable[i].mKeyword);
+        MOZ_ASSERT(nsCSSProps::kImageLayerOriginKTable[i].mValue ==
+                   nsCSSProps::kBackgroundClipKTable[i].mValue);
+      }
+#endif
       static_assert(NS_STYLE_IMAGELAYER_CLIP_BORDER ==
                     NS_STYLE_IMAGELAYER_ORIGIN_BORDER &&
                     NS_STYLE_IMAGELAYER_CLIP_PADDING ==
@@ -351,7 +355,11 @@ Declaration::GetImageLayerValue(
         }
       // This layer is an mask layer
       } else {
+#ifdef MOZ_ENABLE_MASK_AS_SHORTHAND
         MOZ_ASSERT(aTable == nsStyleImageLayers::kMaskLayerTable);
+#else
+        MOZ_ASSERT_UNREACHABLE("Should never get here when mask-as-shorthand is disable");
+#endif
         if (repeat || position || clip || origin || size || composite || mode) {
           // Uneven length lists, so can't be serialized as shorthand.
           aValue.Truncate();
@@ -370,7 +378,11 @@ Declaration::GetImageLayerValue(
       }
     // This layer is an mask layer
     } else {
+#ifdef MOZ_ENABLE_MASK_AS_SHORTHAND
       MOZ_ASSERT(aTable == nsStyleImageLayers::kMaskLayerTable);
+#else
+      MOZ_ASSERT_UNREACHABLE("Should never get here when mask-as-shorthand is disable");
+#endif
       if (!repeat || !position || !clip || !origin || !size ||
           !composite || !mode) {
         // Uneven length lists, so can't be serialized as shorthand.
@@ -657,11 +669,13 @@ Declaration::GetValue(nsCSSProperty aProperty, nsAString& aValue,
                          nsStyleImageLayers::kBackgroundLayerTable);
       break;
     }
+#ifdef MOZ_ENABLE_MASK_AS_SHORTHAND
     case eCSSProperty_mask: {
       GetImageLayerValue(data, aValue, aSerialization,
                          nsStyleImageLayers::kMaskLayerTable);
       break;
     }
+#endif
     case eCSSProperty_font: {
       // systemFont might not be present; other values are guaranteed to be
       // available based on the shorthand check at the beginning of the
@@ -1297,6 +1311,28 @@ Declaration::GetValue(nsCSSProperty aProperty, nsAString& aValue,
       // we don't have a shorthand that can express. Bail.
       break;
     }
+    case eCSSProperty__webkit_text_stroke: {
+      const nsCSSValue* strokeWidth =
+        data->ValueFor(eCSSProperty__webkit_text_stroke_width);
+      const nsCSSValue* strokeColor =
+        data->ValueFor(eCSSProperty__webkit_text_stroke_color);
+      bool isDefaultColor = strokeColor->GetUnit() == eCSSUnit_EnumColor &&
+        strokeColor->GetIntValue() == NS_COLOR_CURRENTCOLOR;
+
+      if (strokeWidth->GetUnit() != eCSSUnit_Integer ||
+          strokeWidth->GetIntValue() != 0 || isDefaultColor) {
+        AppendValueToString(eCSSProperty__webkit_text_stroke_width,
+                            aValue, aSerialization);
+        if (!isDefaultColor) {
+          aValue.Append(char16_t(' '));
+        }
+      }
+      if (!isDefaultColor) {
+        AppendValueToString(eCSSProperty__webkit_text_stroke_color,
+                            aValue, aSerialization);
+      }
+      break;
+    }
     case eCSSProperty_all:
       // If we got here, then we didn't have all "inherit" or "initial" or
       // "unset" values for all of the longhand property components of 'all'.
@@ -1615,13 +1651,6 @@ Declaration::SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const
     n += mImportantVariables->SizeOfIncludingThis(aMallocSizeOf);
   }
   return n;
-}
-
-bool
-Declaration::HasVariableDeclaration(const nsAString& aName) const
-{
-  return (mVariables && mVariables->Has(aName)) ||
-         (mImportantVariables && mImportantVariables->Has(aName));
 }
 
 void

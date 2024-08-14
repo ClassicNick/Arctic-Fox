@@ -12,6 +12,10 @@ ID
 .DS_Store*
 *.pdb
 
+# Emacs
+\#*\#
+.\#*
+
 # Vim swap files.
 .*.sw[a-z]
 .sw[a-z]
@@ -22,6 +26,7 @@ ID
 # User files that may appear at the root
 /.mozconfig*
 /configure
+/old-configure
 /config.cache
 /config.log
 /.clang_complete
@@ -42,6 +47,7 @@ security/manager/.nss.checkout
 
 # SpiderMonkey configury
 js/src/configure
+js/src/old-configure
 js/src/autom4te.cache
 # SpiderMonkey test result logs
 js/src/tests/results-*.html

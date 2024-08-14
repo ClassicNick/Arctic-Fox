@@ -259,9 +259,11 @@ const gXPInstallObserver = {
                               action, null, options);
       break; }
     case "addon-install-origin-blocked": {
-      messageString = gNavigatorBundle.getFormattedString("xpinstallPromptWarningOrigin",
+      messageString = gNavigatorBundle.getFormattedString("xpinstallPromptMessage",
                         [brandShortName]);
 
+      let secHistogram = Components.classes["@mozilla.org/base/telemetry;1"].getService(Ci.nsITelemetry).getHistogramById("SECURITY_UI");
+      secHistogram.add(Ci.nsISecurityUITelemetry.WARNING_ADDON_ASKING_PREVENTED);
       let popup = PopupNotifications.show(browser, notificationID,
                                           messageString, anchorID,
                                           null, null, options);
@@ -271,10 +273,12 @@ const gXPInstallObserver = {
       messageString = gNavigatorBundle.getFormattedString("xpinstallPromptMessage",
                         [brandShortName]);
 
+      let secHistogram = Components.classes["@mozilla.org/base/telemetry;1"].getService(Ci.nsITelemetry).getHistogramById("SECURITY_UI");
       action = {
         label: gNavigatorBundle.getString("xpinstallPromptAllowButton"),
         accessKey: gNavigatorBundle.getString("xpinstallPromptAllowButton.accesskey"),
         callback: function() {
+          secHistogram.add(Ci.nsISecurityUITelemetry.WARNING_ADDON_ASKING_PREVENTED_CLICK_THROUGH);
           installInfo.install();
         }
       };
@@ -343,8 +347,6 @@ const gXPInstallObserver = {
         if (install.error < 0) {
           error += install.error;
           args = [brandShortName, install.name];
-	}  else if (install.addon.jetsdk) {
-          error += "JetSDK";
         } else if (install.addon.blocklistState == Ci.nsIBlocklistService.STATE_BLOCKED) {
           error += "Blocklisted";
           args = [install.name];
@@ -658,6 +660,7 @@ var LightweightThemeListener = {
         if (sheet.href == "chrome://browser/skin/browser-lightweightTheme.css")
           return sheet;
       }
+      return undefined;
     });
 
     Services.obs.addObserver(this, "lightweight-theme-styling-update", false);

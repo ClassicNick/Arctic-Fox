@@ -153,7 +153,6 @@ InitializeOculusCAPI()
     }
 
     if (!ovrlib) {
-      printf_stderr("Failed to load Oculus VR library!\n");
       return false;
     }
   }
@@ -544,6 +543,7 @@ VRHMDManagerOculus050::Init()
     mOculusThread = already_AddRefed<nsIThread>(thread);
 
     ovrInitParams params;
+    memset(&params, 0, sizeof(params));
     params.Flags = ovrInit_RequestVersion;
     params.RequestedMinorVersion = LIBOVR_MINOR_VERSION;
     params.LogCallback = nullptr;

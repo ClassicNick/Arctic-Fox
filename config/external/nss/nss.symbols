@@ -331,6 +331,7 @@ PK11_ExportDERPrivateKeyInfo
 PK11_ExportEncryptedPrivKeyInfo
 PK11_ExtractKeyValue
 PK11_FindCertFromNickname
+PK11_FindCertInSlot
 PK11_FindCertsFromEmailAddress
 PK11_FindCertsFromNickname
 PK11_FindKeyByAnyCert
@@ -367,6 +368,7 @@ PK11_GetMechanism
 PK11_GetMinimumPwdLength
 PK11_GetModInfo
 PK11_GetNextSafe
+PK11_GetNextSymKey
 PK11_GetPadMechanism
 PK11_GetPrivateKeyNickname
 PK11_GetPrivateModulusLen
@@ -375,6 +377,7 @@ PK11_GetSlotInfo
 PK11_GetSlotName
 PK11_GetSlotPWValues
 PK11_GetSlotSeries
+PK11_GetSymKeyNickname
 PK11_GetTokenInfo
 PK11_GetTokenName
 PK11_HashBuf
@@ -400,6 +403,7 @@ PK11_KeyGen
 PK11_KeyGenWithTemplate
 PK11_ListCerts
 PK11_ListCertsInSlot
+PK11_ListFixedKeysInSlot
 PK11_ListPrivateKeysInSlot
 PK11_ListPrivKeysInSlot
 PK11_LoadPrivKey
@@ -429,9 +433,11 @@ PK11SDR_Decrypt
 PK11SDR_Encrypt
 PK11_SetPasswordFunc
 PK11_SetSlotPWValues
+PK11_SetSymKeyNickname
 PK11_Sign
 PK11_SignatureLen
 PK11_SignWithMechanism
+PK11_TokenKeyGenWithFlags
 PK11_UnwrapPrivKey
 PK11_UnwrapSymKey
 PK11_UpdateSlotAttribute
@@ -551,6 +557,7 @@ SECMOD_DeleteInternalModule
 SECMOD_DeleteModule
 SECMOD_DestroyModule
 SECMOD_FindModule
+SECMOD_FindSlot
 SECMOD_GetDeadModuleList
 SECMOD_GetDefaultModuleList
 SECMOD_GetDefaultModuleListLock
@@ -677,6 +684,7 @@ SSL_PeerCertificateChain
 SSL_PeerStapledOCSPResponses
 SSL_ResetHandshake
 SSL_SetCanFalseStartCallback
+SSL_SetDowngradeCheckVersion
 SSL_SetNextProtoNego
 SSL_SetPKCS11PinArg
 SSL_SetSockPeerID

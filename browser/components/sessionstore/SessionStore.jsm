@@ -793,6 +793,8 @@ var SessionStoreInternal = {
             tab.label = activePageData.url;
             tab.crop = "center";
           }
+        } else if (tab.hasAttribute("customizemode")) {
+          win.gCustomizeMode.setTab(tab);
         }
 
         // Restore the tab icon.
@@ -883,8 +885,9 @@ var SessionStoreInternal = {
         this.onTabAdd(win, target);
         break;
       case "TabClose":
-        // aEvent.detail determines if the tab was closed by moving to a different window
-        if (!aEvent.detail)
+        // `adoptedBy` will be set if the tab was closed because it is being
+        // moved to a new window.
+        if (!aEvent.detail.adoptedBy)
           this.onTabClose(win, target);
         this.onTabRemove(win, target);
         break;
@@ -1227,9 +1230,7 @@ var SessionStoreInternal = {
 
     var tabbrowser = aWindow.gBrowser;
 
-    // The tabbrowser binding will go away once the window is closed,
-    // so we'll hold a reference to the browsers in the closure here.
-    let browsers = tabbrowser.browsers;
+    let browsers = Array.from(tabbrowser.browsers);
 
     TAB_EVENTS.forEach(function(aEvent) {
       tabbrowser.tabContainer.removeEventListener(aEvent, this, true);
@@ -1311,7 +1312,6 @@ var SessionStoreInternal = {
         // access any DOM elements from aWindow within this callback unless
         // you're holding on to them in the closure.
 
-        // We can still access tabbrowser.browsers, thankfully.
         for (let browser of browsers) {
           if (this._closedWindowTabs.has(browser.permanentKey)) {
             let tabData = this._closedWindowTabs.get(browser.permanentKey);
@@ -2520,7 +2520,7 @@ var SessionStoreInternal = {
       let window = tab.ownerDocument && tab.ownerDocument.defaultView;
 
       // The tab or its window might be gone.
-      if (!window || !window.__SSi) {
+      if (!window || !window.__SSi || window.closed) {
         return;
       }
 
@@ -3299,6 +3299,10 @@ var SessionStoreInternal = {
    *        optional load arguments used for loadURI()
    */
   restoreTabContent: function (aTab, aLoadArguments = null) {
+    if (aTab.hasAttribute("customizemode")) {
+      return;
+    }
+
     let browser = aTab.linkedBrowser;
     let window = aTab.ownerDocument.defaultView;
     let tabbrowser = window.gBrowser;
@@ -3453,23 +3457,31 @@ var SessionStoreInternal = {
     if (screen) {
       let screenLeft = {}, screenTop = {}, screenWidth = {}, screenHeight = {};
       screen.GetAvailRectDisplayPix(screenLeft, screenTop, screenWidth, screenHeight);
+      // screenX/Y are based on the origin of the screen's desktop-pixel coordinate space
+      let screenLeftCss = screenLeft.value;
+      let screenTopCss = screenTop.value;
+      // convert screen's device pixel dimensions to CSS px dimensions
+      screen.GetAvailRect(screenLeft, screenTop, screenWidth, screenHeight);
+      let cssToDevScale = screen.defaultCSSScaleFactor;
+      let screenWidthCss = screenWidth.value / cssToDevScale;
+      let screenHeightCss = screenHeight.value / cssToDevScale;
       // constrain the dimensions to the actual space available
-      if (aWidth > screenWidth.value) {
-        aWidth = screenWidth.value;
+      if (aWidth > screenWidthCss) {
+        aWidth = screenWidthCss;
       }
-      if (aHeight > screenHeight.value) {
-        aHeight = screenHeight.value;
+      if (aHeight > screenHeightCss) {
+        aHeight = screenHeightCss;
       }
       // and then pull the window within the screen's bounds
-      if (aLeft < screenLeft.value) {
-        aLeft = screenLeft.value;
-      } else if (aLeft + aWidth > screenLeft.value + screenWidth.value) {
-        aLeft = screenLeft.value + screenWidth.value - aWidth;
+      if (aLeft < screenLeftCss) {
+        aLeft = screenLeftCss;
+      } else if (aLeft + aWidth > screenLeftCss + screenWidthCss) {
+        aLeft = screenLeftCss + screenWidthCss - aWidth;
       }
-      if (aTop < screenTop.value) {
-        aTop = screenTop.value;
-      } else if (aTop + aHeight > screenTop.value + screenHeight.value) {
-        aTop = screenTop.value + screenHeight.value - aHeight;
+      if (aTop < screenTopCss) {
+        aTop = screenTopCss;
+      } else if (aTop + aHeight > screenTopCss + screenHeightCss) {
+        aTop = screenTopCss + screenHeightCss - aHeight;
       }
     }
 

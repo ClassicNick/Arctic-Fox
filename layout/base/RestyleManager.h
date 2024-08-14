@@ -250,8 +250,8 @@ public:
                         nsStyleContext* aOldStyleContext,
                         RefPtr<nsStyleContext>* aNewStyleContext /* inout */);
 
-  // AnimationsWithDestroyedFrame is used to stop animations on elements that
-  // have no frame at the end of the restyling process.
+  // AnimationsWithDestroyedFrame is used to stop animations and transitions
+  // on elements that have no frame at the end of the restyling process.
   // It only lives during the restyling process.
   class MOZ_STACK_CLASS AnimationsWithDestroyedFrame final {
   public:
@@ -260,13 +260,10 @@ public:
     // object.  (This is generally easy since the caller is typically a
     // method of RestyleManager.)
     explicit AnimationsWithDestroyedFrame(RestyleManager* aRestyleManager);
-    ~AnimationsWithDestroyedFrame()
-    {
-    }
 
     // This method takes the content node for the generated content for
-    // animation on ::before and ::after, rather than the content node for
-    // the real element.
+    // animation/transition on ::before and ::after, rather than the
+    // content node for the real element.
     void Put(nsIContent* aContent, nsStyleContext* aStyleContext) {
       MOZ_ASSERT(aContent);
       CSSPseudoElementType pseudoType = aStyleContext->GetPseudoType();
@@ -291,7 +288,7 @@ public:
     AutoRestore<AnimationsWithDestroyedFrame*> mRestorePointer;
 
     // Below three arrays might include elements that have already had their
-    // animations stopped.
+    // animations or transitions stopped.
     //
     // mBeforeContents and mAfterContents hold the real element rather than
     // the content node for the generated content (which might change during
@@ -442,6 +439,10 @@ public:
   void PostRebuildAllStyleDataEvent(nsChangeHint aExtraHint,
                                     nsRestyleHint aRestyleHint);
 
+#ifdef DEBUG
+  bool InRebuildAllStyleData() const { return mInRebuildAllStyleData; }
+#endif
+
 #ifdef RESTYLE_LOGGING
   /**
    * Returns whether a restyle event currently being processed by this
@@ -484,6 +485,8 @@ public:
 #endif
 
 private:
+  inline nsStyleSet* StyleSet() const;
+
   /* aMinHint is the minimal change that should be made to the element */
   // XXXbz do we really need the aPrimaryFrame argument here?
   void RestyleElement(Element*        aElement,
@@ -678,6 +681,8 @@ public:
 #endif
 
 private:
+  inline nsStyleSet* StyleSet() const;
+
   // Enum for the result of RestyleSelf, which indicates whether the
   // restyle procedure should continue to the children, and how.
   //
@@ -905,7 +910,7 @@ private:
  * (and further ancestors) may be display:contents nodes which have
  * not yet been pushed onto TreeMatchContext.
  */
-class MOZ_STACK_CLASS AutoDisplayContentsAncestorPusher final
+class MOZ_RAII AutoDisplayContentsAncestorPusher final
 {
  public:
   typedef mozilla::dom::Element Element;

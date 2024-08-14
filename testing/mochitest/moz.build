@@ -11,9 +11,6 @@ DIRS += [
     'BrowserTestUtils',
 ]
 
-if CONFIG['MOZ_BUILD_APP'] == 'mobile/android':
-    DIRS += ['roboextender']
-
 XPI_NAME = 'mochijar'
 
 JAR_MANIFESTS += ['jar.mn']
@@ -22,24 +19,28 @@ USE_EXTENSION_MANIFEST = True
 
 FINAL_TARGET_PP_FILES += ['install.rdf']
 
+if CONFIG['MOZ_BUILD_APP'] != 'mobile/android' and CONFIG['MOZ_WIDGET_TOOLKIT'] != 'gonk':
+    DEFINES['MOCHITEST_BOOTSTRAP'] = True
+    FINAL_TARGET_FILES += ['bootstrap.js']
+
 MOCHITEST_MANIFESTS += [
     'tests/MochiKit-1.4.2/tests/mochitest.ini',
 ]
 MOCHITEST_CHROME_MANIFESTS += ['chrome/chrome.ini']
+
+GENERATED_FILES += [
+    'automation.py',
+]
 
 TEST_HARNESS_FILES.testing.mochitest += [
     '!automation.py',
     '/build/mobile/remoteautomation.py',
     '/build/pgo/server-locations.txt',
     '/build/sanitizers/lsan_suppressions.txt',
+    '/build/valgrind/cross-architecture.sup',
+    '/build/valgrind/i386-redhat-linux-gnu.sup',
+    '/build/valgrind/x86_64-redhat-linux-gnu.sup',
     '/netwerk/test/httpserver/httpd.js',
-    '/testing/mozbase/mozdevice/mozdevice/devicemanager.py',
-    '/testing/mozbase/mozdevice/mozdevice/devicemanagerADB.py',
-    '/testing/mozbase/mozdevice/mozdevice/devicemanagerSUT.py',
-    '/testing/mozbase/mozdevice/mozdevice/droid.py',
-    '/testing/mozbase/mozdevice/mozdevice/Zeroconf.py',
-    '/testing/mozbase/moznetwork/moznetwork/moznetwork.py',
-    'b2g_start_script.js',
     'bisection.py',
     'browser-harness.xul',
     'browser-test-overlay.xul',
@@ -66,6 +67,8 @@ TEST_HARNESS_FILES.testing.mochitest += [
     'runtestsb2g.py',
     'runtestsremote.py',
     'server.js',
+    'start_b2g.js',
+    'start_desktop.js',
 ]
 
 TEST_HARNESS_FILES.testing.mochitest.pywebsocket += [

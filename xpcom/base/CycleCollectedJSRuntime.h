@@ -14,6 +14,7 @@
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/SegmentedVector.h"
 #include "jsapi.h"
+#include "jsfriendapi.h"
 
 #include "nsCycleCollectionParticipant.h"
 #include "nsDataHashtable.h"
@@ -157,6 +158,9 @@ protected:
     return true; // Don't block context creation.
   }
 
+  std::queue<nsCOMPtr<nsIRunnable>> mPromiseMicroTaskQueue;
+  std::queue<nsCOMPtr<nsIRunnable>> mDebuggerPromiseMicroTaskQueue;
+
 private:
   void
   DescribeGCThing(bool aIsMarked, JS::GCCellPtr aThing,
@@ -284,6 +288,7 @@ public:
   void SetPendingException(nsIException* aException);
 
   std::queue<nsCOMPtr<nsIRunnable>>& GetPromiseMicroTaskQueue();
+  std::queue<nsCOMPtr<nsIRunnable>>& GetDebuggerPromiseMicroTaskQueue();
 
   nsCycleCollectionParticipant* GCThingParticipant();
   nsCycleCollectionParticipant* ZoneParticipant();
@@ -316,6 +321,10 @@ public:
     return mJSRuntime;
   }
 
+protected:
+  JSRuntime* MaybeRuntime() const { return mJSRuntime; }
+
+public:
   // nsThread entrypoints
   virtual void BeforeProcessTask(bool aMightBlock) { };
   virtual void AfterProcessTask(uint32_t aRecursionDepth);
@@ -347,6 +356,9 @@ public:
   // full GC.
   void PrepareWaitingZonesForGC();
 
+  // Queue an async microtask to the current main or worker thread.
+  virtual void DispatchToMicroTask(nsIRunnable* aRunnable);
+
   // Storage for watching rejected promises waiting for some client to
   // consume their rejection.
   // We store values as `nsISupports` to avoid adding compile-time dependencies
@@ -377,8 +389,6 @@ private:
   nsCOMPtr<nsIException> mPendingException;
   nsThread* mOwningThread; // Manual refcounting to avoid include hell.
 
-  std::queue<nsCOMPtr<nsIRunnable>> mPromiseMicroTaskQueue;
-
   struct RunInMetastableStateData
   {
     nsCOMPtr<nsIRunnable> mRunnable;
@@ -401,6 +411,11 @@ private:
     mPreservedNurseryObjects;
 
   nsTHashtable<nsPtrHashKey<JS::Zone>> mZonesWaitingForGC;
+
+  struct EnvironmentPreparer : public js::ScriptEnvironmentPreparer {
+    void invoke(JS::HandleObject scope, Closure& closure) override;
+  };
+  EnvironmentPreparer mEnvironmentPreparer;
 };
 
 void TraceScriptHolder(nsISupports* aHolder, JSTracer* aTracer);
@@ -410,6 +425,9 @@ inline bool AddToCCKind(JS::TraceKind aKind)
 {
   return aKind == JS::TraceKind::Object || aKind == JS::TraceKind::Script;
 }
+
+bool
+GetBuildId(JS::BuildIdCharVector* aBuildID);
 
 } // namespace mozilla
 

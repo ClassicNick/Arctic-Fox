@@ -7,7 +7,10 @@
 const { classes: Cc, interfaces: Ci, utils: Cu, results: Cr } = Components;
 const BrowserLoaderModule = {};
 Cu.import("resource://devtools/client/shared/browser-loader.js", BrowserLoaderModule);
-const { require } = BrowserLoaderModule.BrowserLoader("resource://devtools/client/memory/", this);
+const { require } = BrowserLoaderModule.BrowserLoader({
+  baseURI: "resource://devtools/client/memory/",
+  window: this
+});
 const { Task } = require("resource://gre/modules/Task.jsm");
 const { createFactory, createElement } = require("devtools/client/shared/vendor/react");
 const ReactDOM = require("devtools/client/shared/vendor/react-dom");
@@ -24,7 +27,7 @@ var gToolbox, gTarget, gFront, gHeapAnalysesClient;
 /**
  * Variables set by `initialize()`
  */
-var gStore, gRoot, gApp, gProvider, unsubscribe, isHighlighted;
+var gStore, gRoot, gApp, gProvider, unsubscribe, isHighlighted, telemetry;
 
 var initialize = Task.async(function*() {
   gRoot = document.querySelector("#app");
@@ -41,7 +44,7 @@ var destroy = Task.async(function*() {
 
   unsubscribe();
 
-  gStore, gRoot, gApp, gProvider, unsubscribe, isHighlighted = null;
+  gStore, gRoot, gApp, gProvider, unsubscribe, isHighlighted;
 });
 
 /**

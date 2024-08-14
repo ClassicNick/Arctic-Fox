@@ -381,6 +381,7 @@ var Impl = {
       buildId: Services.appinfo.appBuildID,
       name: Services.appinfo.name,
       version: Services.appinfo.version,
+      displayVersion: AppConstants.MOZ_APP_VERSION_DISPLAY,
       vendor: Services.appinfo.vendor,
       platformVersion: Services.appinfo.platformVersion,
       xpcomAbi: Services.appinfo.XPCOMABI,
@@ -794,6 +795,7 @@ var Impl = {
       return this.setupContentTelemetry();
       break;
     }
+    return undefined;
   },
 
   get clientID() {

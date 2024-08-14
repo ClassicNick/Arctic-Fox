@@ -1,5 +1,11 @@
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
+/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 const {Cc, Ci, Cu} = require("chrome");
-const Services = Cu.import("resource://gre/modules/Services.jsm", {}).Services;
+const Services = require("Services");
 const promise = require("promise");
 
 function l10n(name) {
@@ -42,9 +48,7 @@ function attachThread(toolbox) {
   let { form: { chromeDebugger, actor } } = target;
   let threadOptions = {
     useSourceMaps: Services.prefs.getBoolPref("devtools.debugger.source-maps-enabled"),
-    autoBlackBox: Services.prefs.getBoolPref("devtools.debugger.auto-black-box"),
-    pauseOnExceptions: Services.prefs.getBoolPref("devtools.debugger.pause-on-exceptions"),
-    ignoreCaughtExceptions: Services.prefs.getBoolPref("devtools.debugger.ignore-caught-exceptions")
+    autoBlackBox: Services.prefs.getBoolPref("devtools.debugger.auto-black-box")
   };
 
   let handleResponse = (res, threadClient) => {
@@ -60,6 +64,15 @@ function attachThread(toolbox) {
         new Error("Thread in wrong state when starting up, should be paused")
       );
     }
+
+    // These flags need to be set here because the client sends them
+    // with the `resume` request. We make sure to do this before
+    // resuming to avoid another interrupt. We can't pass it in with
+    // `threadOptions` because the resume request will override them.
+    threadClient.pauseOnExceptions(
+      Services.prefs.getBoolPref("devtools.debugger.pause-on-exceptions"),
+      Services.prefs.getBoolPref("devtools.debugger.ignore-caught-exceptions")
+    );
 
     threadClient.resume(res => {
       if (res.error === "wrongOrder") {

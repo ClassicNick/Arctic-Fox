@@ -17,12 +17,16 @@
 namespace mozilla {
 namespace dom {
 
+class AnyCallback;
 class Console;
+class Crypto;
 class Function;
 class IDBFactory;
 class Promise;
 class RequestOrUSVString;
 class ServiceWorkerRegistrationWorkerThread;
+class WorkerLocation;
+class WorkerNavigator;
 
 namespace cache {
 
@@ -36,8 +40,6 @@ BEGIN_WORKERS_NAMESPACE
 
 class ServiceWorkerClients;
 class WorkerPrivate;
-class WorkerLocation;
-class WorkerNavigator;
 class Performance;
 
 class WorkerGlobalScope : public DOMEventTargetHelper,
@@ -47,6 +49,7 @@ class WorkerGlobalScope : public DOMEventTargetHelper,
   typedef mozilla::dom::IDBFactory IDBFactory;
 
   RefPtr<Console> mConsole;
+  RefPtr<Crypto> mCrypto;
   RefPtr<WorkerLocation> mLocation;
   RefPtr<WorkerNavigator> mNavigator;
   RefPtr<Performance> mPerformance;
@@ -85,7 +88,16 @@ public:
   }
 
   Console*
-  GetConsole();
+  GetConsole(ErrorResult& aRv);
+
+  Console*
+  GetConsoleIfExists() const
+  {
+    return mConsole;
+  }
+
+  Crypto*
+  GetCrypto(ErrorResult& aError);
 
   already_AddRefed<WorkerLocation>
   Location();
@@ -105,18 +117,16 @@ public:
   SetOnerror(OnErrorEventHandlerNonNull* aHandler);
 
   void
-  ImportScripts(JSContext* aCx, const Sequence<nsString>& aScriptURLs,
-                ErrorResult& aRv);
+  ImportScripts(const Sequence<nsString>& aScriptURLs, ErrorResult& aRv);
 
   int32_t
   SetTimeout(JSContext* aCx, Function& aHandler, const int32_t aTimeout,
              const Sequence<JS::Value>& aArguments, ErrorResult& aRv);
   int32_t
-  SetTimeout(JSContext* /* unused */, const nsAString& aHandler,
-             const int32_t aTimeout, const Sequence<JS::Value>& /* unused */,
-             ErrorResult& aRv);
+  SetTimeout(JSContext* aCx, const nsAString& aHandler, const int32_t aTimeout,
+             const Sequence<JS::Value>& /* unused */, ErrorResult& aRv);
   void
-  ClearTimeout(int32_t aHandle, ErrorResult& aRv);
+  ClearTimeout(int32_t aHandle);
   int32_t
   SetInterval(JSContext* aCx, Function& aHandler,
               const Optional<int32_t>& aTimeout,
@@ -126,7 +136,7 @@ public:
               const Optional<int32_t>& aTimeout,
               const Sequence<JS::Value>& /* unused */, ErrorResult& aRv);
   void
-  ClearInterval(int32_t aHandle, ErrorResult& aRv);
+  ClearInterval(int32_t aHandle);
 
   void
   Atob(const nsAString& aAtob, nsAString& aOutput, ErrorResult& aRv) const;
@@ -241,9 +251,6 @@ public:
                    JS::MutableHandle<JSObject*> aReflector) override;
 
   static bool
-  InterceptionEnabled(JSContext* aCx, JSObject* aObj);
-
-  static bool
   OpenWindowEnabled(JSContext* aCx, JSObject* aObj);
 
   void
@@ -301,12 +308,14 @@ public:
   }
 
   void
-  GetGlobal(JSContext* aCx, JS::MutableHandle<JSObject*> aGlobal);
+  GetGlobal(JSContext* aCx, JS::MutableHandle<JSObject*> aGlobal,
+            ErrorResult& aRv);
 
   void
   CreateSandbox(JSContext* aCx, const nsAString& aName,
                 JS::Handle<JSObject*> aPrototype,
-                JS::MutableHandle<JSObject*> aResult);
+                JS::MutableHandle<JSObject*> aResult,
+                ErrorResult& aRv);
 
   void
   LoadSubScript(JSContext* aCx, const nsAString& aURL,
@@ -325,13 +334,27 @@ public:
   IMPL_EVENT_HANDLER(message)
 
   void
-  SetImmediate(JSContext* aCx, Function& aHandler, ErrorResult& aRv);
+  SetImmediate(Function& aHandler, ErrorResult& aRv);
 
   void
   ReportError(JSContext* aCx, const nsAString& aMessage);
 
+  void
+  RetrieveConsoleEvents(JSContext* aCx, nsTArray<JS::Value>& aEvents,
+                        ErrorResult& aRv);
+
+  void
+  SetConsoleEventHandler(JSContext* aCx, AnyCallback* aHandler,
+                         ErrorResult& aRv);
+
   Console*
   GetConsole(ErrorResult& aRv);
+
+  Console*
+  GetConsoleIfExists() const
+  {
+    return mConsole;
+  }
 
   void
   Dump(JSContext* aCx, const Optional<nsAString>& aString) const;

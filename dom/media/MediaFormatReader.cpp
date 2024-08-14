@@ -6,6 +6,7 @@
 
 #include "mozilla/dom/HTMLMediaElement.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/Telemetry.h"
 #include "nsContentUtils.h"
 #include "nsPrintfCString.h"
 #include "nsSize.h"
@@ -68,7 +69,6 @@ MediaFormatReader::MediaFormatReader(AbstractMediaDecoder* aDecoder,
   , mInitDone(false)
   , mIsEncrypted(false)
   , mTrackDemuxersMayBlock(false)
-  , mHardwareAccelerationDisabled(false)
   , mDemuxOnly(false)
   , mVideoFrameContainer(aVideoFrameContainer)
 {
@@ -85,6 +85,10 @@ RefPtr<ShutdownPromise>
 MediaFormatReader::Shutdown()
 {
   MOZ_ASSERT(OnTaskQueue());
+
+  if (HasVideo()) {
+    ReportDroppedFramesTelemetry();
+  }
 
   mDemuxerInitRequest.DisconnectIfExists();
   mMetadataPromise.RejectIfExists(ReadMetadataFailureReason::METADATA_ERROR, __func__);
@@ -333,6 +337,8 @@ MediaFormatReader::OnDemuxerInitDone(nsresult)
   }
 
   mInfo.mMediaSeekable = mDemuxer->IsSeekable();
+  mInfo.mMediaSeekableOnlyInBufferedRanges =
+    mDemuxer->IsSeekableOnlyInBufferedRanges();
 
   if (!videoActive && !audioActive) {
     mMetadataPromise.Reject(ReadMetadataFailureReason::METADATA_ERROR, __func__);
@@ -389,7 +395,8 @@ MediaFormatReader::EnsureDecoderCreated(TrackType aTrack)
                                    *decoder.mInfo->GetAsAudioInfo() :
                                    mInfo.mAudio,
                                  decoder.mTaskQueue,
-                                 decoder.mCallback);
+                                 decoder.mCallback,
+                                 /* DecoderDoctorDiagnostics* */ nullptr);
       break;
     case TrackType::kVideoTrack:
       // Decoders use the layers backend to decide if they can use hardware decoding,
@@ -400,7 +407,7 @@ MediaFormatReader::EnsureDecoderCreated(TrackType aTrack)
                                    mInfo.mVideo,
                                  decoder.mTaskQueue,
                                  decoder.mCallback,
-                                 mHardwareAccelerationDisabled ? LayersBackend::LAYERS_NONE :
+                                 /* DecoderDoctorDiagnostics* */ nullptr,
                                  mLayersBackendType,
                                  GetImageContainer());
       break;
@@ -465,23 +472,6 @@ MediaFormatReader::GetDecoderData(TrackType aTrack)
   return mVideo;
 }
 
-void
-MediaFormatReader::DisableHardwareAcceleration()
-{
-  MOZ_ASSERT(OnTaskQueue());
-  if (HasVideo() && !mHardwareAccelerationDisabled) {
-    mHardwareAccelerationDisabled = true;
-    Flush(TrackInfo::kVideoTrack);
-    mVideo.ShutdownDecoder();
-    if (!EnsureDecoderCreated(TrackType::kVideoTrack)) {
-      LOG("Unable to re-create decoder, aborting");
-      NotifyError(TrackInfo::kVideoTrack);
-      return;
-    }
-    ScheduleUpdate(TrackInfo::kVideoTrack);
-  }
-}
-
 bool
 MediaFormatReader::ShouldSkip(bool aSkipToNextKeyframe, media::TimeUnit aTimeThreshold)
 {
@@ -494,7 +484,7 @@ MediaFormatReader::ShouldSkip(bool aSkipToNextKeyframe, media::TimeUnit aTimeThr
   return nextKeyframe < aTimeThreshold && nextKeyframe.ToMicroseconds() >= 0;
 }
 
-RefPtr<MediaDecoderReader::VideoDataPromise>
+RefPtr<MediaDecoderReader::MediaDataPromise>
 MediaFormatReader::RequestVideoData(bool aSkipToNextKeyframe,
                                     int64_t aTimeThreshold)
 {
@@ -509,17 +499,17 @@ MediaFormatReader::RequestVideoData(bool aSkipToNextKeyframe,
 
   if (!HasVideo()) {
     LOG("called with no video track");
-    return VideoDataPromise::CreateAndReject(DECODE_ERROR, __func__);
+    return MediaDataPromise::CreateAndReject(DECODE_ERROR, __func__);
   }
 
   if (IsSeeking()) {
     LOG("called mid-seek. Rejecting.");
-    return VideoDataPromise::CreateAndReject(CANCELED, __func__);
+    return MediaDataPromise::CreateAndReject(CANCELED, __func__);
   }
 
   if (mShutdown) {
     NS_WARNING("RequestVideoData on shutdown MediaFormatReader!");
-    return VideoDataPromise::CreateAndReject(CANCELED, __func__);
+    return MediaDataPromise::CreateAndReject(CANCELED, __func__);
   }
 
   media::TimeUnit timeThreshold{media::TimeUnit::FromMicroseconds(aTimeThreshold)};
@@ -535,12 +525,12 @@ MediaFormatReader::RequestVideoData(bool aSkipToNextKeyframe,
     mDecoder->NotifyDecodedFrames(0, 0, SizeOfVideoQueueInFrames());
 
     Flush(TrackInfo::kVideoTrack);
-    RefPtr<VideoDataPromise> p = mVideo.mPromise.Ensure(__func__);
+    RefPtr<MediaDataPromise> p = mVideo.mPromise.Ensure(__func__);
     SkipVideoDemuxToNextKeyFrame(timeThreshold);
     return p;
   }
 
-  RefPtr<VideoDataPromise> p = mVideo.mPromise.Ensure(__func__);
+  RefPtr<MediaDataPromise> p = mVideo.mPromise.Ensure(__func__);
   NotifyDecodingRequested(TrackInfo::kVideoTrack);
 
   return p;
@@ -600,7 +590,7 @@ MediaFormatReader::OnVideoDemuxCompleted(RefPtr<MediaTrackDemuxer::SamplesHolder
   ScheduleUpdate(TrackInfo::kVideoTrack);
 }
 
-RefPtr<MediaDecoderReader::AudioDataPromise>
+RefPtr<MediaDecoderReader::MediaDataPromise>
 MediaFormatReader::RequestAudioData()
 {
   MOZ_ASSERT(OnTaskQueue());
@@ -613,20 +603,20 @@ MediaFormatReader::RequestAudioData()
 
   if (!HasAudio()) {
     LOG("called with no audio track");
-    return AudioDataPromise::CreateAndReject(DECODE_ERROR, __func__);
+    return MediaDataPromise::CreateAndReject(DECODE_ERROR, __func__);
   }
 
   if (IsSeeking()) {
     LOG("called mid-seek. Rejecting.");
-    return AudioDataPromise::CreateAndReject(CANCELED, __func__);
+    return MediaDataPromise::CreateAndReject(CANCELED, __func__);
   }
 
   if (mShutdown) {
     NS_WARNING("RequestAudioData on shutdown MediaFormatReader!");
-    return AudioDataPromise::CreateAndReject(CANCELED, __func__);
+    return MediaDataPromise::CreateAndReject(CANCELED, __func__);
   }
 
-  RefPtr<AudioDataPromise> p = mAudio.mPromise.Ensure(__func__);
+  RefPtr<MediaDataPromise> p = mAudio.mPromise.Ensure(__func__);
   NotifyDecodingRequested(TrackInfo::kAudioTrack);
 
   return p;
@@ -667,6 +657,7 @@ MediaFormatReader::NotifyNewOutput(TrackType aTrack, MediaData* aSample)
   decoder.mOutput.AppendElement(aSample);
   decoder.mNumSamplesOutput++;
   decoder.mNumSamplesOutputTotal++;
+  decoder.mNumSamplesOutputTotalSinceTelemetry++;
   ScheduleUpdate(aTrack);
 }
 
@@ -910,6 +901,9 @@ MediaFormatReader::HandleDemuxedSamples(TrackType aTrack,
         LOG("%s stream id has changed from:%d to:%d, draining decoder.",
             TrackTypeToStr(aTrack), decoder.mLastStreamSourceID,
             info->GetID());
+        if (aTrack == TrackType::kVideoTrack) {
+          ReportDroppedFramesTelemetry();
+        }
         decoder.mNeedDraining = true;
         decoder.mNextStreamSourceID = Some(info->GetID());
         ScheduleUpdate(aTrack);
@@ -1371,6 +1365,7 @@ MediaFormatReader::OnVideoSkipCompleted(uint32_t aSkipped)
     mDecoder->NotifyDecodedFrames(aSkipped, 0, aSkipped);
   }
   mVideo.mNumSamplesSkippedTotal += aSkipped;
+  mVideo.mNumSamplesSkippedTotalSinceTelemetry += aSkipped;
   MOZ_ASSERT(!mVideo.mError); // We have flushed the decoder, no frame could
                               // have been decoded (and as such errored)
   NotifyDecodingRequested(TrackInfo::kVideoTrack);
@@ -1419,7 +1414,7 @@ MediaFormatReader::Seek(SeekTarget aTarget, int64_t aUnused)
   MOZ_DIAGNOSTIC_ASSERT(mVideo.mTimeThreshold.isNothing());
   MOZ_DIAGNOSTIC_ASSERT(mAudio.mTimeThreshold.isNothing());
 
-  if (!mInfo.mMediaSeekable) {
+  if (!mInfo.mMediaSeekable && !mInfo.mMediaSeekableOnlyInBufferedRanges) {
     LOG("Seek() END (Unseekable)");
     return SeekPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
   }
@@ -1610,6 +1605,20 @@ MediaFormatReader::GetBuffered()
   return intervals.Shift(media::TimeUnit::FromMicroseconds(-startTime));
 }
 
+// For the MediaFormatReader override we need to force an update to the
+// buffered ranges, so we call NotifyDataArrive
+RefPtr<MediaDecoderReader::BufferedUpdatePromise>
+MediaFormatReader::UpdateBufferedWithPromise() {
+  MOZ_ASSERT(OnTaskQueue());
+  // Call NotifyDataArrive to force a recalculation of the buffered
+  // ranges. UpdateBuffered alone will not force a recalculation, so we
+  // use NotifyDataArrived which sets flags to force this recalculation.
+  // See MediaFormatReader::UpdateReceivedNewData for an example of where
+  // the new data flag is used.
+  NotifyDataArrived();
+  return BufferedUpdatePromise::CreateAndResolve(true, __func__);
+}
+
 void MediaFormatReader::ReleaseMediaResources()
 {
   // Before freeing a video codec, all video buffers needed to be released
@@ -1698,6 +1707,53 @@ MediaFormatReader::GetMozDebugReaderData(nsAString& aString)
                             mVideo.mNumSamplesOutputTotal,
                             mVideo.mNumSamplesSkippedTotal);
   aString += NS_ConvertUTF8toUTF16(result);
+}
+
+void
+MediaFormatReader::ReportDroppedFramesTelemetry()
+{
+  MOZ_ASSERT(OnTaskQueue());
+
+  const VideoInfo* info =
+    mVideo.mInfo ? mVideo.mInfo->GetAsVideoInfo() : &mInfo.mVideo;
+
+  if (!info || !mVideo.mDecoder) {
+    return;
+  }
+
+  nsCString keyPhrase = nsCString("MimeType=");
+  keyPhrase.Append(info->mMimeType);
+  keyPhrase.Append("; ");
+
+  keyPhrase.Append("Resolution=");
+  keyPhrase.AppendInt(info->mDisplay.width);
+  keyPhrase.Append('x');
+  keyPhrase.AppendInt(info->mDisplay.height);
+  keyPhrase.Append("; ");
+
+  keyPhrase.Append("HardwareAcceleration=");
+  if (VideoIsHardwareAccelerated()) {
+    keyPhrase.Append(mVideo.mDecoder->GetDescriptionName());
+    keyPhrase.Append("enabled");
+  } else {
+    keyPhrase.Append("disabled");
+  }
+
+  if (mVideo.mNumSamplesOutputTotalSinceTelemetry) {
+    uint32_t percentage =
+      100 * mVideo.mNumSamplesSkippedTotalSinceTelemetry /
+            mVideo.mNumSamplesOutputTotalSinceTelemetry;
+    nsCOMPtr<nsIRunnable> task = NS_NewRunnableFunction([=]() -> void {
+      LOG("Reporting telemetry DROPPED_FRAMES_IN_VIDEO_PLAYBACK");
+      Telemetry::Accumulate(Telemetry::VIDEO_DETAILED_DROPPED_FRAMES_PROPORTION,
+                            keyPhrase,
+                            percentage);
+    });
+    AbstractThread::MainThread()->Dispatch(task.forget());
+  }
+
+  mVideo.mNumSamplesSkippedTotalSinceTelemetry = 0;
+  mVideo.mNumSamplesOutputTotalSinceTelemetry = 0;
 }
 
 } // namespace mozilla

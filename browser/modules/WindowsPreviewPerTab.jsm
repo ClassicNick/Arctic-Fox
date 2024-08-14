@@ -296,11 +296,14 @@ PreviewController.prototype = {
       ctx.drawWindow(this.win.win, 0, 0, winWidth, winHeight, "rgba(0,0,0,0)");
 
       // Draw the content are into the composite canvas at the right location.
-      ctx.drawImage(aPreviewCanvas, this.browserDims.x, this.browserDims.y, aPreviewCanvas.width, aPreviewCanvas.height);
+      ctx.drawImage(aPreviewCanvas, this.browserDims.x, this.browserDims.y,
+                    aPreviewCanvas.width, aPreviewCanvas.height);
       ctx.restore();
 
       // Deliver the resulting composite canvas to Windows
-      this.win.tabbrowser.previewTab(this.tab, function () { aTaskbarCallback.done(composite, false); });
+      this.win.tabbrowser.previewTab(this.tab, function () {
+        aTaskbarCallback.done(composite, false);
+      });
     });
   },
 
@@ -368,8 +371,6 @@ function TabWindow(win) {
   this.win = win;
   this.tabbrowser = win.gBrowser;
 
-  this.cacheDims();
-
   this.previews = new Map();
 
   for (let i = 0; i < this.tabEvents.length; i++)
@@ -379,7 +380,7 @@ function TabWindow(win) {
     this.win.addEventListener(this.winEvents[i], this, false);
 
   this.tabbrowser.addTabsProgressListener(this);
-   
+
   AeroPeek.windows.push(this);
   let tabs = this.tabbrowser.tabs;
   for (let i = 0; i < tabs.length; i++)
@@ -391,6 +392,8 @@ function TabWindow(win) {
 
 TabWindow.prototype = {
   _enabled: false,
+  _cachedWidth: 0,
+  _cachedHeight: 0,
   tabEvents: ["TabOpen", "TabClose", "TabSelect", "TabMove"],
   winEvents: ["resize"],
 
@@ -401,8 +404,8 @@ TabWindow.prototype = {
 
     this.tabbrowser.removeTabsProgressListener(this);
 
-  for (let i = 0; i < this.winEvents.length; i++)
-    this.win.removeEventListener(this.winEvents[i], this, false);
+    for (let i = 0; i < this.winEvents.length; i++)
+      this.win.removeEventListener(this.winEvents[i], this, false);
 
     for (let i = 0; i < this.tabEvents.length; i++)
       this.tabbrowser.tabContainer.removeEventListener(this.tabEvents[i], this, false);

@@ -7,6 +7,8 @@
 #include "nsSVGEffects.h"
 
 // Keep others in (case-insensitive) order:
+#include "mozilla/RestyleManagerHandle.h"
+#include "mozilla/RestyleManagerHandleInlines.h"
 #include "nsCSSFrameConstructor.h"
 #include "nsISupportsImpl.h"
 #include "nsSVGClipPathFrame.h"
@@ -15,7 +17,6 @@
 #include "nsSVGFilterFrame.h"
 #include "nsSVGMaskFrame.h"
 #include "nsIReflowCallback.h"
-#include "RestyleManager.h"
 #include "nsCycleCollectionParticipant.h"
 
 using namespace mozilla;
@@ -470,15 +471,15 @@ GetEffectProperty(nsIURI *aURI, nsIFrame *aFrame,
 static nsSVGFilterProperty*
 GetOrCreateFilterProperty(nsIFrame *aFrame)
 {
-  const nsStyleSVGReset* style = aFrame->StyleSVGReset();
-  if (!style->HasFilters())
+  const nsStyleEffects* effects = aFrame->StyleEffects();
+  if (!effects->HasFilters())
     return nullptr;
 
   FrameProperties props = aFrame->Properties();
   nsSVGFilterProperty *prop = props.Get(nsSVGEffects::FilterProperty());
   if (prop)
     return prop;
-  prop = new nsSVGFilterProperty(style->mFilters, aFrame);
+  prop = new nsSVGFilterProperty(effects->mFilters, aFrame);
   if (!prop)
     return nullptr;
   NS_ADDREF(prop);
@@ -667,7 +668,7 @@ nsSVGEffects::GetFilterProperty(nsIFrame *aFrame)
 {
   NS_ASSERTION(!aFrame->GetPrevContinuation(), "aFrame should be first continuation");
 
-  if (!aFrame->StyleSVGReset()->HasFilters())
+  if (!aFrame->StyleEffects()->HasFilters())
     return nullptr;
 
   return static_cast<nsSVGFilterProperty *>

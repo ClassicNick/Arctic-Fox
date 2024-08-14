@@ -69,15 +69,10 @@ addMessageListener("Browser:Reload", function(message) {
   }
 
   let reloadFlags = message.data.flags;
-  let handlingUserInput;
   try {
-    handlingUserInput = content.QueryInterface(Ci.nsIInterfaceRequestor)
-                               .getInterface(Ci.nsIDOMWindowUtils)
-                               .setHandlingUserInput(message.data.handlingUserInput);
-    webNav.reload(reloadFlags);
+    E10SUtils.wrapHandlingUserInput(content, message.data.handlingUserInput,
+                                    () => webNav.reload(reloadFlags));
   } catch (e) {
-  } finally {
-    handlingUserInput.destruct();
   }
 });
 
@@ -542,6 +537,9 @@ PageStyleHandler.init();
 
 function gKeywordURIFixup(fixupInfo) {
   fixupInfo.QueryInterface(Ci.nsIURIFixupInfo);
+  if (!fixupInfo.consumer) {
+    return;
+  }
 
   // Ignore info from other docshells
   let parent = fixupInfo.consumer.QueryInterface(Ci.nsIDocShellTreeItem).sameTypeRootTreeItem;

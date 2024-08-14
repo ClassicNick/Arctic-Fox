@@ -5,8 +5,7 @@
 "use strict";
 
 const {Cc, Ci} = require("chrome");
-
-const { Services } = require("resource://gre/modules/Services.jsm");
+const Services = require("Services");
 
 loader.lazyGetter(this, "osString", () => Cc["@mozilla.org/xre/app-info;1"].getService(Ci.nsIXULRuntime).OS);
 
@@ -61,7 +60,7 @@ exports.Tools = Tools;
 Tools.options = {
   id: "options",
   ordinal: 0,
-  url: "chrome://devtools/content/framework/toolbox-options.xul",
+  url: "chrome://devtools/content/framework/toolbox-options.xhtml",
   icon: "chrome://devtools/skin/images/tool-options.svg",
   invertIconForLightTheme: true,
   bgTheme: "theme-body",
@@ -103,8 +102,8 @@ Tools.inspector = {
   ],
 
   preventClosingOnKey: true,
-  onkey: function(panel) {
-    panel.toolbox.highlighterUtils.togglePicker();
+  onkey: function(panel, toolbox) {
+    toolbox.highlighterUtils.togglePicker();
   },
 
   isTargetSupported: function(target) {
@@ -389,7 +388,7 @@ Tools.scratchpad = {
   commands: "devtools/client/scratchpad/scratchpad-commands",
 
   isTargetSupported: function(target) {
-    return target.isRemote;
+    return target.hasActor("console");
   },
 
   build: function(iframeWindow, toolbox) {
@@ -431,9 +430,18 @@ Tools.lightTheme = {
   classList: ["theme-light"],
 };
 
+Tools.firebugTheme = {
+  id: "firebug",
+  label: l10n("options.firebugTheme.label", toolboxStrings),
+  ordinal: 3,
+  stylesheets: ["chrome://devtools/skin/firebug-theme.css"],
+  classList: ["theme-light", "theme-firebug"],
+};
+
 exports.defaultThemes = [
   Tools.darkTheme,
   Tools.lightTheme,
+  Tools.firebugTheme,
 ];
 
 /**
