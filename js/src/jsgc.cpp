@@ -3643,6 +3643,9 @@ GCRuntime::purgeRuntime(AutoLockForExclusiveAccess& lock)
 
     if (!rt->hasActiveCompilations())
         rt->parseMapPool(lock).purgeAll();
+
+    if (auto cache = rt->maybeThisRuntimeSharedImmutableStrings())
+        cache->purge();
 }
 
 bool
