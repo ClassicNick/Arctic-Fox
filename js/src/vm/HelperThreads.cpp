@@ -1649,6 +1649,7 @@ SourceCompressionTask::complete()
     }
 
     if (result == Success) {
+        MOZ_ASSERT(compressed);
         mozilla::UniquePtr<char[], JS::FreePolicy> compressedSource(
             reinterpret_cast<char*>(compressed));
         compressed = nullptr;
