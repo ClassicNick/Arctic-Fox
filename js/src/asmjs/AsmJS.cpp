@@ -2424,7 +2424,7 @@ IsSimdTuple(ModuleValidator& m, ParseNode* pn, SimdType* type)
 }
 
 static bool
-IsNumericLiteral(ModuleValidator& m, ParseNode* pn);
+IsNumericLiteral(ModuleValidator& m, ParseNode* pn, bool* isSimd = nullptr);
 
 static NumLit
 ExtractNumericLiteral(ModuleValidator& m, ParseNode* pn);
@@ -2475,11 +2475,16 @@ IsSimdLiteral(ModuleValidator& m, ParseNode* pn)
 }
 
 static bool
-IsNumericLiteral(ModuleValidator& m, ParseNode* pn)
+IsNumericLiteral(ModuleValidator& m, ParseNode* pn, bool* isSimd)
 {
-    return IsNumericNonFloatLiteral(pn) ||
-           IsFloatLiteral(m, pn) ||
-           IsSimdLiteral(m, pn);
+    if (IsNumericNonFloatLiteral(pn) || IsFloatLiteral(m, pn))
+        return true;
+    if (IsSimdLiteral(m, pn)) {
+        if (isSimd)
+            *isSimd = true;
+        return true;
+    }
+    return false;
 }
 
 // The JS grammar treats -42 as -(42) (i.e., with separate grammar
@@ -2808,9 +2813,13 @@ SimdToExpr(SimdType type, SimdOperation op)
 }
 
 #undef CASE
-#undef I32CASE
-#undef F32CASE
-#undef B32CASE
+#undef I8x16CASE
+#undef I16x8CASE
+#undef I32x4CASE
+#undef F32x4CASE
+#undef B8x16CASE
+#undef B16x8CASE
+#undef B32x4CASE
 #undef ENUMERATE
 
 typedef Vector<PropertyName*, 4, SystemAllocPolicy> NameVector;
@@ -2884,7 +2893,14 @@ class MOZ_STACK_CLASS FunctionValidator
         MOZ_ASSERT(continuableStack_.empty());
         MOZ_ASSERT(breakLabels_.empty());
         MOZ_ASSERT(continueLabels_.empty());
-        return m_.mg().finishFuncDef(funcIndex, generateTime, &fg_);
+        for (auto iter = locals_.all(); !iter.empty(); iter.popFront()) {
+            if (iter.front().value().type.isSimd()) {
+                setUsesSimd();
+                break;
+            }
+        }
+
+        return m_.mg().finishFuncDef(funcIndex, &fg_);
     }
 
     bool fail(ParseNode* pn, const char* str) {
@@ -2901,6 +2917,16 @@ class MOZ_STACK_CLASS FunctionValidator
 
     bool failName(ParseNode* pn, const char* fmt, PropertyName* name) {
         return m_.failName(pn, fmt, name);
+    }
+
+    /***************************************************** Attributes */
+
+    void setUsesSimd() {
+        fg_.setUsesSimd();
+    }
+
+    void setUsesAtomics() {
+        fg_.setUsesAtomics();
     }
 
     /***************************************************** Local scope setup */
@@ -3775,8 +3801,12 @@ IsLiteralOrConst(FunctionValidator& f, ParseNode* pn, NumLit* lit)
         return true;
     }
 
-    if (!IsNumericLiteral(f.m(), pn))
+    bool isSimd = false;
+    if (!IsNumericLiteral(f.m(), pn, &isSimd))
         return false;
+
+    if (isSimd)
+        f.setUsesSimd();
 
     *lit = ExtractNumericLiteral(f.m(), pn);
     return true;
@@ -4577,6 +4607,8 @@ static bool
 CheckAtomicsBuiltinCall(FunctionValidator& f, ParseNode* callNode, AsmJSAtomicsBuiltinFunction func,
                         Type* type)
 {
+    f.setUsesAtomics();
+
     switch (func) {
       case AsmJSAtomicsBuiltin_compareExchange:
         return CheckAtomicsCompareExchange(f, callNode, type);
@@ -5499,6 +5531,8 @@ static bool
 CheckSimdOperationCall(FunctionValidator& f, ParseNode* call, const ModuleValidator::Global* global,
                        Type* type)
 {
+    f.setUsesSimd();
+
     MOZ_ASSERT(global->isSimdOperation());
 
     SimdType opType = global->simdOperationType();
@@ -5591,6 +5625,8 @@ static bool
 CheckSimdCtorCall(FunctionValidator& f, ParseNode* call, const ModuleValidator::Global* global,
                   Type* type)
 {
+    f.setUsesSimd();
+
     MOZ_ASSERT(call->isKind(PNK_CALL));
 
     SimdType simdType = global->simdCtorType();
@@ -5723,7 +5759,10 @@ CheckCoercedCall(FunctionValidator& f, ParseNode* call, Type ret, Type* type)
 
     JS_CHECK_RECURSION_DONT_REPORT(f.cx(), return f.m().failOverRecursed());
 
-    if (IsNumericLiteral(f.m(), call)) {
+    bool isSimd = false;
+    if (IsNumericLiteral(f.m(), call, &isSimd)) {
+        if (isSimd)
+            f.setUsesSimd();
         NumLit lit = ExtractNumericLiteral(f.m(), call);
         if (!f.writeConstExpr(lit))
             return false;
@@ -6262,8 +6301,12 @@ CheckExpr(FunctionValidator& f, ParseNode* expr, Type* type)
 {
     JS_CHECK_RECURSION_DONT_REPORT(f.cx(), return f.m().failOverRecursed());
 
-    if (IsNumericLiteral(f.m(), expr))
+    bool isSimd = false;
+    if (IsNumericLiteral(f.m(), expr, &isSimd)) {
+        if (isSimd)
+            f.setUsesSimd();
         return CheckNumericLiteral(f, expr, type);
+    }
 
     switch (expr->getKind()) {
       case PNK_NAME:        return CheckVarRef(f, expr, type);
