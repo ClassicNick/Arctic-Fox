@@ -244,6 +244,8 @@ typedef mozilla::Variant<JSScript*, WasmModuleObject*> DebuggerScriptReferent;
 // denoting the synthesized source of a wasm module.
 typedef mozilla::Variant<ScriptSourceObject*, WasmModuleObject*> DebuggerSourceReferent;
 
+class DebuggerObject;
+
 class Debugger : private mozilla::LinkedListElement<Debugger>
 {
     friend class Breakpoint;
@@ -927,7 +929,8 @@ class Debugger : private mozilla::LinkedListElement<Debugger>
      * form { uninitialized: true }.
      */
     MOZ_MUST_USE bool wrapDebuggeeValue(JSContext* cx, MutableHandleValue vp);
-    MOZ_MUST_USE bool wrapDebuggeeObject(JSContext* cx, MutableHandleObject obj);
+    MOZ_MUST_USE bool wrapDebuggeeObject(JSContext* cx, HandleObject obj,
+                                         MutableHandle<DebuggerObject*> result);
 
     /*
      * Unwrap a Debug.Object, without rewrapping it for any particular debuggee
