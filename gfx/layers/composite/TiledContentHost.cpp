@@ -465,7 +465,7 @@ TiledContentHost::Composite(LayerComposite* aLayer,
                             float aOpacity,
                             const gfx::Matrix4x4& aTransform,
                             const gfx::Filter& aFilter,
-                            const gfx::Rect& aClipRect,
+                            const gfx::IntRect& aClipRect,
                             const nsIntRegion* aVisibleRegion /* = nullptr */)
 {
   MOZ_ASSERT(mCompositor);
@@ -525,7 +525,7 @@ TiledContentHost::RenderTile(TileHost& aTile,
                              float aOpacity,
                              const gfx::Matrix4x4& aTransform,
                              const gfx::Filter& aFilter,
-                             const gfx::Rect& aClipRect,
+                             const gfx::IntRect& aClipRect,
                              const nsIntRegion& aScreenRegion,
                              const IntPoint& aTextureOffset,
                              const IntSize& aTextureBounds,
@@ -588,7 +588,7 @@ TiledContentHost::RenderLayerBuffer(TiledLayerBufferComposite& aLayerBuffer,
                                     EffectChain& aEffectChain,
                                     float aOpacity,
                                     const gfx::Filter& aFilter,
-                                    const gfx::Rect& aClipRect,
+                                    const gfx::IntRect& aClipRect,
                                     nsIntRegion aVisibleRegion,
                                     gfx::Matrix4x4 aTransform)
 {
