@@ -43,9 +43,9 @@ public:
     Id();
 
     Id(const Id&) = default;
-    Id(Id&&) = default;
+    Id(Id&&) {};
     Id& operator=(const Id&) = default;
-    Id& operator=(Id&&) = default;
+    Id& operator=(Id&&) { return *this; };
 
     bool operator==(const Id& aOther);
     bool operator!=(const Id& aOther) { return !operator==(aOther); }
