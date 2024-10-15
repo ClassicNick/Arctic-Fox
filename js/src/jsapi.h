@@ -6141,6 +6141,8 @@ struct JS_PUBLIC_API(PerformanceGroup) {
     uint64_t refCount_;
 };
 
+using PerformanceGroupVector = mozilla::Vector<RefPtr<js::PerformanceGroup>, 0, SystemAllocPolicy>;
+
 /**
  * Commit any Performance Monitoring data.
  *
@@ -6199,12 +6201,12 @@ extern JS_PUBLIC_API(bool)
 SetStopwatchStartCallback(JSRuntime*, StopwatchStartCallback, void*);
 
 typedef bool
-(*StopwatchCommitCallback)(uint64_t, mozilla::Vector<RefPtr<PerformanceGroup>>&, void*);
+(*StopwatchCommitCallback)(uint64_t, PerformanceGroupVector&, void*);
 extern JS_PUBLIC_API(bool)
 SetStopwatchCommitCallback(JSRuntime*, StopwatchCommitCallback, void*);
 
 typedef bool
-(*GetGroupsCallback)(JSContext*, mozilla::Vector<RefPtr<PerformanceGroup>>&, void*);
+(*GetGroupsCallback)(JSContext*, PerformanceGroupVector&, void*);
 extern JS_PUBLIC_API(bool)
 SetGetPerformanceGroupsCallback(JSRuntime*, GetGroupsCallback, void*);
 
