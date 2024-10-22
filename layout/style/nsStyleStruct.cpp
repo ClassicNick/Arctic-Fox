@@ -2850,6 +2850,11 @@ nsStyleDisplay::nsStyleDisplay(StyleStructContext aContext)
   , mAnimationIterationCountCount(1)
 {
   MOZ_COUNT_CTOR(nsStyleDisplay);
+  mTransformOrigin[0].SetPercentValue(0.5f); // Transform is centered on origin
+  mTransformOrigin[1].SetPercentValue(0.5f);
+  mTransformOrigin[2].SetCoordValue(0);
+  mPerspectiveOrigin[0].SetPercentValue(0.5f);
+  mPerspectiveOrigin[1].SetPercentValue(0.5f);
 
   mTransformOrigin[0].SetPercentValue(0.5f); // Transform is centered on origin
   mTransformOrigin[1].SetPercentValue(0.5f);
