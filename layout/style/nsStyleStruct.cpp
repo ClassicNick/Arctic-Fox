@@ -3580,7 +3580,7 @@ nsStyleText::nsStyleText(StyleStructContext aContext)
   , mTextTransform(NS_STYLE_TEXT_TRANSFORM_NONE)
   , mWhiteSpace(NS_STYLE_WHITESPACE_NORMAL)
   , mWordBreak(NS_STYLE_WORDBREAK_NORMAL)
-  , mWordWrap(NS_STYLE_WORDWRAP_NORMAL)
+  , mOverflowWrap(NS_STYLE_OVERFLOWWRAP_NORMAL)
   , mHyphens(NS_STYLE_HYPHENS_MANUAL)
   , mRubyAlign(NS_STYLE_RUBY_ALIGN_SPACE_AROUND)
   , mRubyPosition(NS_STYLE_RUBY_POSITION_OVER)
@@ -3619,7 +3619,7 @@ nsStyleText::nsStyleText(const nsStyleText& aSource)
   , mTextTransform(aSource.mTextTransform)
   , mWhiteSpace(aSource.mWhiteSpace)
   , mWordBreak(aSource.mWordBreak)
-  , mWordWrap(aSource.mWordWrap)
+  , mOverflowWrap(aSource.mOverflowWrap)
   , mHyphens(aSource.mHyphens)
   , mRubyAlign(aSource.mRubyAlign)
   , mRubyPosition(aSource.mRubyPosition)
@@ -3670,7 +3670,7 @@ nsStyleText::CalcDifference(const nsStyleText& aOther) const
       (mTextTransform != aOther.mTextTransform) ||
       (mWhiteSpace != aOther.mWhiteSpace) ||
       (mWordBreak != aOther.mWordBreak) ||
-      (mWordWrap != aOther.mWordWrap) ||
+      (mOverflowWrap != aOther.mOverflowWrap) ||
       (mHyphens != aOther.mHyphens) ||
       (mRubyAlign != aOther.mRubyAlign) ||
       (mRubyPosition != aOther.mRubyPosition) ||
