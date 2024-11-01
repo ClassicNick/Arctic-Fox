@@ -455,5 +455,5 @@ Assembler::UpdateBoundsCheck(uint32_t heapSize, Instruction* inst)
     InstImm* i1 = (InstImm*) i0->next();
 
     // Replace with new value
-    Assembler::UpdateLuiOriValue(i0, i1, heapSize);
+    Assembler::UpdateLuiOriValue(i0, i1, heapLength);
 }
