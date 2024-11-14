@@ -18,23 +18,6 @@
 #  include "mozilla/throw_msvc.h"
 #endif
 
-#if defined (_MSC_VER) && _MSC_VER <= 1800
-// Code might include <new> before other wrapped headers, but <new>
-// includes <exception> and so we want to wrap it.  But mozalloc.h
-// wants <new> also, so we break the cycle by always explicitly
-// including <new> here.
-#include <${NEW_HEADER_PATH}>
-
-// See if we're in code that can use mozalloc.  NB: this duplicates
-// code in nscore.h because nscore.h pulls in prtypes.h, and chromium
-// can't build with that being included before base/basictypes.h.
-#if !defined(XPCOM_GLUE) && !defined(NS_NO_XPCOM) && !defined(MOZ_NO_MOZALLOC)
-#  include "mozilla/mozalloc.h"
-#else
-#  error "STL code can only be used with infallible ::operator new()"
-#endif
-#endif
-
 #ifdef _DEBUG
 // From
 //   http://msdn.microsoft.com/en-us/library/aa985982%28VS.80%29.aspx
