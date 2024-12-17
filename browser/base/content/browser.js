@@ -7638,8 +7638,6 @@ function switchToTabHavingURI(aURI, aOpenNew, aOpenParams={}) {
         aWindow.focus();
         if (ignoreFragment) {
           let spec = aURI.spec;
-          if (!aURI.ref)
-            spec += "#";
           browser.loadURI(spec);
         }
         aWindow.gBrowser.tabContainer.selectedIndex = i;
