@@ -1260,7 +1260,8 @@ var gBrowserInit = {
 
     BrowserOffline.init();
     IndexedDBPromptHelper.init();
-    gRemoteTabsUI.init();
+    if (AppConstants.E10S_TESTING_ONLY)
+      gRemoteTabsUI.init();
 
     // Ensure login manager is up and running.
     Services.logins;
