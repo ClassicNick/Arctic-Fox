@@ -3278,6 +3278,7 @@ function getPEMString(cert)
 var PrintPreviewListener = {
   _printPreviewTab: null,
   _tabBeforePrintPreview: null,
+  _simplifyPageTab: null,
 
   getPrintPreviewBrowser: function () {
     if (!this._printPreviewTab) {
@@ -3291,9 +3292,18 @@ var PrintPreviewListener = {
     }
     return gBrowser.getBrowserForTab(this._printPreviewTab);
   },
+  createSimplifiedBrowser: function () {
+    this._simplifyPageTab = gBrowser.loadOneTab("about:blank",
+                                                { inBackground: true });
+    return this.getSimplifiedSourceBrowser();
+  },
   getSourceBrowser: function () {
     return this._tabBeforePrintPreview ?
       this._tabBeforePrintPreview.linkedBrowser : gBrowser.selectedBrowser;
+  },
+  getSimplifiedSourceBrowser: function () {
+    return this._simplifyPageTab ?
+      gBrowser.getBrowserForTab(this._simplifyPageTab) : null;
   },
   getNavToolbox: function () {
     return gNavToolbox;
@@ -3312,6 +3322,10 @@ var PrintPreviewListener = {
     this._tabBeforePrintPreview = null;
     gInPrintPreviewMode = false;
     this._toggleAffectedChrome();
+    if (this._simplifyPageTab) {
+      gBrowser.removeTab(this._simplifyPageTab);
+      this._simplifyPageTab = null;
+    }
     gBrowser.removeTab(this._printPreviewTab);
     this._printPreviewTab = null;
   },
