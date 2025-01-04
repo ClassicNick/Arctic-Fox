@@ -143,7 +143,6 @@ elif CONFIG['MOZ_WIDGET_TOOLKIT'] == 'qt':
     EXPORTS += [
         'gfxFontconfigFonts.h',
         'gfxFT2FontBase.h',
-        'gfxQPainterSurface.h',
         'gfxQtNativeRenderer.h',
         'gfxQtPlatform.h',
     ]
@@ -155,7 +154,6 @@ elif CONFIG['MOZ_WIDGET_TOOLKIT'] == 'qt':
         'gfxFontconfigUtils.cpp',
         'gfxFT2FontBase.cpp',
         'gfxFT2Utils.cpp',
-        'gfxQPainterSurface.cpp',
         'gfxQtPlatform.cpp',
         'PrintTargetPDF.cpp',
     ]
