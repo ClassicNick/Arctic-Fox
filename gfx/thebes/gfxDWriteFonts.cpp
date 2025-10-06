@@ -216,6 +216,7 @@ gfxDWriteFont::ComputeMetrics(AntialiasOption anAAOption)
     mFUnitsConvFactor = float(mAdjustedSize / fontMetrics.designUnitsPerEm);
 
     mMetrics->xHeight = fontMetrics.xHeight * mFUnitsConvFactor;
+    mMetrics->capHeight = fontMetrics.capHeight * mFUnitsConvFactor;
 
     mMetrics->maxAscent = ceil(fontMetrics.ascent * mFUnitsConvFactor);
     mMetrics->maxDescent = ceil(fontMetrics.descent * mFUnitsConvFactor);
@@ -311,8 +312,9 @@ gfxDWriteFont::ComputeMetrics(AntialiasOption anAAOption)
     printf("    emHeight: %f emAscent: %f emDescent: %f\n", mMetrics->emHeight, mMetrics->emAscent, mMetrics->emDescent);
     printf("    maxAscent: %f maxDescent: %f maxAdvance: %f\n", mMetrics->maxAscent, mMetrics->maxDescent, mMetrics->maxAdvance);
     printf("    internalLeading: %f externalLeading: %f\n", mMetrics->internalLeading, mMetrics->externalLeading);
-    printf("    spaceWidth: %f aveCharWidth: %f zeroOrAve: %f xHeight: %f\n",
-           mMetrics->spaceWidth, mMetrics->aveCharWidth, mMetrics->zeroOrAveCharWidth, mMetrics->xHeight);
+    printf("    spaceWidth: %f aveCharWidth: %f zeroOrAve: %f\n",
+           mMetrics->spaceWidth, mMetrics->aveCharWidth, mMetrics->zeroOrAveCharWidth);
+    printf("    xHeight: %f capHeight: %f\n", mMetrics->xHeight, mMetrics->capHeight);
     printf("    uOff: %f uSize: %f stOff: %f stSize: %f\n",
            mMetrics->underlineOffset, mMetrics->underlineSize, mMetrics->strikeoutOffset, mMetrics->strikeoutSize);
 #endif
@@ -546,8 +548,6 @@ gfxDWriteFont::GetCairoScaledFont()
         cairo_dwrite_scaled_font_allow_manual_show_glyphs(mScaledFont,
                                                           mAllowManualShowGlyphs);
 
-        gfxDWriteFontEntry *fe =
-            static_cast<gfxDWriteFontEntry*>(mFontEntry.get());
         cairo_dwrite_scaled_font_set_force_GDI_classic(mScaledFont,
                                                        GetForceGDIClassic());
     }
@@ -561,7 +561,7 @@ gfxDWriteFont::GetCairoScaledFont()
 }
 
 gfxFont::RunMetrics
-gfxDWriteFont::Measure(gfxTextRun* aTextRun,
+gfxDWriteFont::Measure(const gfxTextRun* aTextRun,
                        uint32_t aStart, uint32_t aEnd,
                        BoundingBoxType aBoundingBoxType,
                        DrawTarget* aRefDrawTarget,
@@ -599,7 +599,7 @@ int32_t
 gfxDWriteFont::GetGlyphWidth(DrawTarget& aDrawTarget, uint16_t aGID)
 {
     if (!mGlyphWidths) {
-        mGlyphWidths = new nsDataHashtable<nsUint32HashKey,int32_t>(128);
+        mGlyphWidths = MakeUnique<nsDataHashtable<nsUint32HashKey,int32_t>>(128);
     }
 
     int32_t width = -1;

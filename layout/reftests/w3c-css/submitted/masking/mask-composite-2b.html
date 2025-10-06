@@ -17,8 +17,8 @@
         width: 100px;
         height: 100px;
         top:10px;
-        mask-image: url(blue-100x50-transparent-100X50.png),
-                    url(transparent-100x50-blue-100X50.png);
+        mask-image: url(support/blue-100x50-transparent-100x50.png),
+                    url(support/transparent-100x50-blue-100x50.png);
       }
 
       div.add {
@@ -26,9 +26,9 @@
         mask-composite: add;
       }
 
-      div.substract {
+      div.subtract {
         left: 120px;
-        mask-composite: substract;
+        mask-composite: subtract;
       }
 
       div.intersect {
@@ -44,7 +44,7 @@
   </head>
   <body>
     <div class="add"></div>
-    <div class="substract"></div>
+    <div class="subtract"></div>
     <div class="intersect"></div>
     <div class="exclude"></div>
   </body>

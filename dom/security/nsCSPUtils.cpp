@@ -4,6 +4,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "nsAttrValue.h"
+#include "nsCharSeparatedTokenizer.h"
+#include "nsContentUtils.h"
 #include "nsCSPUtils.h"
 #include "nsDebug.h"
 #include "nsIConsoleService.h"
@@ -13,6 +16,7 @@
 #include "nsIStringBundle.h"
 #include "nsIURL.h"
 #include "nsReadableUtils.h"
+#include "nsSandboxFlags.h"
 
 #define DEFAULT_PORT -1
 
@@ -165,6 +169,7 @@ CSP_ContentTypeToDirective(nsContentPolicyType aType)
     case nsIContentPolicy::TYPE_WEBSOCKET:
     case nsIContentPolicy::TYPE_XMLHTTPREQUEST:
     case nsIContentPolicy::TYPE_BEACON:
+    case nsIContentPolicy::TYPE_PING:
     case nsIContentPolicy::TYPE_FETCH:
       return nsIContentSecurityPolicy::CONNECT_SRC_DIRECTIVE;
 
@@ -173,7 +178,6 @@ CSP_ContentTypeToDirective(nsContentPolicyType aType)
       return nsIContentSecurityPolicy::OBJECT_SRC_DIRECTIVE;
 
     case nsIContentPolicy::TYPE_XBL:
-    case nsIContentPolicy::TYPE_PING:
     case nsIContentPolicy::TYPE_DTD:
     case nsIContentPolicy::TYPE_OTHER:
       return nsIContentSecurityPolicy::DEFAULT_SRC_DIRECTIVE;
@@ -315,6 +319,39 @@ permitsScheme(const nsAString& aEnforcementScheme,
            (scheme.EqualsASCII("ws") && aEnforcementScheme.EqualsASCII("wss"))));
 }
 
+/*
+ * A helper function for appending a CSP header to an existing CSP
+ * policy.
+ *
+ * @param aCsp           the CSP policy
+ * @param aHeaderValue   the header
+ * @param aReportOnly    is this a report-only header?
+ */
+
+nsresult
+CSP_AppendCSPFromHeader(nsIContentSecurityPolicy* aCsp,
+                        const nsAString& aHeaderValue,
+                        bool aReportOnly)
+{
+  NS_ENSURE_ARG(aCsp);
+
+  // Need to tokenize the header value since multiple headers could be
+  // concatenated into one comma-separated list of policies.
+  // See RFC2616 section 4.2 (last paragraph)
+  nsresult rv = NS_OK;
+  nsCharSeparatedTokenizer tokenizer(aHeaderValue, ',');
+  while (tokenizer.hasMoreTokens()) {
+    const nsSubstring& policy = tokenizer.nextToken();
+    rv = aCsp->AppendPolicy(policy, aReportOnly, false);
+    NS_ENSURE_SUCCESS(rv, rv);
+    {
+      CSPUTILSLOG(("CSP refined with policy: \"%s\"",
+                   NS_ConvertUTF16toUTF8(policy).get()));
+    }
+  }
+  return NS_OK;
+}
+
 /* ===== nsCSPSrc ============================ */
 
 nsCSPBaseSrc::nsCSPBaseSrc()
@@ -377,6 +414,12 @@ nsCSPSchemeSrc::permits(nsIURI* aUri, const nsAString& aNonce, bool aWasRedirect
   return permitsScheme(mScheme, aUri, aReportOnly, aUpgradeInsecure);
 }
 
+bool
+nsCSPSchemeSrc::visit(nsCSPSrcVisitor* aVisitor) const
+{
+  return aVisitor->visitSchemeSrc(*this);
+}
+
 void
 nsCSPSchemeSrc::toString(nsAString& outStr) const
 {
@@ -431,7 +474,7 @@ permitsPort(const nsAString& aEnforcementScheme,
   // By now we know at that either the resourcePort does not use the default
   // port or there is a port restriction to be enforced. A port value of -1
   // corresponds to the protocol's default port (eg. -1 implies port 80 for
-  // HTTP URIs), in such a case we have to query the default port of the
+  // http URIs), in such a case we have to query the default port of the
   // resource to be loaded.
   if (resourcePort == DEFAULT_PORT) {
     nsAutoCString resourceScheme;
@@ -451,7 +494,7 @@ permitsPort(const nsAString& aEnforcementScheme,
   // If there is no port to be enforced, query the default port for the load.
   nsString enforcementPort(aEnforcementPort);
   if (enforcementPort.IsEmpty()) {
-    // For schemeless sources, our parser always generates a scheme
+    // For scheme less sources, our parser always generates a scheme
     // which is the scheme of the protected resource.
     MOZ_ASSERT(!aEnforcementScheme.IsEmpty(),
                "need a scheme to query default port");
@@ -468,8 +511,8 @@ permitsPort(const nsAString& aEnforcementScheme,
 
   // Additional port matching where the regular URL matching algorithm
   // treats insecure ports as matching their secure variants.
-  // default port for HTTP is  :80
-  // default port for HTTPS is :443
+  // default port for http is  :80
+  // default port for https is :443
   if (enforcementPort.EqualsLiteral("80") &&
       resourcePortStr.EqualsLiteral("443")) {
     return true;
@@ -585,6 +628,12 @@ nsCSPHostSrc::permits(nsIURI* aUri, const nsAString& aNonce, bool aWasRedirected
   return true;
 }
 
+bool
+nsCSPHostSrc::visit(nsCSPSrcVisitor* aVisitor) const
+{
+  return aVisitor->visitHostSrc(*this);
+}
+
 void
 nsCSPHostSrc::toString(nsAString& outStr) const
 {
@@ -662,6 +711,12 @@ nsCSPKeywordSrc::allows(enum CSPKeyword aKeyword, const nsAString& aHashOrNonce)
   return mKeyword == aKeyword;
 }
 
+bool
+nsCSPKeywordSrc::visit(nsCSPSrcVisitor* aVisitor) const
+{
+  return aVisitor->visitKeywordSrc(*this);
+}
+
 void
 nsCSPKeywordSrc::toString(nsAString& outStr) const
 {
@@ -716,6 +771,12 @@ nsCSPNonceSrc::allows(enum CSPKeyword aKeyword, const nsAString& aHashOrNonce) c
     return false;
   }
   return mNonce.Equals(aHashOrNonce);
+}
+
+bool
+nsCSPNonceSrc::visit(nsCSPSrcVisitor* aVisitor) const
+{
+  return aVisitor->visitNonceSrc(*this);
 }
 
 void
@@ -775,6 +836,12 @@ nsCSPHashSrc::allows(enum CSPKeyword aKeyword, const nsAString& aHashOrNonce) co
   return NS_ConvertUTF16toUTF8(mHash).Equals(hash);
 }
 
+bool
+nsCSPHashSrc::visit(nsCSPSrcVisitor* aVisitor) const
+{
+  return aVisitor->visitHashSrc(*this);
+}
+
 void
 nsCSPHashSrc::toString(nsAString& outStr) const
 {
@@ -796,6 +863,12 @@ nsCSPReportURI::~nsCSPReportURI()
 {
 }
 
+bool
+nsCSPReportURI::visit(nsCSPSrcVisitor* aVisitor) const
+{
+  return false;
+}
+
 void
 nsCSPReportURI::toString(nsAString& outStr) const
 {
@@ -805,6 +878,30 @@ nsCSPReportURI::toString(nsAString& outStr) const
     return;
   }
   outStr.AppendASCII(spec.get());
+}
+
+/* ===== nsCSPSandboxFlags ===================== */
+
+nsCSPSandboxFlags::nsCSPSandboxFlags(const nsAString& aFlags)
+  : mFlags(aFlags)
+{
+  ToLowerCase(mFlags);
+}
+
+nsCSPSandboxFlags::~nsCSPSandboxFlags()
+{
+}
+
+bool
+nsCSPSandboxFlags::visit(nsCSPSrcVisitor* aVisitor) const
+{
+  return false;
+}
+
+void
+nsCSPSandboxFlags::toString(nsAString& outStr) const
+{
+  outStr.Append(mFlags);
 }
 
 /* ===== nsCSPDirective ====================== */
@@ -953,6 +1050,11 @@ nsCSPDirective::toDomCSPStruct(mozilla::dom::CSP& outCSP) const
       outCSP.mForm_action.Value() = mozilla::Move(srcs);
       return;
 
+    case nsIContentSecurityPolicy::BLOCK_ALL_MIXED_CONTENT:
+      outCSP.mBlock_all_mixed_content.Construct();
+      // does not have any srcs
+      return;
+
     case nsIContentSecurityPolicy::UPGRADE_IF_INSECURE_DIRECTIVE:
       outCSP.mUpgrade_insecure_requests.Construct();
       // does not have any srcs
@@ -963,7 +1065,12 @@ nsCSPDirective::toDomCSPStruct(mozilla::dom::CSP& outCSP) const
       outCSP.mChild_src.Value() = mozilla::Move(srcs);
       return;
 
-    // REFERRER_DIRECTIVE is handled in nsCSPPolicy::toDomCSPStruct()
+    case nsIContentSecurityPolicy::SANDBOX_DIRECTIVE:
+      outCSP.mSandbox.Construct();
+      outCSP.mSandbox.Value() = mozilla::Move(srcs);
+      return;
+
+    // REFERRER_DIRECTIVE and REQUIRE_SRI_FOR are handled in nsCSPPolicy::toDomCSPStruct()
 
     default:
       NS_ASSERTION(false, "cannot find directive to convert CSP to JSON");
@@ -993,6 +1100,17 @@ nsCSPDirective::getReportURIs(nsTArray<nsString> &outReportURIs) const
     mSrcs[i]->toString(tmpReportURI);
     outReportURIs.AppendElement(tmpReportURI);
   }
+}
+
+bool
+nsCSPDirective::visitSrcs(nsCSPSrcVisitor* aVisitor) const
+{
+  for (uint32_t i = 0; i < mSrcs.Length(); i++) {
+    if (!mSrcs[i]->visit(aVisitor)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 bool nsCSPDirective::equals(CSPDirective aDirective) const
@@ -1038,6 +1156,24 @@ bool nsCSPChildSrcDirective::equals(CSPDirective aDirective) const
   return (aDirective == nsIContentSecurityPolicy::CHILD_SRC_DIRECTIVE);
 }
 
+/* =============== nsBlockAllMixedContentDirective ============= */
+
+nsBlockAllMixedContentDirective::nsBlockAllMixedContentDirective(CSPDirective aDirective)
+: nsCSPDirective(aDirective)
+{
+}
+
+nsBlockAllMixedContentDirective::~nsBlockAllMixedContentDirective()
+{
+}
+
+void
+nsBlockAllMixedContentDirective::toString(nsAString& outStr) const
+{
+  outStr.AppendASCII(CSP_CSPDirectiveToString(
+    nsIContentSecurityPolicy::BLOCK_ALL_MIXED_CONTENT));
+}
+
 /* =============== nsUpgradeInsecureDirective ============= */
 
 nsUpgradeInsecureDirective::nsUpgradeInsecureDirective(CSPDirective aDirective)
@@ -1054,6 +1190,56 @@ nsUpgradeInsecureDirective::toString(nsAString& outStr) const
 {
   outStr.AppendASCII(CSP_CSPDirectiveToString(
     nsIContentSecurityPolicy::UPGRADE_IF_INSECURE_DIRECTIVE));
+}
+
+/* ===== nsRequireSRIForDirective ========================= */
+
+nsRequireSRIForDirective::nsRequireSRIForDirective(CSPDirective aDirective)
+: nsCSPDirective(aDirective)
+{
+}
+
+nsRequireSRIForDirective::~nsRequireSRIForDirective()
+{
+}
+
+void
+nsRequireSRIForDirective::toString(nsAString &outStr) const
+{
+  outStr.AppendASCII(CSP_CSPDirectiveToString(
+    nsIContentSecurityPolicy::REQUIRE_SRI_FOR));
+  for (uint32_t i = 0; i < mTypes.Length(); i++) {
+    if (mTypes[i] == nsIContentPolicy::TYPE_SCRIPT) {
+      outStr.AppendASCII(" script");
+    }
+    else if (mTypes[i] == nsIContentPolicy::TYPE_STYLESHEET) {
+      outStr.AppendASCII(" style");
+    }
+  }
+}
+
+bool
+nsRequireSRIForDirective::hasType(nsContentPolicyType aType) const
+{
+  for (uint32_t i = 0; i < mTypes.Length(); i++) {
+    if (mTypes[i] == aType) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool
+nsRequireSRIForDirective::restrictsContentType(const nsContentPolicyType aType) const
+{
+  return this->hasType(aType);
+}
+
+bool
+nsRequireSRIForDirective::allows(enum CSPKeyword aKeyword, const nsAString& aHashOrNonce) const
+{
+  // can only disallow CSP_REQUIRE_SRI_FOR.
+  return (aKeyword != CSP_REQUIRE_SRI_FOR);
 }
 
 /* ===== nsCSPPolicy ========================= */
@@ -1099,6 +1285,7 @@ nsCSPPolicy::permits(CSPDirective aDir,
   }
 
   NS_ASSERTION(aUri, "permits needs an uri to perform the check!");
+  outViolatedDirective.Truncate();
 
   nsCSPDirective* defaultDir = nullptr;
 
@@ -1274,6 +1461,33 @@ nsCSPPolicy::getDirectiveAsString(CSPDirective aDir, nsAString& outDirective) co
   }
 }
 
+/*
+ * Helper function that returns the underlying bit representation of sandbox
+ * flags. The function returns SANDBOXED_NONE if there are no sandbox
+ * directives.
+ */
+uint32_t
+nsCSPPolicy::getSandboxFlags() const
+{
+  for (uint32_t i = 0; i < mDirectives.Length(); i++) {
+    if (mDirectives[i]->equals(nsIContentSecurityPolicy::SANDBOX_DIRECTIVE)) {
+      nsAutoString flags;
+      mDirectives[i]->toString(flags);
+
+      if (flags.IsEmpty()) {
+        return SANDBOX_ALL_FLAGS;
+      }
+
+      nsAttrValue attr;
+      attr.ParseAtomArray(flags);
+
+      return nsContentUtils::ParseSandboxAttributeToFlags(&attr);
+    }
+  }
+
+  return SANDBOXED_NONE;
+}
+
 void
 nsCSPPolicy::getReportURIs(nsTArray<nsString>& outReportURIs) const
 {
@@ -1283,4 +1497,26 @@ nsCSPPolicy::getReportURIs(nsTArray<nsString>& outReportURIs) const
       return;
     }
   }
+}
+
+bool
+nsCSPPolicy::visitDirectiveSrcs(CSPDirective aDir, nsCSPSrcVisitor* aVisitor) const
+{
+  for (uint32_t i = 0; i < mDirectives.Length(); i++) {
+    if (mDirectives[i]->equals(aDir)) {
+      return mDirectives[i]->visitSrcs(aVisitor);
+    }
+  }
+  return false;
+}
+
+bool
+nsCSPPolicy::requireSRIForType(nsContentPolicyType aContentType)
+{
+  for (uint32_t i = 0; i < mDirectives.Length(); i++) {
+    if (mDirectives[i]->equals(nsIContentSecurityPolicy::REQUIRE_SRI_FOR)) {
+      return static_cast<nsRequireSRIForDirective*>(mDirectives[i])->hasType(aContentType);
+    }
+  }
+  return false;
 }

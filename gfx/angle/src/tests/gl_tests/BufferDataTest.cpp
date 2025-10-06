@@ -102,7 +102,7 @@ TEST_P(BufferDataTest, NULLData)
             for (int k = 0; k < bufferSize - j; k++)
             {
                 glBufferSubData(GL_ARRAY_BUFFER, k, j, NULL);
-                EXPECT_GL_NO_ERROR();
+                ASSERT_GL_NO_ERROR();
             }
         }
     }
@@ -207,6 +207,31 @@ TEST_P(BufferDataTest, DISABLED_HugeSetDataShouldNotCrash)
     delete[] data;
 }
 
+// Internally in D3D, we promote dynamic data to static after many draw loops. This code tests
+// path.
+TEST_P(BufferDataTest, RepeatedDrawWithDynamic)
+{
+    std::vector<GLfloat> data;
+    for (int i = 0; i < 16; ++i)
+    {
+        data.push_back(static_cast<GLfloat>(i));
+    }
+
+    glUseProgram(mProgram);
+    glBindBuffer(GL_ARRAY_BUFFER, mBuffer);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(GLfloat) * data.size(), data.data(), GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(mAttribLocation, 1, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glEnableVertexAttribArray(mAttribLocation);
+
+    for (int drawCount = 0; drawCount < 40; ++drawCount)
+    {
+        drawQuad(mProgram, "position", 0.5f);
+    }
+
+    EXPECT_GL_NO_ERROR();
+}
+
 class IndexedBufferCopyTest : public ANGLETest
 {
   protected:
@@ -287,6 +312,13 @@ class IndexedBufferCopyTest : public ANGLETest
 // https://code.google.com/p/angleproject/issues/detail?id=709
 TEST_P(IndexedBufferCopyTest, IndexRangeBug)
 {
+    // TODO(geofflang): Figure out why this fails on AMD OpenGL (http://anglebug.com/1291)
+    if (IsAMD() && getPlatformRenderer() == EGL_PLATFORM_ANGLE_TYPE_OPENGL_ANGLE)
+    {
+        std::cout << "Test disabled on AMD OpenGL." << std::endl;
+        return;
+    }
+
     unsigned char vertexData[] = { 255, 0, 0, 0, 0, 0 };
     unsigned int indexData[] = { 0, 1 };
 
@@ -401,9 +433,9 @@ TEST_P(BufferDataTestES3, BufferResizing)
 }
 
 // Use this to select which configurations (e.g. which renderer, which GLES major version) these tests should be run against.
-ANGLE_INSTANTIATE_TEST(BufferDataTest, ES2_D3D9(), ES2_D3D11(), ES2_OPENGL());
-ANGLE_INSTANTIATE_TEST(BufferDataTestES3, ES3_D3D11());
-ANGLE_INSTANTIATE_TEST(IndexedBufferCopyTest, ES3_D3D11());
+ANGLE_INSTANTIATE_TEST(BufferDataTest, ES2_D3D9(), ES2_D3D11(), ES2_OPENGL(), ES2_OPENGLES());
+ANGLE_INSTANTIATE_TEST(BufferDataTestES3, ES3_D3D11(), ES3_OPENGL(), ES3_OPENGLES());
+ANGLE_INSTANTIATE_TEST(IndexedBufferCopyTest, ES3_D3D11(), ES3_OPENGL(), ES3_OPENGLES());
 
 #ifdef _WIN64
 

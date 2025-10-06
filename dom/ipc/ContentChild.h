@@ -12,6 +12,7 @@
 #include "mozilla/dom/nsIContentChild.h"
 #include "mozilla/dom/PBrowserOrId.h"
 #include "mozilla/dom/PContentChild.h"
+#include "nsAutoPtr.h"
 #include "nsHashKeys.h"
 #include "nsIObserver.h"
 #include "nsTHashtable.h"
@@ -34,10 +35,6 @@ class OptionalURIParams;
 class PFileDescriptorSetChild;
 class URIParams;
 }// namespace ipc
-
-namespace layers {
-class PCompositorChild;
-} // namespace layers
 
 namespace dom {
 
@@ -144,30 +141,20 @@ public:
   AllocPGMPServiceChild(mozilla::ipc::Transport* transport,
                         base::ProcessId otherProcess) override;
 
-  PAPZChild*
-  AllocPAPZChild(const TabId& aTabId) override;
   bool
-  DeallocPAPZChild(PAPZChild* aActor) override;
-
-  PCompositorChild*
-  AllocPCompositorChild(mozilla::ipc::Transport* aTransport,
-                        base::ProcessId aOtherProcess) override;
+  RecvInitCompositor(Endpoint<PCompositorBridgeChild>&& aEndpoint) override;
+  bool
+  RecvInitImageBridge(Endpoint<PImageBridgeChild>&& aEndpoint) override;
+  bool
+  RecvInitVRManager(Endpoint<PVRManagerChild>&& aEndpoint) override;
 
   PSharedBufferManagerChild*
   AllocPSharedBufferManagerChild(mozilla::ipc::Transport* aTransport,
                                   base::ProcessId aOtherProcess) override;
 
-  PImageBridgeChild*
-  AllocPImageBridgeChild(mozilla::ipc::Transport* aTransport,
-                         base::ProcessId aOtherProcess) override;
-
   PProcessHangMonitorChild*
   AllocPProcessHangMonitorChild(Transport* aTransport,
                                 ProcessId aOtherProcess) override;
-
-  PVRManagerChild*
-  AllocPVRManagerChild(Transport* aTransport,
-                       ProcessId aOtherProcess) override;
 
   virtual bool RecvSetProcessSandbox(const MaybeFileDesc& aBroker) override;
 
@@ -180,8 +167,7 @@ public:
                                             const uint32_t& aChromeFlags,
                                             const ContentParentId& aCpID,
                                             const bool& aIsForApp,
-                                            const bool& aIsForBrowser)
-                                            override;
+                                            const bool& aIsForBrowser) override;
 
   virtual bool DeallocPBrowserChild(PBrowserChild*) override;
 
@@ -190,12 +176,6 @@ public:
 
   virtual bool
   DeallocPDeviceStorageRequestChild(PDeviceStorageRequestChild*) override;
-
-  virtual PFileSystemRequestChild*
-  AllocPFileSystemRequestChild(const FileSystemParams&) override;
-
-  virtual bool
-  DeallocPFileSystemRequestChild(PFileSystemRequestChild*) override;
 
   virtual PBlobChild*
   AllocPBlobChild(const BlobConstructorParams& aParams) override;
@@ -267,10 +247,6 @@ public:
   virtual bool
   DeallocPWebBrowserPersistDocumentChild(PWebBrowserPersistDocumentChild* aActor) override;
 
-  virtual bool
-  RecvDataStoreNotify(const uint32_t& aAppId, const nsString& aName,
-                      const nsString& aManifestURL) override;
-
   virtual PTestShellChild* AllocPTestShellChild() override;
 
   virtual bool DeallocPTestShellChild(PTestShellChild*) override;
@@ -296,6 +272,9 @@ public:
   virtual PPrintingChild* AllocPPrintingChild() override;
 
   virtual bool DeallocPPrintingChild(PPrintingChild*) override;
+
+  virtual PSendStreamChild* AllocPSendStreamChild() override;
+  virtual bool DeallocPSendStreamChild(PSendStreamChild*) override;
 
   virtual PScreenManagerChild*
   AllocPScreenManagerChild(uint32_t* aNumberOfScreens,
@@ -368,6 +347,12 @@ public:
 
   virtual bool DeallocPPresentationChild(PPresentationChild* aActor) override;
 
+  virtual PFlyWebPublishedServerChild*
+    AllocPFlyWebPublishedServerChild(const nsString& name,
+                                     const FlyWebPublishOptions& params) override;
+
+  virtual bool DeallocPFlyWebPublishedServerChild(PFlyWebPublishedServerChild* aActor) override;
+
   virtual bool
   RecvNotifyPresentationReceiverLaunched(PBrowserChild* aIframe,
                                          const nsString& aSessionId) override;
@@ -376,6 +361,8 @@ public:
   RecvNotifyPresentationReceiverCleanUp(const nsString& aSessionId) override;
 
   virtual bool RecvNotifyGMPsChanged() override;
+
+  virtual bool RecvNotifyEmptyHTTPCache() override;
 
   virtual PSpeechSynthesisChild* AllocPSpeechSynthesisChild() override;
 
@@ -387,6 +374,9 @@ public:
                                   const nsCString& locale,
                                   const bool& reset) override;
   virtual bool RecvRegisterChromeItem(const ChromeRegistryItem& item) override;
+
+  virtual bool RecvClearImageCache(const bool& privateLoader,
+                                   const bool& chrome) override;
 
   virtual mozilla::jsipc::PJavaScriptChild* AllocPJavaScriptChild() override;
 
@@ -400,9 +390,12 @@ public:
 
   virtual bool RecvSetConnectivity(const bool& connectivity) override;
 
+  virtual bool RecvNotifyLayerAllocated(const dom::TabId& aTabId, const uint64_t& aLayersId) override;
+
   virtual bool RecvSpeakerManagerNotify() override;
 
-  virtual bool RecvBidiKeyboardNotify(const bool& isLangRTL) override;
+  virtual bool RecvBidiKeyboardNotify(const bool& isLangRTL,
+                                      const bool& haveBidiKeyboards) override;
 
   virtual bool RecvNotifyVisited(const URIParams& aURI) override;
 
@@ -413,6 +406,7 @@ public:
                                          const uint32_t& aMemoryAvailable) override;
 
   virtual bool RecvPreferenceUpdate(const PrefSetting& aPref) override;
+  virtual bool RecvVarUpdate(const GfxVarUpdate& pref) override;
 
   virtual bool RecvDataStoragePut(const nsString& aFilename,
                                   const DataStorageItem& aItem) override;
@@ -429,9 +423,9 @@ public:
   virtual bool RecvLoadProcessScript(const nsString& aURL) override;
 
   virtual bool RecvAsyncMessage(const nsString& aMsg,
-                                const ClonedMessageData& aData,
                                 InfallibleTArray<CpowEntry>&& aCpows,
-                                const IPC::Principal& aPrincipal) override;
+                                const IPC::Principal& aPrincipal,
+                                const ClonedMessageData& aData) override;
 
   virtual bool RecvGeolocationUpdate(const GeoPosition& somewhere) override;
 
@@ -440,8 +434,6 @@ public:
   virtual bool RecvUpdateDictionaryList(InfallibleTArray<nsString>&& aDictionaries) override;
 
   virtual bool RecvAddPermission(const IPC::Permission& permission) override;
-
-  virtual bool RecvScreenSizeChanged(const gfx::IntSize &size) override;
 
   virtual bool RecvFlushMemory(const nsString& reason) override;
 
@@ -455,6 +447,12 @@ public:
                            const nsCString& ID, const nsCString& vendor) override;
 
   virtual bool RecvAppInit() override;
+
+  virtual bool
+  RecvInitServiceWorkers(const ServiceWorkerConfiguration& aConfig) override;
+
+  virtual bool
+  RecvInitBlobURLs(nsTArray<BlobURLRegistrationData>&& aRegistations) override;
 
   virtual bool RecvLastPrivateDocShellDestroyed() override;
 
@@ -529,24 +527,31 @@ public:
                         const uint32_t& aAction) override;
 
   virtual bool RecvEndDragSession(const bool& aDoneDrag,
-                                  const bool& aUserCancelled) override;
+                                  const bool& aUserCancelled,
+                                  const mozilla::LayoutDeviceIntPoint& aEndDragPoint) override;
 
   virtual bool
   RecvPush(const nsCString& aScope,
-           const IPC::Principal& aPrincipal) override;
+           const IPC::Principal& aPrincipal,
+           const nsString& aMessageId) override;
 
   virtual bool
   RecvPushWithData(const nsCString& aScope,
                    const IPC::Principal& aPrincipal,
+                   const nsString& aMessageId,
                    InfallibleTArray<uint8_t>&& aData) override;
 
   virtual bool
   RecvPushSubscriptionChange(const nsCString& aScope,
                              const IPC::Principal& aPrincipal) override;
 
-#ifdef ANDROID
-  gfx::IntSize GetScreenSize() { return mScreenSize; }
-#endif
+  virtual bool
+  RecvPushError(const nsCString& aScope, const IPC::Principal& aPrincipal,
+                const nsString& aMessage, const uint32_t& aFlags) override;
+
+  virtual bool
+  RecvNotifyPushSubscriptionModifiedObservers(const nsCString& aScope,
+                                              const IPC::Principal& aPrincipal) override;
 
   // Get the directory for IndexedDB files. We query the parent for this and
   // cache the value
@@ -583,6 +588,8 @@ public:
                                        const bool& aIsForApp,
                                        const bool& aIsForBrowser) override;
 
+  FORWARD_SHMEM_ALLOCATOR_TO(PContentChild)
+
   void GetAvailableDictionaries(InfallibleTArray<nsString>& aDictionaries);
 
   PBrowserOrId
@@ -608,20 +615,26 @@ public:
   virtual bool
   DeallocPContentPermissionRequestChild(PContentPermissionRequestChild* actor) override;
 
-  virtual bool RecvGamepadUpdate(const GamepadChangeEvent& aGamepadEvent) override;
+  // Windows specific - set up audio session
+  virtual bool
+  RecvSetAudioSessionData(const nsID& aId,
+                          const nsString& aDisplayName,
+                          const nsString& aIconPath) override;
 
-  virtual bool RecvTestGraphicsDeviceReset(const uint32_t& aResetReason) override;
+  virtual bool
+  RecvBlobURLRegistration(const nsCString& aURI, PBlobChild* aBlobChild,
+                          const IPC::Principal& aPrincipal) override;
+
+  virtual bool
+  RecvBlobURLUnregistration(const nsCString& aURI) override;
 
 private:
+  static void ForceKillTimerCallback(nsITimer* aTimer, void* aClosure);
+  void StartForceKillTimer();
+
   virtual void ActorDestroy(ActorDestroyReason why) override;
 
   virtual void ProcessingError(Result aCode, const char* aReason) override;
-
-  /**
-   * Exit *now*.  Do not shut down XPCOM, do not pass Go, do not run
-   * static destructors, do not collect $200.
-   */
-  MOZ_NORETURN void QuickExit();
 
   InfallibleTArray<nsAutoPtr<AlertObserver> > mAlertObservers;
   RefPtr<ConsoleListener> mConsoleListener;
@@ -641,10 +654,6 @@ private:
 
   AppInfo mAppInfo;
 
-#ifdef ANDROID
-  gfx::IntSize mScreenSize;
-#endif
-
   bool mIsForApp;
   bool mIsForBrowser;
   bool mCanOverrideProcessName;
@@ -654,12 +663,10 @@ private:
   static ContentChild* sSingleton;
 
   nsCOMPtr<nsIDomainPolicy> mPolicy;
+  nsCOMPtr<nsITimer> mForceKillTimer;
 
   DISALLOW_EVIL_CONSTRUCTORS(ContentChild);
 };
-
-void
-InitOnContentProcessCreated();
 
 uint64_t
 NextWindowID();

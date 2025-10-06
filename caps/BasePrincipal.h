@@ -30,10 +30,11 @@ public:
   bool operator==(const OriginAttributes& aOther) const
   {
     return mAppId == aOther.mAppId &&
-           mInBrowser == aOther.mInBrowser &&
+           mInIsolatedMozBrowser == aOther.mInIsolatedMozBrowser &&
            mAddonId == aOther.mAddonId &&
            mUserContextId == aOther.mUserContextId &&
-           mSignedPkg == aOther.mSignedPkg;
+           mSignedPkg == aOther.mSignedPkg &&
+           mPrivateBrowsingId == aOther.mPrivateBrowsingId;
   }
   bool operator!=(const OriginAttributes& aOther) const
   {
@@ -50,6 +51,10 @@ public:
   // |uri!key1=value1&key2=value2| and returns the uri without the suffix.
   bool PopulateFromOrigin(const nsACString& aOrigin,
                           nsACString& aOriginNoSuffix);
+
+  // Helper function to match mIsPrivateBrowsing to existing private browsing
+  // flags. Once all other flags are removed, this can be removed too.
+  void SyncAttributesWithPrivateBrowsing(bool aInPrivateBrowsing);
 
 protected:
   OriginAttributes() {}
@@ -75,10 +80,10 @@ class PrincipalOriginAttributes : public OriginAttributes
 {
 public:
   PrincipalOriginAttributes() {}
-  PrincipalOriginAttributes(uint32_t aAppId, bool aInBrowser)
+  PrincipalOriginAttributes(uint32_t aAppId, bool aInIsolatedMozBrowser)
   {
     mAppId = aAppId;
-    mInBrowser = aInBrowser;
+    mInIsolatedMozBrowser = aInIsolatedMozBrowser;
   }
 
   // Inheriting OriginAttributes from docshell to document when user navigates.
@@ -97,10 +102,10 @@ class DocShellOriginAttributes : public OriginAttributes
 {
 public:
   DocShellOriginAttributes() {}
-  DocShellOriginAttributes(uint32_t aAppId, bool aInBrowser)
+  DocShellOriginAttributes(uint32_t aAppId, bool aInIsolatedMozBrowser)
   {
     mAppId = aAppId;
-    mInBrowser = aInBrowser;
+    mInIsolatedMozBrowser = aInIsolatedMozBrowser;
   }
 
   // Inheriting OriginAttributes from document to child docshell when an
@@ -116,10 +121,10 @@ class NeckoOriginAttributes : public OriginAttributes
 {
 public:
   NeckoOriginAttributes() {}
-  NeckoOriginAttributes(uint32_t aAppId, bool aInBrowser)
+  NeckoOriginAttributes(uint32_t aAppId, bool aInIsolatedMozBrowser)
   {
     mAppId = aAppId;
-    mInBrowser = aInBrowser;
+    mInIsolatedMozBrowser = aInIsolatedMozBrowser;
   }
 
   // Inheriting OriginAttributes from document to necko when a network request
@@ -159,7 +164,7 @@ public:
       return false;
     }
 
-    if (mInBrowser.WasPassed() && mInBrowser.Value() != aAttrs.mInBrowser) {
+    if (mInIsolatedMozBrowser.WasPassed() && mInIsolatedMozBrowser.Value() != aAttrs.mInIsolatedMozBrowser) {
       return false;
     }
 
@@ -172,6 +177,46 @@ public:
     }
 
     if (mSignedPkg.WasPassed() && mSignedPkg.Value() != aAttrs.mSignedPkg) {
+      return false;
+    }
+
+    if (mPrivateBrowsingId.WasPassed() && mPrivateBrowsingId.Value() != aAttrs.mPrivateBrowsingId) {
+      return false;
+    }
+
+    return true;
+  }
+
+  bool Overlaps(const OriginAttributesPattern& aOther) const
+  {
+    if (mAppId.WasPassed() && aOther.mAppId.WasPassed() &&
+        mAppId.Value() != aOther.mAppId.Value()) {
+      return false;
+    }
+
+    if (mInIsolatedMozBrowser.WasPassed() &&
+        aOther.mInIsolatedMozBrowser.WasPassed() &&
+        mInIsolatedMozBrowser.Value() != aOther.mInIsolatedMozBrowser.Value()) {
+      return false;
+    }
+
+    if (mAddonId.WasPassed() && aOther.mAddonId.WasPassed() &&
+        mAddonId.Value() != aOther.mAddonId.Value()) {
+      return false;
+    }
+
+    if (mUserContextId.WasPassed() && aOther.mUserContextId.WasPassed() &&
+        mUserContextId.Value() != aOther.mUserContextId.Value()) {
+      return false;
+    }
+
+    if (mSignedPkg.WasPassed() && aOther.mSignedPkg.WasPassed() &&
+        mSignedPkg.Value() != aOther.mSignedPkg.Value()) {
+      return false;
+    }
+
+    if (mPrivateBrowsingId.WasPassed() && aOther.mPrivateBrowsingId.WasPassed() &&
+        mPrivateBrowsingId.Value() != aOther.mPrivateBrowsingId.Value()) {
       return false;
     }
 
@@ -215,9 +260,13 @@ public:
   NS_IMETHOD GetOriginSuffix(nsACString& aOriginSuffix) final;
   NS_IMETHOD GetAppStatus(uint16_t* aAppStatus) final;
   NS_IMETHOD GetAppId(uint32_t* aAppStatus) final;
-  NS_IMETHOD GetIsInBrowserElement(bool* aIsInBrowserElement) final;
+  NS_IMETHOD GetAddonId(nsAString& aAddonId) final;
+  NS_IMETHOD GetIsInIsolatedMozBrowserElement(bool* aIsInIsolatedMozBrowserElement) final;
   NS_IMETHOD GetUnknownAppId(bool* aUnknownAppId) final;
   NS_IMETHOD GetUserContextId(uint32_t* aUserContextId) final;
+  NS_IMETHOD GetPrivateBrowsingId(uint32_t* aPrivateBrowsingId) final;
+
+  virtual bool AddonHasPermission(const nsAString& aPerm);
 
   virtual bool IsOnCSSUnprefixingWhitelist() override { return false; }
 
@@ -231,7 +280,8 @@ public:
   const PrincipalOriginAttributes& OriginAttributesRef() { return mOriginAttributes; }
   uint32_t AppId() const { return mOriginAttributes.mAppId; }
   uint32_t UserContextId() const { return mOriginAttributes.mUserContextId; }
-  bool IsInBrowserElement() const { return mOriginAttributes.mInBrowser; }
+  uint32_t PrivateBrowsingId() const { return mOriginAttributes.mPrivateBrowsingId; }
+  bool IsInIsolatedMozBrowserElement() const { return mOriginAttributes.mInIsolatedMozBrowser; }
 
   enum PrincipalKind {
     eNullPrincipal,

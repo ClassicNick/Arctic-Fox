@@ -11,7 +11,6 @@
 
 #include "base/command_line.h"
 #include "base/string_util.h"
-#include "chrome/common/chrome_switches.h"
 #include "nsDebugImpl.h"
 
 #if defined(XP_MACOSX)
@@ -22,7 +21,6 @@ extern "C" CGError CGSSetDebugOptions(int options);
 #endif
 
 #ifdef XP_WIN
-#include <objbase.h>
 bool ShouldProtectPluginCurrentDirectory(char16ptr_t pluginFilePath);
 #if defined(MOZ_SANDBOX)
 #define TARGET_SANDBOX_EXPORTS
@@ -35,16 +33,6 @@ using mozilla::ipc::IOThreadChild;
 #ifdef OS_WIN
 #include "nsSetDllDirectory.h"
 #include <algorithm>
-
-namespace {
-
-std::size_t caseInsensitiveFind(std::string aHaystack, std::string aNeedle) {
-    std::transform(aHaystack.begin(), aHaystack.end(), aHaystack.begin(), ::tolower);
-    std::transform(aNeedle.begin(), aNeedle.end(), aNeedle.begin(), ::tolower);
-    return aHaystack.find(aNeedle);
-}
-
-}
 #endif
 
 namespace mozilla {
@@ -90,12 +78,6 @@ PluginProcessChild::Init()
             PR_SetEnv(setInterposePtr);
         }
     }
-#endif
-
-#ifdef XP_WIN
-    // Drag-and-drop needs OleInitialize to be called, and Silverlight depends
-    // on the host calling CoInitialize (which is called by OleInitialize).
-    ::OleInitialize(nullptr);
 #endif
 
     // Certain plugins, such as flash, steal the unhandled exception filter
@@ -160,9 +142,6 @@ PluginProcessChild::Init()
 void
 PluginProcessChild::CleanUp()
 {
-#ifdef XP_WIN
-    ::OleUninitialize();
-#endif
     nsRegion::ShutdownStatic();
 }
 

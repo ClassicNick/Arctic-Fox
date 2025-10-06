@@ -10,6 +10,7 @@
 #include "gfx2DGlue.h"
 #include "gfxPlatform.h"                // for gfxPlatform
 #include "gfxUtils.h"                   // for gfxUtils
+#include "libyuv.h"
 #include "mozilla/RefPtr.h"             // for already_AddRefed
 #include "mozilla/ipc/CrossProcessMutex.h"  // for CrossProcessMutex, etc
 #include "mozilla/layers/CompositorTypes.h"
@@ -19,6 +20,7 @@
 #include "mozilla/layers/LayersMessages.h"
 #include "mozilla/layers/SharedPlanarYCbCrImage.h"
 #include "mozilla/layers/SharedRGBImage.h"
+#include "mozilla/layers/TextureClientRecycleAllocator.h"
 #include "nsISupportsUtils.h"           // for NS_IF_ADDREF
 #include "YCbCrUtils.h"                 // for YCbCr conversions
 #ifdef MOZ_WIDGET_GONK
@@ -92,6 +94,16 @@ BufferRecycleBin::GetBuffer(uint32_t aSize)
   return result;
 }
 
+void
+BufferRecycleBin::ClearRecycledBuffers()
+{
+  MutexAutoLock lock(mLock);
+  if (!mRecycledBuffers.IsEmpty()) {
+    mRecycledBuffers.Clear();
+  }
+  mRecycledBufferSize = 0;
+}
+
 /**
  * The child side of PImageContainer. It's best to avoid ImageContainer filling
  * this role since IPDL objects should be associated with a single thread and
@@ -104,7 +116,12 @@ BufferRecycleBin::GetBuffer(uint32_t aSize)
 class ImageContainerChild : public PImageContainerChild {
 public:
   explicit ImageContainerChild(ImageContainer* aImageContainer)
-    : mLock("ImageContainerChild"), mImageContainer(aImageContainer) {}
+    : mLock("ImageContainerChild")
+    , mImageContainer(aImageContainer)
+    , mImageContainerReleased(false)
+    , mIPCOpen(true)
+  {}
+
   void ForgetImageContainer()
   {
     MutexAutoLock lock(mLock);
@@ -115,7 +132,55 @@ public:
   // mImageContainer's monitor (when both need to be held).
   Mutex mLock;
   ImageContainer* mImageContainer;
+  // If mImageContainerReleased is false when we try to deallocate this actor,
+  // it means the ImageContainer is still holding a pointer to this.
+  // mImageContainerReleased must not be accessed off the ImageBridgeChild thread.
+  bool mImageContainerReleased;
+  // If mIPCOpen is false, it means the IPDL code tried to deallocate the actor
+  // before the ImageContainer released it. When this happens we don't actually
+  // delete the actor right away because the ImageContainer has a reference to
+  // it. In this case the actor will be deleted when the ImageContainer lets go
+  // of it.
+  // mIPCOpen must not be accessed off the ImageBridgeChild thread.
+  bool mIPCOpen;
 };
+
+// static
+void
+ImageContainer::DeallocActor(PImageContainerChild* aActor)
+{
+  MOZ_ASSERT(aActor);
+  MOZ_ASSERT(InImageBridgeChildThread());
+
+  auto actor = static_cast<ImageContainerChild*>(aActor);
+  if (actor->mImageContainerReleased) {
+    delete actor;
+  } else {
+    actor->mIPCOpen = false;
+  }
+}
+
+// static
+void
+ImageContainer::AsyncDestroyActor(PImageContainerChild* aActor)
+{
+  MOZ_ASSERT(aActor);
+  MOZ_ASSERT(InImageBridgeChildThread());
+
+  auto actor = static_cast<ImageContainerChild*>(aActor);
+
+  // Setting mImageContainerReleased to true means next time DeallocActor is
+  // called, the actor will be deleted.
+  actor->mImageContainerReleased = true;
+
+  if (actor->mIPCOpen && ImageBridgeChild::IsCreated() && !ImageBridgeChild::IsShutDown()) {
+    actor->SendAsyncDelete();
+  } else {
+    // The actor is already dead as far as IPDL is concerned, probably because
+    // of a channel error. We can deallocate it now.
+    DeallocActor(actor);
+  }
+}
 
 ImageContainer::ImageContainer(Mode flag)
 : mReentrantMonitor("ImageContainer.mReentrantMonitor"),
@@ -144,11 +209,28 @@ ImageContainer::ImageContainer(Mode flag)
         break;
     }
   }
+  mAsyncContainerID = mImageClient ? mImageClient->GetAsyncID()
+                                   : sInvalidAsyncContainerId;
+}
+
+ImageContainer::ImageContainer(uint64_t aAsyncContainerID)
+  : mReentrantMonitor("ImageContainer.mReentrantMonitor"),
+  mGenerationCounter(++sGenerationCounter),
+  mPaintCount(0),
+  mDroppedImageCount(0),
+  mImageFactory(nullptr),
+  mRecycleBin(nullptr),
+  mImageClient(nullptr),
+  mAsyncContainerID(aAsyncContainerID),
+  mCurrentProducerID(-1),
+  mIPDLChild(nullptr)
+{
+  MOZ_ASSERT(mAsyncContainerID != sInvalidAsyncContainerId);
 }
 
 ImageContainer::~ImageContainer()
 {
-  if (IsAsync()) {
+  if (mIPDLChild) {
     mIPDLChild->ForgetImageContainer();
     ImageBridgeChild::DispatchReleaseImageClient(mImageClient, mIPDLChild);
   }
@@ -268,16 +350,16 @@ ImageContainer::SetCurrentImages(const nsTArray<NonOwningImage>& aImages)
 {
   MOZ_ASSERT(!aImages.IsEmpty());
   ReentrantMonitorAutoEnter mon(mReentrantMonitor);
-  if (IsAsync()) {
+  if (mImageClient) {
     ImageBridgeChild::DispatchImageClientUpdate(mImageClient, this);
   }
   SetCurrentImageInternal(aImages);
 }
 
- void
+void
 ImageContainer::ClearAllImages()
 {
-  if (IsAsync()) {
+  if (mImageClient) {
     // Let ImageClient release all TextureClients. This doesn't return
     // until ImageBridge has called ClearCurrentImageFromImageBridge.
     ImageBridgeChild::FlushAllImages(mImageClient, this);
@@ -289,29 +371,45 @@ ImageContainer::ClearAllImages()
 }
 
 void
+ImageContainer::ClearCachedResources()
+{
+  ReentrantMonitorAutoEnter mon(mReentrantMonitor);
+  if (mImageClient && mImageClient->AsImageClientSingle()) {
+    if (!mImageClient->HasTextureClientRecycler()) {
+      return;
+    }
+    mImageClient->GetTextureClientRecycler()->ShrinkToMinimumSize();
+    return;
+  }
+  return mRecycleBin->ClearRecycledBuffers();
+}
+
+void
 ImageContainer::SetCurrentImageInTransaction(Image *aImage)
+{
+  AutoTArray<NonOwningImage,1> images;
+  images.AppendElement(NonOwningImage(aImage));
+  SetCurrentImagesInTransaction(images);
+}
+
+void
+ImageContainer::SetCurrentImagesInTransaction(const nsTArray<NonOwningImage>& aImages)
 {
   NS_ASSERTION(NS_IsMainThread(), "Should be on main thread.");
   NS_ASSERTION(!mImageClient, "Should use async image transfer with ImageBridge.");
 
-  AutoTArray<NonOwningImage,1> images;
-  images.AppendElement(NonOwningImage(aImage));
-  SetCurrentImageInternal(images);
+  SetCurrentImageInternal(aImages);
 }
 
 bool ImageContainer::IsAsync() const
 {
-  return mImageClient != nullptr;
+  return mAsyncContainerID != sInvalidAsyncContainerId;
 }
 
 uint64_t ImageContainer::GetAsyncContainerID() const
 {
   NS_ASSERTION(IsAsync(),"Shared image ID is only relevant to async ImageContainers");
-  if (IsAsync()) {
-    return mImageClient->GetAsyncID();
-  } else {
-    return 0; // zero is always an invalid AsyncID
-  }
+  return mAsyncContainerID;
 }
 
 bool
@@ -483,13 +581,8 @@ RecyclingPlanarYCbCrImage::CopyData(const Data& aData)
             mData.mCbCrSize, mData.mCbCrStride, mData.mCrSkip);
 
   mSize = aData.mPicSize;
+  mOrigin = gfx::IntPoint(aData.mPicX, aData.mPicY);
   return true;
-}
-
-bool
-RecyclingPlanarYCbCrImage::SetData(const Data &aData)
-{
-  return CopyData(aData);
 }
 
 gfxImageFormat
@@ -501,10 +594,11 @@ PlanarYCbCrImage::GetOffscreenFormat()
 }
 
 bool
-PlanarYCbCrImage::SetDataNoCopy(const Data &aData)
+PlanarYCbCrImage::AdoptData(const Data &aData)
 {
   mData = aData;
   mSize = aData.mPicSize;
+  mOrigin = gfx::IntPoint(aData.mPicX, aData.mPicY);
   return true;
 }
 
@@ -554,9 +648,172 @@ PlanarYCbCrImage::GetAsSourceSurface()
   return surface.forget();
 }
 
+NVImage::NVImage()
+  : Image(nullptr, ImageFormat::NV_IMAGE)
+  , mBufferSize(0)
+{
+}
+
+NVImage::~NVImage()
+{
+}
+
+IntSize
+NVImage::GetSize()
+{
+  return mSize;
+}
+
+IntRect
+NVImage::GetPictureRect()
+{
+  return mData.GetPictureRect();
+}
+
+already_AddRefed<SourceSurface>
+NVImage::GetAsSourceSurface()
+{
+  if (mSourceSurface) {
+    RefPtr<gfx::SourceSurface> surface(mSourceSurface);
+    return surface.forget();
+  }
+
+  // Convert the current NV12 or NV21 data to YUV420P so that we can follow the
+  // logics in PlanarYCbCrImage::GetAsSourceSurface().
+  const int bufferLength = mData.mYSize.height * mData.mYStride +
+                           mData.mCbCrSize.height * mData.mCbCrSize.width * 2;
+  uint8_t* buffer = new uint8_t[bufferLength];
+
+  Data aData = mData;
+  aData.mCbCrStride = aData.mCbCrSize.width;
+  aData.mCbSkip = 0;
+  aData.mCrSkip = 0;
+  aData.mYChannel = buffer;
+  aData.mCbChannel = aData.mYChannel + aData.mYSize.height * aData.mYStride;
+  aData.mCrChannel = aData.mCbChannel + aData.mCbCrSize.height * aData.mCbCrStride;
+
+  if (mData.mCbChannel < mData.mCrChannel) {  // NV12
+    libyuv::NV12ToI420(mData.mYChannel, mData.mYStride,
+                       mData.mCbChannel, mData.mCbCrStride,
+                       aData.mYChannel, aData.mYStride,
+                       aData.mCbChannel, aData.mCbCrStride,
+                       aData.mCrChannel, aData.mCbCrStride,
+                       aData.mYSize.width, aData.mYSize.height);
+  } else {  // NV21
+    libyuv::NV21ToI420(mData.mYChannel, mData.mYStride,
+                       mData.mCrChannel, mData.mCbCrStride,
+                       aData.mYChannel, aData.mYStride,
+                       aData.mCbChannel, aData.mCbCrStride,
+                       aData.mCrChannel, aData.mCbCrStride,
+                       aData.mYSize.width, aData.mYSize.height);
+  }
+
+  // The logics in PlanarYCbCrImage::GetAsSourceSurface().
+  gfx::IntSize size(mSize);
+  gfx::SurfaceFormat format =
+    gfx::ImageFormatToSurfaceFormat(gfxPlatform::GetPlatform()->GetOffscreenFormat());
+  gfx::GetYCbCrToRGBDestFormatAndSize(aData, format, size);
+  if (mSize.width > PlanarYCbCrImage::MAX_DIMENSION ||
+      mSize.height > PlanarYCbCrImage::MAX_DIMENSION) {
+    NS_ERROR("Illegal image dest width or height");
+    return nullptr;
+  }
+
+  RefPtr<gfx::DataSourceSurface> surface = gfx::Factory::CreateDataSourceSurface(size, format);
+  if (NS_WARN_IF(!surface)) {
+    return nullptr;
+  }
+
+  DataSourceSurface::ScopedMap mapping(surface, DataSourceSurface::WRITE);
+  if (NS_WARN_IF(!mapping.IsMapped())) {
+    return nullptr;
+  }
+
+  gfx::ConvertYCbCrToRGB(aData, format, size, mapping.GetData(), mapping.GetStride());
+
+  mSourceSurface = surface;
+
+  // Release the temporary buffer.
+  delete[] buffer;
+
+  return surface.forget();
+}
+
+bool
+NVImage::IsValid()
+{
+  return !!mBufferSize;
+}
+
+uint32_t
+NVImage::GetBufferSize() const
+{
+  return mBufferSize;
+}
+
+NVImage*
+NVImage::AsNVImage()
+{
+  return this;
+};
+
+bool
+NVImage::SetData(const Data& aData)
+{
+  MOZ_ASSERT(aData.mCbSkip == 1 && aData.mCrSkip == 1);
+  MOZ_ASSERT((int)std::abs(aData.mCbChannel - aData.mCrChannel) == 1);
+
+  // Calculate buffer size
+  const uint32_t size = aData.mYSize.height * aData.mYStride +
+                        aData.mCbCrSize.height * aData.mCbCrStride;
+
+  // Allocate a new buffer.
+  mBuffer = AllocateBuffer(size);
+  if (!mBuffer) {
+    return false;
+  }
+
+  // Update mBufferSize.
+  mBufferSize = size;
+
+  // Update mData.
+  mData = aData;
+  mData.mYChannel = mBuffer.get();
+  mData.mCbChannel = mData.mYChannel + (aData.mCbChannel - aData.mYChannel);
+  mData.mCrChannel = mData.mYChannel + (aData.mCrChannel - aData.mYChannel);
+
+  // Update mSize.
+  mSize = aData.mPicSize;
+
+  // Copy the input data into mBuffer.
+  // This copies the y-channel and the interleaving CbCr-channel.
+  memcpy(mData.mYChannel, aData.mYChannel, mBufferSize);
+
+  return true;
+}
+
+const NVImage::Data*
+NVImage::GetData() const
+{
+  return &mData;
+}
+
+UniquePtr<uint8_t>
+NVImage::AllocateBuffer(uint32_t aSize)
+{
+  UniquePtr<uint8_t> buffer(new uint8_t[aSize]);
+  return buffer;
+}
+
 SourceSurfaceImage::SourceSurfaceImage(const gfx::IntSize& aSize, gfx::SourceSurface* aSourceSurface)
   : Image(nullptr, ImageFormat::CAIRO_SURFACE),
     mSize(aSize),
+    mSourceSurface(aSourceSurface)
+{}
+
+SourceSurfaceImage::SourceSurfaceImage(gfx::SourceSurface* aSourceSurface)
+  : Image(nullptr, ImageFormat::CAIRO_SURFACE),
+    mSize(aSourceSurface->GetSize()),
     mSourceSurface(aSourceSurface)
 {}
 
@@ -605,21 +862,13 @@ SourceSurfaceImage::GetTextureClient(CompositableClient *aClient)
 #endif
   if (!textureClient) {
     // gfx::BackendType::NONE means default to content backend
-    textureClient = aClient->CreateTextureClientForDrawing(surface->GetFormat(),
-                                                           surface->GetSize(),
-                                                           BackendSelector::Content,
-                                                           TextureFlags::DEFAULT);
+    textureClient = aClient->CreateTextureClientFromSurface(surface,
+                                                            BackendSelector::Content,
+                                                            TextureFlags::DEFAULT);
   }
   if (!textureClient) {
     return nullptr;
   }
-
-  TextureClientAutoLock autoLock(textureClient, OpenMode::OPEN_WRITE_ONLY);
-  if (!autoLock.Succeeded()) {
-    return nullptr;
-  }
-
-  textureClient->UpdateFromSurface(surface);
 
   textureClient->SyncWithObject(forwarder->GetSyncObject());
 

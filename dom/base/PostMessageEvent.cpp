@@ -18,10 +18,13 @@
 #include "mozilla/dom/StructuredCloneTags.h"
 #include "mozilla/dom/UnionConversions.h"
 #include "mozilla/EventDispatcher.h"
+#include "nsContentUtils.h"
 #include "nsGlobalWindow.h"
 #include "nsIPresShell.h"
 #include "nsIPrincipal.h"
+#include "nsIScriptError.h"
 #include "nsPresContext.h"
+#include "nsQueryObject.h"
 
 namespace mozilla {
 namespace dom {
@@ -33,7 +36,7 @@ PostMessageEvent::PostMessageEvent(nsGlobalWindow* aSource,
                                    nsIDocument* aSourceDocument,
                                    bool aTrustedCaller)
 : StructuredCloneHolder(CloningSupported, TransferringSupported,
-                        SameProcessSameThread),
+                        StructuredCloneScope::SameProcessSameThread),
   mSource(aSource),
   mCallerOrigin(aCallerOrigin),
   mTargetWindow(aTargetWindow),
@@ -57,6 +60,9 @@ PostMessageEvent::Run()
   MOZ_ASSERT(!mSource || mSource->IsOuterWindow(),
              "should have been passed an outer window!");
 
+  // Note: We don't init this AutoJSAPI with targetWindow, because we do not
+  // want exceptions during message deserialization to trigger error events on
+  // targetWindow.
   AutoJSAPI jsapi;
   jsapi.Init();
   JSContext* cx = jsapi.cx();
@@ -78,7 +84,7 @@ PostMessageEvent::Run()
 
   MOZ_ASSERT(targetWindow->IsInnerWindow(),
              "we ordered an inner window!");
-  JSAutoCompartment ac(cx, targetWindow->GetWrapperPreserveColor());
+  JSAutoCompartment ac(cx, targetWindow->GetWrapper());
 
   // Ensure that any origin which might have been provided is the origin of this
   // window's document.  Note that we do this *now* instead of when postMessage

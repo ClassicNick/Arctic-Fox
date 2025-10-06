@@ -8,7 +8,6 @@
 #ifndef nsComputedDOMStyle_h__
 #define nsComputedDOMStyle_h__
 
-#include "nsAutoPtr.h"
 #include "mozilla/ArenaRefPtr.h"
 #include "mozilla/ArenaRefPtrInlines.h"
 #include "mozilla/Attributes.h"
@@ -177,12 +176,14 @@ private:
 
   already_AddRefed<CSSValue> GetSVGPaintFor(bool aFill);
 
-  // Appends all aLineNames (must be non-empty) space-separated to aResult.
+  // Appends all aLineNames (may be empty) space-separated to aResult.
   void AppendGridLineNames(nsString& aResult,
                            const nsTArray<nsString>& aLineNames);
-  // Appends aLineNames (if non-empty) as a CSSValue* to aValueList.
+  // Appends aLineNames as a CSSValue* to aValueList.  If aLineNames is empty
+  // a value ("[]") is only appended if aSuppressEmptyList is false.
   void AppendGridLineNames(nsDOMCSSValueList* aValueList,
-                           const nsTArray<nsString>& aLineNames);
+                           const nsTArray<nsString>& aLineNames,
+                           bool aSuppressEmptyList = true);
   // Appends aLineNames1/2 (if non-empty) as a CSSValue* to aValueList.
   void AppendGridLineNames(nsDOMCSSValueList* aValueList,
                            const nsTArray<nsString>& aLineNames1,
@@ -286,6 +287,8 @@ private:
   /* StyleImageLayer properties */
   already_AddRefed<CSSValue> DoGetImageLayerImage(const nsStyleImageLayers& aLayers);
   already_AddRefed<CSSValue> DoGetImageLayerPosition(const nsStyleImageLayers& aLayers);
+  already_AddRefed<CSSValue> DoGetImageLayerPositionX(const nsStyleImageLayers& aLayers);
+  already_AddRefed<CSSValue> DoGetImageLayerPositionY(const nsStyleImageLayers& aLayers);
   already_AddRefed<CSSValue> DoGetImageLayerRepeat(const nsStyleImageLayers& aLayers);
   already_AddRefed<CSSValue> DoGetImageLayerSize(const nsStyleImageLayers& aLayers);
 
@@ -294,6 +297,8 @@ private:
   already_AddRefed<CSSValue> DoGetBackgroundColor();
   already_AddRefed<CSSValue> DoGetBackgroundImage();
   already_AddRefed<CSSValue> DoGetBackgroundPosition();
+  already_AddRefed<CSSValue> DoGetBackgroundPositionX();
+  already_AddRefed<CSSValue> DoGetBackgroundPositionY();
   already_AddRefed<CSSValue> DoGetBackgroundRepeat();
   already_AddRefed<CSSValue> DoGetBackgroundClip();
   already_AddRefed<CSSValue> DoGetBackgroundBlendMode();
@@ -302,15 +307,18 @@ private:
 
   /* Mask properties */
   already_AddRefed<CSSValue> DoGetMask();
+#ifdef MOZ_ENABLE_MASK_AS_SHORTHAND
   already_AddRefed<CSSValue> DoGetMaskImage();
   already_AddRefed<CSSValue> DoGetMaskPosition();
+  already_AddRefed<CSSValue> DoGetMaskPositionX();
+  already_AddRefed<CSSValue> DoGetMaskPositionY();
   already_AddRefed<CSSValue> DoGetMaskRepeat();
   already_AddRefed<CSSValue> DoGetMaskClip();
   already_AddRefed<CSSValue> DoGetMaskOrigin();
   already_AddRefed<CSSValue> DoGetMaskSize();
   already_AddRefed<CSSValue> DoGetMaskMode();
   already_AddRefed<CSSValue> DoGetMaskComposite();
-
+#endif
   /* Padding properties */
   already_AddRefed<CSSValue> DoGetPaddingTop();
   already_AddRefed<CSSValue> DoGetPaddingBottom();
@@ -396,6 +404,7 @@ private:
   already_AddRefed<CSSValue> DoGetImageRegion();
 
   /* Text Properties */
+  already_AddRefed<CSSValue> DoGetInitialLetter();
   already_AddRefed<CSSValue> DoGetLineHeight();
   already_AddRefed<CSSValue> DoGetRubyAlign();
   already_AddRefed<CSSValue> DoGetRubyPosition();
@@ -418,12 +427,16 @@ private:
   already_AddRefed<CSSValue> DoGetWordSpacing();
   already_AddRefed<CSSValue> DoGetWhiteSpace();
   already_AddRefed<CSSValue> DoGetWordBreak();
-  already_AddRefed<CSSValue> DoGetWordWrap();
+  already_AddRefed<CSSValue> DoGetOverflowWrap();
   already_AddRefed<CSSValue> DoGetHyphens();
   already_AddRefed<CSSValue> DoGetTabSize();
   already_AddRefed<CSSValue> DoGetTextSizeAdjust();
+  already_AddRefed<CSSValue> DoGetWebkitTextFillColor();
+  already_AddRefed<CSSValue> DoGetWebkitTextStrokeColor();
+  already_AddRefed<CSSValue> DoGetWebkitTextStrokeWidth();
 
   /* Visibility properties */
+  already_AddRefed<CSSValue> DoGetColorAdjust();
   already_AddRefed<CSSValue> DoGetOpacity();
   already_AddRefed<CSSValue> DoGetPointerEvents();
   already_AddRefed<CSSValue> DoGetVisibility();
@@ -468,6 +481,7 @@ private:
   already_AddRefed<CSSValue> DoGetScrollSnapPointsY();
   already_AddRefed<CSSValue> DoGetScrollSnapDestination();
   already_AddRefed<CSSValue> DoGetScrollSnapCoordinate();
+  already_AddRefed<CSSValue> DoGetShapeOutside();
 
   /* User interface properties */
   already_AddRefed<CSSValue> DoGetCursor();
@@ -576,6 +590,8 @@ private:
     nsROCSSPrimitiveValue* aValue);
   void SetValueToPosition(const nsStyleImageLayers::Position& aPosition,
                           nsDOMCSSValueList* aValueList);
+  void SetValueToFragmentOrURL(const FragmentOrURL* aFragmentOrURL,
+                               nsROCSSPrimitiveValue* aValue);
 
   /**
    * A method to get a percentage base for a percentage value.  Returns true
@@ -630,9 +646,21 @@ private:
   already_AddRefed<CSSValue> CreatePrimitiveValueForStyleFilter(
     const nsStyleFilter& aStyleFilter);
 
+  template<typename ReferenceBox>
+  already_AddRefed<CSSValue>
+  GetShapeSource(const mozilla::StyleShapeSource<ReferenceBox>& aShapeSource,
+                 const KTableEntry aBoxKeywordTable[]);
+
+  template<typename ReferenceBox>
+  already_AddRefed<CSSValue>
+  CreatePrimitiveValueForShapeSource(
+    const mozilla::StyleBasicShape* aStyleBasicShape,
+    ReferenceBox aReferenceBox,
+    const KTableEntry aBoxKeywordTable[]);
+
   // Helper function for computing basic shape styles.
-  already_AddRefed<CSSValue> CreatePrimitiveValueForClipPath(
-    const nsStyleBasicShape* aStyleBasicShape, uint8_t aSizingBox);
+  already_AddRefed<CSSValue> CreatePrimitiveValueForBasicShape(
+    const mozilla::StyleBasicShape* aStyleBasicShape);
   void BoxValuesToString(nsAString& aString,
                          const nsTArray<nsStyleCoord>& aBoxValues);
   void BasicShapeRadiiToString(nsAString& aCssText,
@@ -716,4 +744,3 @@ NS_NewComputedDOMStyle(mozilla::dom::Element* aElement,
                          nsComputedDOMStyle::eAll);
 
 #endif /* nsComputedDOMStyle_h__ */
-

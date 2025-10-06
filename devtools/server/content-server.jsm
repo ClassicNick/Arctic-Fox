@@ -13,25 +13,16 @@ const { DevToolsLoader } = Cu.import("resource://devtools/shared/Loader.jsm", {}
 
 this.EXPORTED_SYMBOLS = ["init"];
 
-var started = false;
-
 function init(msg) {
-  if (started) {
-    return;
-  }
-  started = true;
-
   // Init a custom, invisible DebuggerServer, in order to not pollute
   // the debugger with all devtools modules, nor break the debugger itself with using it
   // in the same process.
   let devtools = new DevToolsLoader();
   devtools.invisibleToDebugger = true;
-  devtools.main("devtools/server/main");
-  let { DebuggerServer, ActorPool } = devtools;
+  let { DebuggerServer, ActorPool } = devtools.require("devtools/server/main");
 
   if (!DebuggerServer.initialized) {
     DebuggerServer.init();
-    DebuggerServer.isInChildProcess = true;
   }
 
   // In case of apps being loaded in parent process, DebuggerServer is already
@@ -61,6 +52,5 @@ function init(msg) {
     mm.removeMessageListener("debug:content-process-destroy", onDestroy);
 
     DebuggerServer.destroy();
-    started = false;
   });
 }

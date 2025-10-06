@@ -13,7 +13,6 @@ Cu.import("resource://gre/modules/ExtensionUtils.jsm");
 var {
   SingletonEventManager,
   runSafeSync,
-  ignoreEvent,
 } = ExtensionUtils;
 
 // EventManager-like class specifically for WebRequest. Inherits from
@@ -33,7 +32,9 @@ function WebRequestEventManager(context, eventName) {
       }
 
       let data2 = {
+        requestId: data.requestId,
         url: data.url,
+        originUrl: data.originUrl,
         method: data.method,
         type: data.type,
         timeStamp: Date.now(),
@@ -52,7 +53,8 @@ function WebRequestEventManager(context, eventName) {
         return;
       }
 
-      let optional = ["requestHeaders", "responseHeaders", "statusCode", "redirectUrl"];
+      let optional = ["requestHeaders", "responseHeaders", "statusCode", "statusLine", "error", "redirectUrl",
+                      "requestBody"];
       for (let opt of optional) {
         if (opt in data) {
           data2[opt] = data[opt];
@@ -97,7 +99,7 @@ function WebRequestEventManager(context, eventName) {
 
 WebRequestEventManager.prototype = Object.create(SingletonEventManager.prototype);
 
-extensions.registerSchemaAPI("webRequest", "webRequest", (extension, context) => {
+extensions.registerSchemaAPI("webRequest", context => {
   return {
     webRequest: {
       onBeforeRequest: new WebRequestEventManager(context, "onBeforeRequest").api(),
@@ -106,13 +108,11 @@ extensions.registerSchemaAPI("webRequest", "webRequest", (extension, context) =>
       onHeadersReceived: new WebRequestEventManager(context, "onHeadersReceived").api(),
       onBeforeRedirect: new WebRequestEventManager(context, "onBeforeRedirect").api(),
       onResponseStarted: new WebRequestEventManager(context, "onResponseStarted").api(),
+      onErrorOccurred: new WebRequestEventManager(context, "onErrorOccurred").api(),
       onCompleted: new WebRequestEventManager(context, "onCompleted").api(),
       handlerBehaviorChanged: function() {
         // TODO: Flush all caches.
       },
-
-      // TODO
-      onErrorOccurred: ignoreEvent(context, "webRequest.onErrorOccurred"),
     },
   };
 });

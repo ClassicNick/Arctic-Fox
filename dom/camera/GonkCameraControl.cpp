@@ -32,14 +32,13 @@
 #include "nsNetUtil.h" // for NS_ReadInputStreamToBuffer
 #endif
 #include "nsNetCID.h" // for NS_STREAMTRANSPORTSERVICE_CONTRACTID
-#include "nsAutoPtr.h" // for nsAutoArrayPtr
 #include "nsCOMPtr.h"
 #include "nsMemory.h"
 #include "nsThread.h"
 #include "nsITimer.h"
 #include "mozilla/FileUtils.h"
 #include "mozilla/Services.h"
-#include "mozilla/unused.h"
+#include "mozilla/Unused.h"
 #include "mozilla/ipc/FileDescriptorUtils.h"
 #include "nsAlgorithm.h"
 #include "nsPrintfCString.h"
@@ -572,7 +571,7 @@ nsGonkCameraControl::PushParameters()
   if (NS_GetCurrentThread() != mCameraThread) {
     DOM_CAMERA_LOGT("%s:%d - dispatching to Camera Thread\n", __func__, __LINE__);
     nsCOMPtr<nsIRunnable> pushParametersTask =
-      NS_NewRunnableMethod(this, &nsGonkCameraControl::PushParametersImpl);
+      NewRunnableMethod(this, &nsGonkCameraControl::PushParametersImpl);
     return mCameraThread->Dispatch(pushParametersTask, NS_DISPATCH_NORMAL);
   }
 
@@ -968,7 +967,7 @@ nsGonkCameraControl::GetCameraHw()
 nsresult
 nsGonkCameraControl::SetThumbnailSize(const Size& aSize)
 {
-  class SetThumbnailSize : public nsRunnable
+  class SetThumbnailSize : public Runnable
   {
   public:
     SetThumbnailSize(nsGonkCameraControl* aCameraControl, const Size& aSize)
@@ -979,7 +978,7 @@ nsGonkCameraControl::SetThumbnailSize(const Size& aSize)
     }
     ~SetThumbnailSize() { MOZ_COUNT_DTOR(SetThumbnailSize); }
 
-    NS_IMETHODIMP
+    NS_IMETHOD
     Run() override
     {
       nsresult rv = mCameraControl->SetThumbnailSizeImpl(mSize);
@@ -1086,7 +1085,7 @@ nsGonkCameraControl::RationalizeRotation(int32_t aRotation)
 nsresult
 nsGonkCameraControl::SetPictureSize(const Size& aSize)
 {
-  class SetPictureSize : public nsRunnable
+  class SetPictureSize : public Runnable
   {
   public:
     SetPictureSize(nsGonkCameraControl* aCameraControl, const Size& aSize)
@@ -1097,7 +1096,7 @@ nsGonkCameraControl::SetPictureSize(const Size& aSize)
     }
     ~SetPictureSize() { MOZ_COUNT_DTOR(SetPictureSize); }
 
-    NS_IMETHODIMP
+    NS_IMETHOD
     Run() override
     {
       nsresult rv = mCameraControl->SetPictureSizeImpl(mSize);
@@ -1253,15 +1252,15 @@ nsGonkCameraControl::StartRecordingImpl(DeviceStorageFileDescriptor* aFileDescri
     closer = new CloseFileRunnable(aFileDescriptor->mFileDescriptor);
   }
   nsresult rv;
-  int fd = aFileDescriptor->mFileDescriptor.PlatformHandle();
+  auto rawFD = aFileDescriptor->mFileDescriptor.ClonePlatformHandle();
   if (aOptions) {
-    rv = SetupRecording(fd, aOptions->rotation, aOptions->maxFileSizeBytes,
+    rv = SetupRecording(rawFD.get(), aOptions->rotation, aOptions->maxFileSizeBytes,
                         aOptions->maxVideoLengthMs);
     if (NS_SUCCEEDED(rv)) {
       rv = SetupRecordingFlash(aOptions->autoEnableLowLightTorch);
     }
   } else {
-    rv = SetupRecording(fd, 0, 0, 0);
+    rv = SetupRecording(rawFD.get(), 0, 0, 0);
   }
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
@@ -1288,7 +1287,7 @@ nsGonkCameraControl::StartRecordingImpl(DeviceStorageFileDescriptor* aFileDescri
 nsresult
 nsGonkCameraControl::StopRecordingImpl()
 {
-  class RecordingComplete : public nsRunnable
+  class RecordingComplete : public Runnable
   {
   public:
     RecordingComplete(already_AddRefed<DeviceStorageFile> aFile)
@@ -1297,13 +1296,13 @@ nsGonkCameraControl::StopRecordingImpl()
 
     ~RecordingComplete() { }
 
-    NS_IMETHODIMP
-    Run()
+    NS_IMETHOD
+    Run() override
     {
       MOZ_ASSERT(NS_IsMainThread());
 
       nsCOMPtr<nsIObserverService> obs = mozilla::services::GetObserverService();
-      obs->NotifyObservers(mFile, "file-watcher-notify", MOZ_UTF16("modified"));
+      obs->NotifyObservers(mFile, "file-watcher-notify", u"modified");
       return NS_OK;
     }
 
@@ -1472,7 +1471,7 @@ nsGonkCameraControl::OnAutoFocusMoving(bool aIsMoving)
 void
 nsGonkCameraControl::OnAutoFocusComplete(bool aSuccess, bool aExpired)
 {
-  class AutoFocusComplete : public nsRunnable
+  class AutoFocusComplete : public Runnable
   {
   public:
     AutoFocusComplete(nsGonkCameraControl* aCameraControl, bool aSuccess, bool aExpired)
@@ -1481,7 +1480,7 @@ nsGonkCameraControl::OnAutoFocusComplete(bool aSuccess, bool aExpired)
       , mExpired(aExpired)
     { }
 
-    NS_IMETHODIMP
+    NS_IMETHOD
     Run() override
     {
       mCameraControl->OnAutoFocusComplete(mSuccess, mExpired);
@@ -2213,17 +2212,6 @@ nsGonkCameraControl::LoadRecorderProfiles()
   return NS_OK;
 }
 
-/* static */ PLDHashOperator
-nsGonkCameraControl::Enumerate(const nsAString& aProfileName,
-                               RecorderProfile* aProfile,
-                               void* aUserArg)
-{
-  nsTArray<nsString>* profiles = static_cast<nsTArray<nsString>*>(aUserArg);
-  MOZ_ASSERT(profiles);
-  profiles->AppendElement(aProfileName);
-  return PL_DHASH_NEXT;
-}
-
 nsresult
 nsGonkCameraControl::GetRecorderProfiles(nsTArray<nsString>& aProfiles)
 {
@@ -2233,7 +2221,9 @@ nsGonkCameraControl::GetRecorderProfiles(nsTArray<nsString>& aProfiles)
   }
 
   aProfiles.Clear();
-  mRecorderProfiles.EnumerateRead(Enumerate, static_cast<void*>(&aProfiles));
+  for (auto iter = mRecorderProfiles.Iter(); !iter.Done(); iter.Next()) {
+    aProfiles.AppendElement(iter.Key());
+  }
   return NS_OK;
 }
 
@@ -2256,7 +2246,7 @@ nsGonkCameraControl::OnRateLimitPreview(bool aLimit)
 void
 nsGonkCameraControl::CreatePoster(Image* aImage, uint32_t aWidth, uint32_t aHeight, int32_t aRotation)
 {
-  class PosterRunnable : public nsRunnable {
+  class PosterRunnable : public Runnable {
   public:
     PosterRunnable(nsGonkCameraControl* aTarget, Image* aImage,
                    uint32_t aWidth, uint32_t aHeight, int32_t aRotation)
@@ -2274,7 +2264,7 @@ nsGonkCameraControl::CreatePoster(Image* aImage, uint32_t aWidth, uint32_t aHeig
       mTarget->OnPoster(mDst, mDstLength);
     }
 
-    NS_IMETHODIMP Run() override
+    NS_IMETHOD Run() override
     {
 #ifdef MOZ_WIDGET_GONK
       // NV21 (yuv420sp) is 12 bits / pixel
@@ -2391,7 +2381,7 @@ nsGonkCameraControl::OnNewPreviewFrame(layers::TextureClient* aBuffer)
 
   IntSize picSize(mCurrentConfiguration.mPreviewSize.width,
                   mCurrentConfiguration.mPreviewSize.height);
-  frame->SetData(aBuffer, picSize);
+  frame->AdoptData(aBuffer, picSize);
 
   if (mCapturePoster.exchange(false)) {
     CreatePoster(frame,

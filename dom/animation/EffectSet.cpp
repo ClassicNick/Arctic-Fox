@@ -6,7 +6,8 @@
 
 #include "EffectSet.h"
 #include "mozilla/dom/Element.h" // For Element
-#include "RestyleManager.h"
+#include "mozilla/RestyleManagerHandle.h"
+#include "mozilla/RestyleManagerHandleInlines.h"
 #include "nsCSSPseudoElements.h" // For CSSPseudoElementType
 #include "nsCycleCollectionNoteChild.h" // For CycleCollectionNoteChild
 #include "nsPresContext.h"
@@ -48,42 +49,18 @@ EffectSet::GetEffectSet(dom::Element* aElement,
 /* static */ EffectSet*
 EffectSet::GetEffectSet(const nsIFrame* aFrame)
 {
-  nsIContent* content = aFrame->GetContent();
-  if (!content) {
+  Maybe<NonOwningAnimationTarget> target =
+    EffectCompositor::GetAnimationElementAndPseudoForFrame(aFrame);
+
+  if (!target) {
     return nullptr;
   }
 
-  nsIAtom* propName;
-  if (aFrame->IsGeneratedContentFrame()) {
-    nsIFrame* parent = aFrame->GetParent();
-    if (parent->IsGeneratedContentFrame()) {
-      return nullptr;
-    }
-    nsIAtom* name = content->NodeInfo()->NameAtom();
-    if (name == nsGkAtoms::mozgeneratedcontentbefore) {
-      propName = nsGkAtoms::animationEffectsForBeforeProperty;
-    } else if (name == nsGkAtoms::mozgeneratedcontentafter) {
-      propName = nsGkAtoms::animationEffectsForAfterProperty;
-    } else {
-      return nullptr;
-    }
-    content = content->GetParent();
-    if (!content) {
-      return nullptr;
-    }
-  } else {
-    if (nsLayoutUtils::GetStyleFrame(content) != aFrame) {
-      // The effects associated with an element are for its primary frame.
-      return nullptr;
-    }
-    propName = nsGkAtoms::animationEffectsProperty;
-  }
-
-  if (!content->MayHaveAnimations()) {
+  if (!target->mElement->MayHaveAnimations()) {
     return nullptr;
   }
 
-  return static_cast<EffectSet*>(content->GetProperty(propName));
+  return GetEffectSet(target->mElement, target->mPseudoType);
 }
 
 /* static */ EffectSet*
@@ -134,8 +111,11 @@ EffectSet::DestroyEffectSet(dom::Element* aElement,
 void
 EffectSet::UpdateAnimationGeneration(nsPresContext* aPresContext)
 {
+  MOZ_ASSERT(aPresContext->RestyleManager()->IsGecko(),
+             "stylo: Servo-backed style system should not be using "
+             "EffectSet");
   mAnimationGeneration =
-    aPresContext->RestyleManager()->GetAnimationGeneration();
+    aPresContext->RestyleManager()->AsGecko()->GetAnimationGeneration();
 }
 
 /* static */ nsIAtom**

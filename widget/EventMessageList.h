@@ -40,13 +40,29 @@ NS_EVENT_MESSAGE(eKeyPress)
 NS_EVENT_MESSAGE(eKeyUp)
 NS_EVENT_MESSAGE(eKeyDown)
 
+// These messages are dispatched when PluginInstaceChild receives native
+// keyboard events directly and it posts the information to the widget.
+// These messages shouldn't be handled by content and non-reserved chrome
+// event handlers.
+NS_EVENT_MESSAGE(eKeyDownOnPlugin)
+NS_EVENT_MESSAGE(eKeyUpOnPlugin)
+
 NS_EVENT_MESSAGE(eBeforeKeyDown)
 NS_EVENT_MESSAGE(eAfterKeyDown)
 NS_EVENT_MESSAGE(eBeforeKeyUp)
 NS_EVENT_MESSAGE(eAfterKeyUp)
 
+// This message is sent after a content process handles a key event or accesskey
+// to indicate that an potential accesskey was not found. The parent process may
+// then respond by, for example, opening menus and processing other shortcuts.
+// It inherits its properties from a keypress event.
+NS_EVENT_MESSAGE(eAccessKeyNotFound)
+
 NS_EVENT_MESSAGE(eResize)
 NS_EVENT_MESSAGE(eScroll)
+
+// Application installation
+NS_EVENT_MESSAGE(eInstall)
 
 // A plugin was clicked or otherwise focused. ePluginActivate should be
 // used when the window is not active. ePluginFocus should be used when
@@ -97,11 +113,12 @@ NS_EVENT_MESSAGE(eUnload)
 NS_EVENT_MESSAGE(eHashChange)
 NS_EVENT_MESSAGE(eImageAbort)
 NS_EVENT_MESSAGE(eLoadError)
+NS_EVENT_MESSAGE(eLoadEnd)
 NS_EVENT_MESSAGE(ePopState)
 NS_EVENT_MESSAGE(eStorage)
 NS_EVENT_MESSAGE(eBeforeUnload)
 NS_EVENT_MESSAGE(eReadyStateChange)
- 
+
 NS_EVENT_MESSAGE(eFormSubmit)
 NS_EVENT_MESSAGE(eFormReset)
 NS_EVENT_MESSAGE(eFormChange)
@@ -115,8 +132,6 @@ NS_EVENT_MESSAGE(eBlur)
 NS_EVENT_MESSAGE(eDragEnter)
 NS_EVENT_MESSAGE(eDragOver)
 NS_EVENT_MESSAGE(eDragExit)
-NS_EVENT_MESSAGE(eLegacyDragDrop)
-NS_EVENT_MESSAGE(eLegacyDragGesture)
 NS_EVENT_MESSAGE(eDrag)
 NS_EVENT_MESSAGE(eDragEnd)
 NS_EVENT_MESSAGE(eDragStart)
@@ -150,7 +165,7 @@ NS_EVENT_MESSAGE_FIRST_LAST(eLegacyMutationEvent,
   eLegacySubtreeModified, eLegacyCharacterDataModified)
 
 NS_EVENT_MESSAGE(eUnidentifiedEvent)
- 
+
 // composition events
 NS_EVENT_MESSAGE(eCompositionStart)
 // eCompositionEnd is the message for DOM compositionend event.
@@ -225,6 +240,9 @@ NS_EVENT_MESSAGE(eQueryCaretRect)
 // valid character range given offset and length. Result is relative to top
 // level widget coordinates
 NS_EVENT_MESSAGE(eQueryTextRect)
+// Query for the bounding rect array of a range of characters.
+// Thiis similar event of eQueryTextRect.
+NS_EVENT_MESSAGE(eQueryTextRectArray)
 // Query for the bounding rect of the current focused frame. Result is relative
 // to top level widget coordinates
 NS_EVENT_MESSAGE(eQueryEditorRect)
@@ -235,9 +253,9 @@ NS_EVENT_MESSAGE(eQueryContentState)
 NS_EVENT_MESSAGE(eQuerySelectionAsTransferable)
 // Query for character at a point.  This returns the character offset, its
 // rect and also tentative caret point if the point is clicked.  The point is
-// specified by Event::refPoint.
+// specified by Event::mRefPoint.
 NS_EVENT_MESSAGE(eQueryCharacterAtPoint)
-// Query if the DOM element under Event::refPoint belongs to our widget
+// Query if the DOM element under Event::mRefPoint belongs to our widget
 // or not.
 NS_EVENT_MESSAGE(eQueryDOMWidgetHittest)
 
@@ -299,6 +317,7 @@ NS_EVENT_MESSAGE(eContentCommandDelete)
 NS_EVENT_MESSAGE(eContentCommandUndo)
 NS_EVENT_MESSAGE(eContentCommandRedo)
 NS_EVENT_MESSAGE(eContentCommandPasteTransferable)
+NS_EVENT_MESSAGE(eContentCommandLookUpDictionary)
 // eContentCommandScroll scrolls the nearest scrollable element to the
 // currently focused content or latest DOM selection. This would normally be
 // the same element scrolled by keyboard scroll commands, except that this event
@@ -354,6 +373,11 @@ NS_EVENT_MESSAGE(eDeviceLight)
 NS_EVENT_MESSAGE(eOrientationChange)
 #endif
 
+// WebVR events
+NS_EVENT_MESSAGE(eVRDisplayConnect)
+NS_EVENT_MESSAGE(eVRDisplayDisconnect)
+NS_EVENT_MESSAGE(eVRDisplayPresentChange)
+
 NS_EVENT_MESSAGE(eShow)
 
 // Fullscreen DOM API
@@ -370,6 +394,8 @@ NS_EVENT_MESSAGE(eTouchCancel)
 // Pointerlock DOM API
 NS_EVENT_MESSAGE(ePointerLockChange)
 NS_EVENT_MESSAGE(ePointerLockError)
+NS_EVENT_MESSAGE(eMozPointerLockChange)
+NS_EVENT_MESSAGE(eMozPointerLockError)
 
 // eWheel is the event message of DOM wheel event.
 NS_EVENT_MESSAGE(eWheel)

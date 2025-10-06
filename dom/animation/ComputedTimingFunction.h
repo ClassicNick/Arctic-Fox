@@ -15,8 +15,14 @@ namespace mozilla {
 class ComputedTimingFunction
 {
 public:
+  // BeforeFlag is used in step timing function.
+  // https://w3c.github.io/web-animations/#before-flag
+  enum class BeforeFlag {
+    Unset,
+    Set
+  };
   void Init(const nsTimingFunction &aFunction);
-  double GetValue(double aPortion) const;
+  double GetValue(double aPortion, BeforeFlag aBeforeFlag) const;
   const nsSMILKeySpline* GetFunction() const
   {
     NS_ASSERTION(HasSpline(), "Type mismatch");
@@ -25,14 +31,12 @@ public:
   nsTimingFunction::Type GetType() const { return mType; }
   bool HasSpline() const { return nsTimingFunction::IsSplineType(mType); }
   uint32_t GetSteps() const { return mSteps; }
-  nsTimingFunction::StepSyntax GetStepSyntax() const { return mStepSyntax; }
   bool operator==(const ComputedTimingFunction& aOther) const
   {
     return mType == aOther.mType &&
            (HasSpline() ?
             mTimingFunction == aOther.mTimingFunction :
-            (mSteps == aOther.mSteps &&
-             mStepSyntax == aOther.mStepSyntax));
+            mSteps == aOther.mSteps);
   }
   bool operator!=(const ComputedTimingFunction& aOther) const
   {
@@ -42,9 +46,10 @@ public:
   void AppendToString(nsAString& aResult) const;
 
   static double GetPortion(const Maybe<ComputedTimingFunction>& aFunction,
-                           double aPortion)
+                           double aPortion,
+                           BeforeFlag aBeforeFlag)
   {
-    return aFunction.isSome() ? aFunction->GetValue(aPortion) : aPortion;
+    return aFunction ? aFunction->GetValue(aPortion, aBeforeFlag) : aPortion;
   }
   static int32_t Compare(const Maybe<ComputedTimingFunction>& aLhs,
                          const Maybe<ComputedTimingFunction>& aRhs);
@@ -53,7 +58,6 @@ private:
   nsTimingFunction::Type mType;
   nsSMILKeySpline mTimingFunction;
   uint32_t mSteps;
-  nsTimingFunction::StepSyntax mStepSyntax;
 };
 
 } // namespace mozilla

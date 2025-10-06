@@ -64,7 +64,7 @@ function run_test() {
     // Create a corrupted database.
     let foStream = Cc["@mozilla.org/network/file-output-stream;1"].
                    createInstance(Ci.nsIFileOutputStream);
-    foStream.init(dbFile, 0x02 | 0x08 | 0x20, 0666, 0);
+    foStream.init(dbFile, 0x02 | 0x08 | 0x20, 0o666, 0);
     let garbageData = "garbage that makes SQLite think the file is corrupted";
     foStream.write(garbageData, garbageData.length);
     foStream.close();
@@ -284,9 +284,13 @@ function run_test() {
     },
 
     numTimesRemovedCalled: 0,
-    onContentPrefRemoved: function genericObserver_onContentPrefRemoved(group, name) {
+    onContentPrefRemoved: function genericObserver_onContentPrefRemoved(group, name, isPrivate) {
       ++this.numTimesRemovedCalled;
       do_check_eq(group, "www.example.com");
+      if (name == "test.observer.private")
+        do_check_true(isPrivate);
+      else if (name == "test.observer.normal")
+        do_check_false(isPrivate);
       if (name != "test.observer.1" && name != "test.observer.2" &&
           name != "test.observer.normal" && name != "test.observer.private") {
         do_throw("genericObserver.onContentPrefSet: " +

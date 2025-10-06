@@ -10,10 +10,11 @@
 // just that markers are recorded at all.
 // Trying to check marker types here may lead to intermittents, see bug 1066474.
 
-const {TimelineFront} = require("devtools/server/actors/timeline");
+const {TimelineFront} = require("devtools/shared/fronts/timeline");
 
-add_task(function*() {
-  let doc = yield addTab("data:text/html;charset=utf-8,mop");
+add_task(function* () {
+  let browser = yield addTab("data:text/html;charset=utf-8,mop");
+  let doc = browser.contentDocument;
 
   initDebuggerServer();
   let client = new DebuggerClient(DebuggerServer.connectPipe());

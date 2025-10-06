@@ -50,12 +50,13 @@ add_task(function* test_execute()
     "data:,Hello%2C%20World!",
     "wyciwyg:/0/http://mozilla.org",
     "javascript:alert('hello wolrd!');",
+    "http://localhost/" + "a".repeat(1984),
   ];
   for (let currentURL of URLS) {
     try {
       var cantAddUri = uri(currentURL);
     }
-    catch(e) {
+    catch (e) {
       // nsIIOService.newURI() can throw if e.g. our app knows about imap://
       // but the account is not set up and so the URL is invalid for us.
       // Note this in the log but ignore as it's not the subject of this test.
@@ -65,7 +66,7 @@ add_task(function* test_execute()
       try {
         yield PlacesTestUtils.addVisits({uri: cantAddUri, referrer: referrer});
         do_throw("Should have generated an exception.");
-      } catch(ex) {
+      } catch (ex) {
         if (ex.result != Cr.NS_ERROR_ILLEGAL_VALUE) {
           throw ex;
         }

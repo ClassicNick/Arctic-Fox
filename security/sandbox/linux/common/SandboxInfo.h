@@ -57,6 +57,12 @@ public:
     return !Test(kEnabledForMedia) || Test(kHasSeccompBPF);
   }
 
+#ifdef MOZ_CRASHREPORTER
+  MOZ_EXPORT void AnnotateCrashReport() const;
+#endif
+
+  static void SubmitTelemetry();
+
   // For bug 1222500 or anything else like it: On desktop, this is
   // called in the parent process at a point when it should still be
   // single-threaded, to check that the SandboxEarlyInit() call in a

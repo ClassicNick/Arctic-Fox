@@ -2,18 +2,14 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
-let tempScope = {};
-Cu.import("resource://gre/modules/NetUtil.jsm", tempScope);
-let NetUtil = tempScope.NetUtil;
-
 // Reference to the Scratchpad object.
-let gScratchpad;
+var gScratchpad;
 
 // Reference to the temporary nsIFile we will work with.
-let gFile;
+var gFile;
 
 // The temporary file content.
-let gFileContent = "hello.world('bug636725');";
+var gFileContent = "hello.world('bug636725');";
 
 function test()
 {
@@ -32,12 +28,12 @@ function runTests()
 {
   gScratchpad = gScratchpadWindow.Scratchpad;
 
-  createTempFile("fileForBug636725.tmp", gFileContent, function(aStatus, aFile) {
+  createTempFile("fileForBug636725.tmp", gFileContent, function (aStatus, aFile) {
     ok(Components.isSuccessCode(aStatus),
       "The temporary file was saved successfully");
 
-      gFile = aFile;
-      gScratchpad.importFromFile(gFile.QueryInterface(Ci.nsILocalFile), true,
+    gFile = aFile;
+    gScratchpad.importFromFile(gFile.QueryInterface(Ci.nsILocalFile), true,
         fileImported);
   });
 }
@@ -77,7 +73,7 @@ function fileExported(aStatus)
 
   let oldConfirm = gScratchpadWindow.confirm;
   let askedConfirmation = false;
-  gScratchpadWindow.confirm = function() {
+  gScratchpadWindow.confirm = function () {
     askedConfirmation = true;
     return false;
   };
@@ -111,7 +107,7 @@ function fileRead(aInputStream, aStatus)
      "the temporary file was read back successfully");
 
   let updatedContent =
-    NetUtil.readInputStreamToString(aInputStream, aInputStream.available());;
+    NetUtil.readInputStreamToString(aInputStream, aInputStream.available());
 
   is(updatedContent, gFileContent, "file properly updated");
 

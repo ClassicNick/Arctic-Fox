@@ -10,7 +10,7 @@
 #include "mozilla/Mutex.h"
 #include "mozilla/StaticMutex.h"
 #include "mozilla/StaticPtr.h"
-#include "mozilla/unused.h"
+#include "mozilla/Unused.h"
 #include "mozilla/dom/cache/Context.h"
 #include "mozilla/dom/cache/DBAction.h"
 #include "mozilla/dom/cache/DBSchema.h"
@@ -22,7 +22,6 @@
 #include "mozilla/dom/cache/Types.h"
 #include "mozilla/ipc/BackgroundParent.h"
 #include "mozStorageHelper.h"
-#include "nsAutoPtr.h"
 #include "nsIInputStream.h"
 #include "nsID.h"
 #include "nsIFile.h"
@@ -147,12 +146,12 @@ private:
   nsTArray<nsID> mDeletedBodyIdList;
 };
 
-bool IsHeadRequest(CacheRequest aRequest, CacheQueryParams aParams)
+bool IsHeadRequest(const CacheRequest& aRequest, const CacheQueryParams& aParams)
 {
   return !aParams.ignoreMethod() && aRequest.method().LowerCaseEqualsLiteral("head");
 }
 
-bool IsHeadRequest(CacheRequestOrVoid aRequest, CacheQueryParams aParams)
+bool IsHeadRequest(const CacheRequestOrVoid& aRequest, const CacheQueryParams& aParams)
 {
   if (aRequest.type() == CacheRequestOrVoid::TCacheRequest) {
     return !aParams.ignoreMethod() &&
@@ -912,10 +911,10 @@ private:
     // May be on any thread, including STS event target.  Non-owning runnable
     // here since we are guaranteed the Action will survive until
     // CompleteOnInitiatingThread is called.
-    nsCOMPtr<nsIRunnable> runnable = NS_NewNonOwningRunnableMethodWithArgs<nsresult>(
+    nsCOMPtr<nsIRunnable> runnable = NewNonOwningRunnableMethod<nsresult>(
       this, &CachePutAllAction::OnAsyncCopyComplete, aRv);
-    MOZ_ALWAYS_TRUE(NS_SUCCEEDED(
-      mTargetThread->Dispatch(runnable, nsIThread::DISPATCH_NORMAL)));
+    MOZ_ALWAYS_SUCCEEDS(
+      mTargetThread->Dispatch(runnable, nsIThread::DISPATCH_NORMAL));
   }
 
   void
@@ -1761,9 +1760,7 @@ Manager::~Manager()
 
   // Don't spin the event loop in the destructor waiting for the thread to
   // shutdown.  Defer this to the main thread, instead.
-  nsCOMPtr<nsIRunnable> runnable =
-    NS_NewRunnableMethod(ioThread, &nsIThread::Shutdown);
-  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(NS_DispatchToMainThread(runnable)));
+  MOZ_ALWAYS_SUCCEEDS(NS_DispatchToMainThread(NewRunnableMethod(ioThread, &nsIThread::Shutdown)));
 }
 
 void

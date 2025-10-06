@@ -3,9 +3,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const { Cu } = require("chrome");
-const cssAutoCompleter = require("devtools/client/sourceeditor/css-autocompleter");
+"use strict";
+
+const CSSCompleter = require("devtools/client/sourceeditor/css-autocompleter");
 const { AutocompletePopup } = require("devtools/client/shared/autocomplete-popup");
+const {KeyCodes} = require("devtools/client/shared/keycodes");
 
 const CM_TERN_SCRIPTS = [
   "chrome://devtools/content/sourceeditor/codemirror/addon/tern/tern.js",
@@ -31,19 +33,21 @@ function initializeAutoCompletion(ctx, options = {}) {
                         Editor.keyFor("autocompletion", { noaccel: true });
   if (ed.config.mode == Editor.modes.js) {
     let defs = [
-      "./tern/browser",
-      "./tern/ecma5",
-    ].map(require);
+      require("./tern/browser"),
+      require("./tern/ecma5"),
+    ];
 
     CM_TERN_SCRIPTS.forEach(ed.loadScript, ed);
     win.tern = require("./tern/tern");
     cm.tern = new CodeMirror.TernServer({
       defs: defs,
-      typeTip: function(data) {
+      typeTip: function (data) {
         let tip = document.createElement("span");
         tip.className = "CodeMirror-Tern-information";
         let tipType = document.createElement("strong");
-        tipType.appendChild(document.createTextNode(data.type || cm.l10n("autocompletion.notFound")));
+        let tipText = document.createTextNode(data.type ||
+          cm.l10n("autocompletion.notFound"));
+        tipType.appendChild(tipText);
         tip.appendChild(tipType);
 
         if (data.doc) {
@@ -68,23 +72,23 @@ function initializeAutoCompletion(ctx, options = {}) {
     let updateArgHintsCallback = cm.tern.updateArgHints.bind(cm.tern, cm);
     cm.on("cursorActivity", updateArgHintsCallback);
 
-    keyMap[autocompleteKey] = (cm) => {
-      cm.tern.getHint(cm, (data) => {
+    keyMap[autocompleteKey] = cmArg => {
+      cmArg.tern.getHint(cmArg, data => {
         CodeMirror.on(data, "shown", () => ed.emit("before-suggest"));
         CodeMirror.on(data, "close", () => ed.emit("after-suggest"));
         CodeMirror.on(data, "select", () => ed.emit("suggestion-entered"));
-        CodeMirror.showHint(cm, (cm, cb) => cb(data), { async: true });
+        CodeMirror.showHint(cmArg, (cmIgnore, cb) => cb(data), { async: true });
       });
     };
 
-    keyMap[Editor.keyFor("showInformation2", { noaccel: true })] = (cm) => {
-      cm.tern.showType(cm, null, () => {
+    keyMap[Editor.keyFor("showInformation2", { noaccel: true })] = cmArg => {
+      cmArg.tern.showType(cmArg, null, () => {
         ed.emit("show-information");
       });
     };
     cm.addKeyMap(keyMap);
 
-    let destroyTern = function() {
+    let destroyTern = function () {
       ed.off("destroy", destroyTern);
       cm.off("cursorActivity", updateArgHintsCallback);
       cm.removeKeyMap(keyMap);
@@ -101,13 +105,13 @@ function initializeAutoCompletion(ctx, options = {}) {
     // TODO: Integrate tern autocompletion with this autocomplete API.
     return;
   } else if (ed.config.mode == Editor.modes.css) {
-    completer = new cssAutoCompleter({walker: options.walker});
+    completer = new CSSCompleter({walker: options.walker});
   }
 
   function insertSelectedPopupItem() {
     let autocompleteState = autocompleteMap.get(ed);
     if (!popup || !popup.isOpen || !autocompleteState) {
-      return;
+      return false;
     }
 
     if (!autocompleteState.suggestionInsertedOnce && popup.selectedItem) {
@@ -115,23 +119,27 @@ function initializeAutoCompletion(ctx, options = {}) {
       insertPopupItem(ed, popup.selectedItem);
     }
 
+    popup.once("popup-closed", () => {
+      // This event is used in tests.
+      ed.emit("popup-hidden");
+    });
     popup.hidePopup();
-    ed.emit("popup-hidden"); // This event is used in tests.
     return true;
   }
 
-  let popup = new AutocompletePopup(win.parent.document, {
-    position: "after_start",
-    fixedWidth: true,
+  // Give each popup a new name to avoid sharing the elements.
+
+  let popup = new AutocompletePopup({ doc: win.parent.document }, {
+    position: "bottom",
     theme: "auto",
     autoSelect: true,
     onClick: insertSelectedPopupItem
   });
 
-  let cycle = (reverse) => {
+  let cycle = reverse => {
     if (popup && popup.isOpen) {
       cycleSuggestions(ed, reverse == true);
-      return;
+      return null;
     }
 
     return CodeMirror.Pass;
@@ -147,6 +155,7 @@ function initializeAutoCompletion(ctx, options = {}) {
       return wasHandled ? true : CodeMirror.Pass;
     }
   };
+
   let autoCompleteCallback = autoComplete.bind(null, ctx);
   let keypressCallback = onEditorKeypress.bind(null, ctx);
   keyMap[autocompleteKey] = autoCompleteCallback;
@@ -195,33 +204,39 @@ function destroyAutoCompletion(ctx) {
 function autoComplete({ ed, cm }) {
   let autocompleteOpts = autocompleteMap.get(ed);
   let { completer, popup } = autocompleteOpts;
-  if (!completer || autocompleteOpts.insertingSuggestion || autocompleteOpts.doNotAutocomplete) {
+  if (!completer || autocompleteOpts.insertingSuggestion ||
+      autocompleteOpts.doNotAutocomplete) {
     autocompleteOpts.insertingSuggestion = false;
     return;
   }
   let cur = ed.getCursor();
-  completer.complete(cm.getRange({line: 0, ch: 0}, cur), cur)
-    .then(suggestions => {
+  completer.complete(cm.getRange({line: 0, ch: 0}, cur), cur).then(suggestions => {
     if (!suggestions || !suggestions.length || suggestions[0].preLabel == null) {
       autocompleteOpts.suggestionInsertedOnce = false;
+      popup.once("popup-closed", () => {
+        // This event is used in tests.
+        ed.emit("after-suggest");
+      });
       popup.hidePopup();
-      ed.emit("after-suggest");
       return;
     }
-    // The cursor is at the end of the currently entered part of the token, like
-    // "backgr|" but we need to open the popup at the beginning of the character
-    // "b". Thus we need to calculate the width of the entered part of the token
-    // ("backgr" here). 4 comes from the popup's left padding.
+    // The cursor is at the end of the currently entered part of the token,
+    // like "backgr|" but we need to open the popup at the beginning of the
+    // character "b". Thus we need to calculate the width of the entered part
+    // of the token ("backgr" here). 4 comes from the popup's left padding.
 
     let cursorElement = cm.display.cursorDiv.querySelector(".CodeMirror-cursor");
     let left = suggestions[0].preLabel.length * cm.defaultCharWidth() + 4;
     popup.hidePopup();
     popup.setItems(suggestions);
+
+    popup.once("popup-opened", () => {
+      // This event is used in tests.
+      ed.emit("after-suggest");
+    });
     popup.openPopup(cursorElement, -1 * left, 0);
     autocompleteOpts.suggestionInsertedOnce = false;
-    // This event is used in tests.
-    ed.emit("after-suggest");
-  }).then(null, Cu.reportError);
+  }).then(null, e => console.error(e));
 }
 
 /**
@@ -229,7 +244,7 @@ function autoComplete({ ed, cm }) {
  * in the editor.
  */
 function insertPopupItem(ed, popupItem) {
-  let {label, preLabel, text} = popupItem;
+  let {preLabel, text} = popupItem;
   let cur = ed.getCursor();
   let textBeforeCursor = ed.getText(cur.line).substring(0, cur.ch);
   let backwardsTextBeforeCursor = textBeforeCursor.split("").reverse().join("");
@@ -252,7 +267,7 @@ function insertPopupItem(ed, popupItem) {
  */
 function cycleSuggestions(ed, reverse) {
   let autocompleteOpts = autocompleteMap.get(ed);
-  let { popup, completer } = autocompleteOpts;
+  let { popup } = autocompleteOpts;
   let cur = ed.getCursor();
   autocompleteOpts.insertingSuggestion = true;
   if (!autocompleteOpts.suggestionInsertedOnce) {
@@ -268,18 +283,20 @@ function cycleSuggestions(ed, reverse) {
         popup.selectNextItem();
       }
     }
-    if (popup.itemCount == 1)
+    if (popup.itemCount == 1) {
       popup.hidePopup();
+    }
     insertPopupItem(ed, firstItem);
   } else {
     let fromCur = {
       line: cur.line,
-      ch  : cur.ch - popup.selectedItem.text.length
+      ch: cur.ch - popup.selectedItem.text.length
     };
-    if (reverse)
+    if (reverse) {
       popup.selectPreviousItem();
-    else
+    } else {
       popup.selectNextItem();
+    }
     ed.replaceText(popup.selectedItem.text, fromCur, cur);
   }
   // This event is used in tests.
@@ -300,10 +317,11 @@ function onEditorKeypress({ ed, Editor }, cm, event) {
     return;
   }
 
-  if ((event.ctrlKey || event.metaKey) && event.keyCode == event.DOM_VK_SPACE) {
+  if ((event.ctrlKey || event.metaKey) && event.keyCode == KeyCodes.DOM_VK_SPACE) {
     // When Ctrl/Cmd + Space is pressed, two simultaneous keypresses are emitted
     // first one for just the Ctrl/Cmd and second one for combo. The first one
-    // leave the autocompleteOpts.doNotAutocomplete as true, so we have to make it false
+    // leave the autocompleteOpts.doNotAutocomplete as true, so we have to make
+    // it false
     autocompleteOpts.doNotAutocomplete = false;
     return;
   }
@@ -315,29 +333,29 @@ function onEditorKeypress({ ed, Editor }, cm, event) {
   }
 
   switch (event.keyCode) {
-    case event.DOM_VK_RETURN:
+    case KeyCodes.DOM_VK_RETURN:
       autocompleteOpts.doNotAutocomplete = true;
       break;
-
-    case event.DOM_VK_ESCAPE:
-      if (autocompleteOpts.popup.isOpen)
+    case KeyCodes.DOM_VK_ESCAPE:
+      if (autocompleteOpts.popup.isOpen) {
         event.preventDefault();
-    case event.DOM_VK_LEFT:
-    case event.DOM_VK_RIGHT:
-    case event.DOM_VK_HOME:
-    case event.DOM_VK_END:
+      }
+      break;
+    case KeyCodes.DOM_VK_LEFT:
+    case KeyCodes.DOM_VK_RIGHT:
+    case KeyCodes.DOM_VK_HOME:
+    case KeyCodes.DOM_VK_END:
       autocompleteOpts.doNotAutocomplete = true;
       autocompleteOpts.popup.hidePopup();
       break;
-
-    case event.DOM_VK_BACK_SPACE:
-    case event.DOM_VK_DELETE:
-      if (ed.config.mode == Editor.modes.css)
-        autocompleteOpts.completer.invalidateCache(ed.getCursor().line)
+    case KeyCodes.DOM_VK_BACK_SPACE:
+    case KeyCodes.DOM_VK_DELETE:
+      if (ed.config.mode == Editor.modes.css) {
+        autocompleteOpts.completer.invalidateCache(ed.getCursor().line);
+      }
       autocompleteOpts.doNotAutocomplete = true;
       autocompleteOpts.popup.hidePopup();
       break;
-
     default:
       autocompleteOpts.doNotAutocomplete = false;
   }
@@ -347,8 +365,9 @@ function onEditorKeypress({ ed, Editor }, cm, event) {
  * Returns the private popup. This method is used by tests to test the feature.
  */
 function getPopup({ ed }) {
-  if (autocompleteMap.has(ed))
+  if (autocompleteMap.has(ed)) {
     return autocompleteMap.get(ed).popup;
+  }
 
   return null;
 }
@@ -358,9 +377,12 @@ function getPopup({ ed }) {
  * implementation of completer supports it.
  */
 function getInfoAt({ ed }, caret) {
-  let completer = autocompleteMap.get(ed).completer;
-  if (completer && completer.getInfoAt)
-    return completer.getInfoAt(ed.getText(), caret);
+  if (autocompleteMap.has(ed)) {
+    let completer = autocompleteMap.get(ed).completer;
+    if (completer && completer.getInfoAt) {
+      return completer.getInfoAt(ed.getText(), caret);
+    }
+  }
 
   return null;
 }

@@ -13,6 +13,7 @@
 #include "mozilla/RefPtr.h"             // for already_AddRefed
 #include "mozilla/gfx/Point.h"          // for IntSize
 #include "mozilla/gfx/Types.h"          // for SurfaceFormat
+#include "mozilla/layers/LayersSurfaces.h"  // for SurfaceDescriptor
 
 namespace mozilla {
 namespace gfx {
@@ -57,6 +58,10 @@ gfx::SurfaceFormat FormatFromBufferDescriptor(const BufferDescriptor& aDescripto
 
 gfx::IntSize SizeFromBufferDescriptor(const BufferDescriptor& aDescriptor);
 
+Maybe<gfx::IntSize> CbCrSizeFromBufferDescriptor(const BufferDescriptor& aDescriptor);
+
+Maybe<StereoMode> StereoModeFromBufferDescriptor(const BufferDescriptor& aDescriptor);
+
 uint8_t* GetYChannel(uint8_t* aBuffer, const YCbCrDescriptor& aDescriptor);
 
 uint8_t* GetCbChannel(uint8_t* aBuffer, const YCbCrDescriptor& aDescriptor);
@@ -64,7 +69,14 @@ uint8_t* GetCbChannel(uint8_t* aBuffer, const YCbCrDescriptor& aDescriptor);
 uint8_t* GetCrChannel(uint8_t* aBuffer, const YCbCrDescriptor& aDescriptor);
 
 already_AddRefed<gfx::DataSourceSurface>
-DataSourceSurfaceFromYCbCrDescriptor(uint8_t* aBuffer, const YCbCrDescriptor& aDescriptor);
+DataSourceSurfaceFromYCbCrDescriptor(uint8_t* aBuffer, const YCbCrDescriptor& aDescriptor, gfx::DataSourceSurface* aSurface = nullptr);
+
+void ConvertAndScaleFromYCbCrDescriptor(uint8_t* aBuffer,
+                                        const YCbCrDescriptor& aDescriptor,
+                                        const gfx::SurfaceFormat& aDestFormat,
+                                        const gfx::IntSize& aDestSize,
+                                        unsigned char* aDestBuffer,
+                                        int32_t aStride);
 
 } // ImageDataSerializer
 

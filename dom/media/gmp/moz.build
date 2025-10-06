@@ -1,4 +1,4 @@
-# -*- Mode: python; c-basic-offset: 4; indent-tabs-mode: nil; tab-width: 40 -*-
+# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
 # vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -38,6 +38,7 @@ EXPORTS += [
     'GMPChild.h',
     'GMPContentChild.h',
     'GMPContentParent.h',
+    'GMPCrashHelperHolder.h',
     'GMPDecryptorChild.h',
     'GMPDecryptorParent.h',
     'GMPDecryptorProxy.h',
@@ -52,6 +53,7 @@ EXPORTS += [
     'GMPServiceChild.h',
     'GMPServiceParent.h',
     'GMPSharedMemManager.h',
+    'GMPStorage.h',
     'GMPStorageChild.h',
     'GMPStorageParent.h',
     'GMPTimerChild.h',
@@ -69,11 +71,20 @@ EXPORTS += [
     'GMPVideoPlaneImpl.h',
 ]
 
+if CONFIG['MOZ_EME']:
+    EXPORTS += [
+        'GMPCDMCallbackProxy.h',
+        'GMPCDMProxy.h',
+    ]
+
 # We link GMPLoader into xul on B2G/Fennec as its code does not need to be
 # covered by a DRM vendor's voucher.
 if CONFIG['OS_TARGET'] == 'Android':
     SOURCES += [
       'GMPLoader.cpp',
+    ]
+    USE_LIBS += [
+        'rlz',
     ]
 
 UNIFIED_SOURCES += [
@@ -85,7 +96,9 @@ UNIFIED_SOURCES += [
     'GMPContentParent.cpp',
     'GMPDecryptorChild.cpp',
     'GMPDecryptorParent.cpp',
+    'GMPDiskStorage.cpp',
     'GMPEncryptedBufferDataImpl.cpp',
+    'GMPMemoryStorage.cpp',
     'GMPParent.cpp',
     'GMPPlatform.cpp',
     'GMPProcessChild.cpp',
@@ -109,10 +122,16 @@ UNIFIED_SOURCES += [
     'GMPVideoPlaneImpl.cpp',
 ]
 
-if CONFIG['OS_TARGET'] in ('WINNT', 'Darwin'):
-  DIRS += [
-      'rlz',
-  ]
+if CONFIG['MOZ_EME']:
+    UNIFIED_SOURCES += [
+        'GMPCDMCallbackProxy.cpp',
+        'GMPCDMProxy.cpp',
+    ]
+
+DIRS += [
+    'rlz',
+    'widevine-adapter',
+]
 
 IPDL_SOURCES += [
   'GMPTypes.ipdlh',
@@ -140,3 +159,6 @@ LOCAL_INCLUDES += [
     '/xpcom/build',
     '/xpcom/threads',
 ]
+
+if CONFIG['GNU_CXX']:
+    CXXFLAGS += ['-Wno-error=shadow']

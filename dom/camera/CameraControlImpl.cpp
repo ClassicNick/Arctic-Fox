@@ -5,7 +5,7 @@
 #include "CameraControlImpl.h"
 #include "base/basictypes.h"
 #include "mozilla/Assertions.h"
-#include "mozilla/unused.h"
+#include "mozilla/Unused.h"
 #include "nsPrintfCString.h"
 #include "nsIWeakReferenceUtils.h"
 #include "CameraCommon.h"
@@ -26,11 +26,11 @@ CameraControlImpl::CameraControlImpl()
   DOM_CAMERA_LOGT("%s:%d : this=%p\n", __func__, __LINE__, this);
   mCurrentConfiguration.mMode = ICameraControl::kUnspecifiedMode;
 
-  class Delegate : public nsRunnable
+  class Delegate : public Runnable
   {
   public:
     NS_IMETHOD
-    Run()
+    Run() override
     {
       char stackBaseGuess;
       profiler_register_thread("CameraThread", &stackBaseGuess);
@@ -329,7 +329,7 @@ CameraControlImpl::OnSystemError(CameraControlListener::SystemContext aContext,
 // Camera control asynchronous message; these are dispatched from
 //  the Main Thread to the Camera Thread, where they are consumed.
 
-class CameraControlImpl::ControlMessage : public nsRunnable
+class CameraControlImpl::ControlMessage : public Runnable
 {
 public:
   ControlMessage(CameraControlImpl* aCameraControl,

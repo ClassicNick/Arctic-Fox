@@ -8,7 +8,7 @@
 #include "gmock/gmock.h"
 #include "LayerUserData.h"
 #include "mozilla/layers/LayerMetricsWrapper.h"
-#include "mozilla/layers/CompositorParent.h"
+#include "mozilla/layers/CompositorBridgeParent.h"
 
 using namespace mozilla;
 using namespace mozilla::gfx;
@@ -130,40 +130,41 @@ TEST(Layers, Type) {
 }
 
 TEST(Layers, UserData) {
-  TestContainerLayer* layerPtr = new TestContainerLayer(nullptr);
+  UniquePtr<TestContainerLayer> layerPtr(new TestContainerLayer(nullptr));
   TestContainerLayer& layer = *layerPtr;
 
   void* key1 = (void*)1;
   void* key2 = (void*)2;
   void* key3 = (void*)3;
 
-  TestUserData* data1 = new TestUserData;
-  TestUserData* data2 = new TestUserData;
-  TestUserData* data3 = new TestUserData;
-
   ASSERT_EQ(nullptr, layer.GetUserData(key1));
   ASSERT_EQ(nullptr, layer.GetUserData(key2));
   ASSERT_EQ(nullptr, layer.GetUserData(key3));
+
+  TestUserData* data1 = new TestUserData;
+  TestUserData* data2 = new TestUserData;
+  TestUserData* data3 = new TestUserData;
 
   layer.SetUserData(key1, data1);
   layer.SetUserData(key2, data2);
   layer.SetUserData(key3, data3);
 
   // Also checking that the user data is returned but not free'd
-  ASSERT_EQ(data1, layer.RemoveUserData(key1).forget());
-  ASSERT_EQ(data2, layer.RemoveUserData(key2).forget());
-  ASSERT_EQ(data3, layer.RemoveUserData(key3).forget());
+  UniquePtr<LayerUserData> d1(layer.RemoveUserData(key1));
+  UniquePtr<LayerUserData> d2(layer.RemoveUserData(key2));
+  UniquePtr<LayerUserData> d3(layer.RemoveUserData(key3));
+  ASSERT_EQ(data1, d1.get());
+  ASSERT_EQ(data2, d2.get());
+  ASSERT_EQ(data3, d3.get());
 
-  layer.SetUserData(key1, data1);
-  layer.SetUserData(key2, data2);
-  layer.SetUserData(key3, data3);
+  layer.SetUserData(key1, d1.release());
+  layer.SetUserData(key2, d2.release());
+  layer.SetUserData(key3, d3.release());
 
   // Layer has ownership of data1-3, check that they are destroyed
   EXPECT_CALL(*data1, Die());
   EXPECT_CALL(*data2, Die());
   EXPECT_CALL(*data3, Die());
-  delete layerPtr;
-
 }
 
 static
@@ -239,7 +240,7 @@ already_AddRefed<Layer> CreateLayerTree(
     manager->SetRoot(rootLayer);
     if (rootLayer->AsLayerComposite()) {
       // Only perform this for LayerManagerComposite
-      CompositorParent::SetShadowProperties(rootLayer);
+      CompositorBridgeParent::SetShadowProperties(rootLayer);
     }
   }
   return rootLayer.forget();
@@ -351,7 +352,15 @@ TEST(Layers, RepositionChild) {
   ASSERT_EQ(nullptr, layers[1]->GetNextSibling());
 }
 
-TEST(LayerMetricsWrapper, SimpleTree) {
+class LayerMetricsWrapperTester : public ::testing::Test {
+protected:
+  virtual void SetUp() {
+    // This ensures ScrollMetadata::sNullMetadata is initialized.
+    gfxPlatform::GetPlatform();
+  }
+};
+
+TEST_F(LayerMetricsWrapperTester, SimpleTree) {
   nsTArray<RefPtr<Layer> > layers;
   RefPtr<LayerManager> lm;
   RefPtr<Layer> root = CreateLayerTree("c(c(c(tt)c(t)))", nullptr, nullptr, lm, layers);
@@ -388,43 +397,43 @@ TEST(LayerMetricsWrapper, SimpleTree) {
   ASSERT_TRUE(rootWrapper == wrapper.GetParent());
 }
 
-static FrameMetrics
-MakeMetrics(FrameMetrics::ViewID aId) {
-  FrameMetrics metrics;
-  metrics.SetScrollId(aId);
-  return metrics;
+static ScrollMetadata
+MakeMetadata(FrameMetrics::ViewID aId) {
+  ScrollMetadata metadata;
+  metadata.GetMetrics().SetScrollId(aId);
+  return metadata;
 }
 
-TEST(LayerMetricsWrapper, MultiFramemetricsTree) {
+TEST_F(LayerMetricsWrapperTester, MultiFramemetricsTree) {
   nsTArray<RefPtr<Layer> > layers;
   RefPtr<LayerManager> lm;
   RefPtr<Layer> root = CreateLayerTree("c(c(c(tt)c(t)))", nullptr, nullptr, lm, layers);
 
-  nsTArray<FrameMetrics> metrics;
-  metrics.InsertElementAt(0, MakeMetrics(FrameMetrics::START_SCROLL_ID + 0)); // topmost of root layer
-  metrics.InsertElementAt(0, MakeMetrics(FrameMetrics::NULL_SCROLL_ID));
-  metrics.InsertElementAt(0, MakeMetrics(FrameMetrics::START_SCROLL_ID + 1));
-  metrics.InsertElementAt(0, MakeMetrics(FrameMetrics::START_SCROLL_ID + 2));
-  metrics.InsertElementAt(0, MakeMetrics(FrameMetrics::NULL_SCROLL_ID));
-  metrics.InsertElementAt(0, MakeMetrics(FrameMetrics::NULL_SCROLL_ID));      // bottom of root layer
-  root->SetFrameMetrics(metrics);
+  nsTArray<ScrollMetadata> metadata;
+  metadata.InsertElementAt(0, MakeMetadata(FrameMetrics::START_SCROLL_ID + 0)); // topmost of root layer
+  metadata.InsertElementAt(0, MakeMetadata(FrameMetrics::NULL_SCROLL_ID));
+  metadata.InsertElementAt(0, MakeMetadata(FrameMetrics::START_SCROLL_ID + 1));
+  metadata.InsertElementAt(0, MakeMetadata(FrameMetrics::START_SCROLL_ID + 2));
+  metadata.InsertElementAt(0, MakeMetadata(FrameMetrics::NULL_SCROLL_ID));
+  metadata.InsertElementAt(0, MakeMetadata(FrameMetrics::NULL_SCROLL_ID));      // bottom of root layer
+  root->SetScrollMetadata(metadata);
 
-  metrics.Clear();
-  metrics.InsertElementAt(0, MakeMetrics(FrameMetrics::START_SCROLL_ID + 3));
-  layers[1]->SetFrameMetrics(metrics);
+  metadata.Clear();
+  metadata.InsertElementAt(0, MakeMetadata(FrameMetrics::START_SCROLL_ID + 3));
+  layers[1]->SetScrollMetadata(metadata);
 
-  metrics.Clear();
-  metrics.InsertElementAt(0, MakeMetrics(FrameMetrics::NULL_SCROLL_ID));
-  metrics.InsertElementAt(0, MakeMetrics(FrameMetrics::START_SCROLL_ID + 4));
-  layers[2]->SetFrameMetrics(metrics);
+  metadata.Clear();
+  metadata.InsertElementAt(0, MakeMetadata(FrameMetrics::NULL_SCROLL_ID));
+  metadata.InsertElementAt(0, MakeMetadata(FrameMetrics::START_SCROLL_ID + 4));
+  layers[2]->SetScrollMetadata(metadata);
 
-  metrics.Clear();
-  metrics.InsertElementAt(0, MakeMetrics(FrameMetrics::START_SCROLL_ID + 5));
-  layers[4]->SetFrameMetrics(metrics);
+  metadata.Clear();
+  metadata.InsertElementAt(0, MakeMetadata(FrameMetrics::START_SCROLL_ID + 5));
+  layers[4]->SetScrollMetadata(metadata);
 
-  metrics.Clear();
-  metrics.InsertElementAt(0, MakeMetrics(FrameMetrics::START_SCROLL_ID + 6));
-  layers[5]->SetFrameMetrics(metrics);
+  metadata.Clear();
+  metadata.InsertElementAt(0, MakeMetadata(FrameMetrics::START_SCROLL_ID + 6));
+  layers[5]->SetScrollMetadata(metadata);
 
   LayerMetricsWrapper wrapper(root, LayerMetricsWrapper::StartAt::TOP);
   nsTArray<Layer*> expectedLayers;

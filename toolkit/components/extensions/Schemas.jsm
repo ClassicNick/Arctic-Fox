@@ -9,24 +9,28 @@ const Cc = Components.classes;
 const Cu = Components.utils;
 const Cr = Components.results;
 
+Cu.importGlobalProperties(["URL"]);
+
+Cu.import("resource://gre/modules/NetUtil.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
+Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 
 Cu.import("resource://gre/modules/ExtensionUtils.jsm");
 var {
   instanceOf,
 } = ExtensionUtils;
 
+XPCOMUtils.defineLazyServiceGetter(this, "contentPolicyService",
+                                   "@mozilla.org/addons/content-policy;1",
+                                   "nsIAddonContentPolicy");
+
 this.EXPORTED_SYMBOLS = ["Schemas"];
 
 /* globals Schemas, URL */
 
-Cu.import("resource://gre/modules/NetUtil.jsm");
-
-Cu.importGlobalProperties(["URL"]);
-
-function readJSON(uri) {
+function readJSON(url) {
   return new Promise((resolve, reject) => {
-    NetUtil.asyncFetch({uri, loadUsingSystemPrincipal: true}, (inputStream, status) => {
+    NetUtil.asyncFetch({uri: url, loadUsingSystemPrincipal: true}, (inputStream, status) => {
       if (!Components.isSuccessCode(status)) {
         reject(new Error(status));
         return;
@@ -78,25 +82,72 @@ function getValueBaseType(value) {
   return t;
 }
 
+// Methods of Context that are used by Schemas.normalize. These methods can be
+// overridden at the construction of Context.
+const CONTEXT_FOR_VALIDATION = [
+  "checkLoadURL",
+  "hasPermission",
+  "logError",
+];
+
+// Methods of Context that are used by Schemas.inject.
+// Callers of Schemas.inject should implement all of these methods.
+const CONTEXT_FOR_INJECTION = [
+  ...CONTEXT_FOR_VALIDATION,
+  "callFunction",
+  "callFunctionNoReturn",
+  "callAsyncFunction",
+  "getProperty",
+  "setProperty",
+
+  "addListener",
+  "hasListener",
+  "removeListener",
+];
+
+/**
+ * A context for schema validation and error reporting. This class is only used
+ * internally within Schemas.
+ */
 class Context {
-  constructor(params) {
+  /**
+   * @param {object} params Provides the implementation of this class.
+   * @param {Array<string>} overridableMethods
+   */
+  constructor(params, overridableMethods = CONTEXT_FOR_VALIDATION) {
     this.params = params;
 
     this.path = [];
+    this.preprocessors = {
+      localize(value, context) {
+        return value;
+      },
+    };
 
-    let props = ["addListener", "callFunction", "callAsyncFunction",
-                 "hasListener", "removeListener",
-                 "getProperty", "setProperty"];
+    this.currentChoices = new Set();
+    this.choicePathIndex = 0;
+
+    for (let method of overridableMethods) {
+      if (method in params) {
+        this[method] = params[method].bind(params);
+      }
+    }
+
+    let props = ["preprocessors"];
     for (let prop of props) {
-      this[prop] = params[prop];
+      if (prop in params) {
+        if (prop in this && typeof this[prop] == "object") {
+          Object.assign(this[prop], params[prop]);
+        } else {
+          this[prop] = params[prop];
+        }
+      }
     }
+  }
 
-    if ("checkLoadURL" in params) {
-      this.checkLoadURL = params.checkLoadURL;
-    }
-    if ("logError" in params) {
-      this.logError = params.logError;
-    }
+  get choicePath() {
+    let path = this.path.slice(this.choicePathIndex);
+    return path.join(".");
   }
 
   get cloneScope() {
@@ -111,6 +162,12 @@ class Context {
     return this.params.principal || Services.scriptSecurityManager.createNullPrincipal({});
   }
 
+  /**
+   * Checks whether `url` may be loaded by the extension in this context.
+   *
+   * @param {string} url The URL that the extension wished to load.
+   * @returns {boolean} Whether the context may load `url`.
+   */
   checkLoadURL(url) {
     let ssm = Services.scriptSecurityManager;
     try {
@@ -123,17 +180,51 @@ class Context {
   }
 
   /**
+   * Checks whether this context has the given permission.
+   *
+   * @param {string} permission
+   *        The name of the permission to check.
+   *
+   * @returns {boolean} True if the context has the given permission.
+   */
+  hasPermission(permission) {
+    return false;
+  }
+
+  /**
    * Returns an error result object with the given message, for return
    * by Type normalization functions.
    *
    * If the context has a `currentTarget` value, this is prepended to
    * the message to indicate the location of the error.
+   *
+   * @param {string} errorMessage
+   *        The error message which will be displayed when this is the
+   *        only possible matching schema.
+   * @param {string} choicesMessage
+   *        The message describing the valid what constitutes a valid
+   *        value for this schema, which will be displayed when multiple
+   *        schema choices are available and none match.
+   *
+   *        A caller may pass `null` to prevent a choice from being
+   *        added, but this should *only* be done from code processing a
+   *        choices type.
+   * @returns {object}
    */
-  error(message) {
-    if (this.currentTarget) {
-      return {error: `Error processing ${this.currentTarget}: ${message}`};
+  error(errorMessage, choicesMessage = undefined) {
+    if (choicesMessage !== null) {
+      let {choicePath} = this;
+      if (choicePath) {
+        choicesMessage = `.${choicePath} must ${choicesMessage}`;
+      }
+
+      this.currentChoices.add(choicesMessage);
     }
-    return {error: message};
+
+    if (this.currentTarget) {
+      return {error: `Error processing ${this.currentTarget}: ${errorMessage}`};
+    }
+    return {error: errorMessage};
   }
 
   /**
@@ -143,6 +234,9 @@ class Context {
    *
    * If the context has a `currentTarget` value, this is prepended to
    * the message, in the same way as for the `error` method.
+   *
+   * @param {string} message
+   * @returns {Error}
    */
   makeError(message) {
     let {error} = this.error(message);
@@ -155,6 +249,8 @@ class Context {
   /**
    * Logs the given error to the console. May be overridden to enable
    * custom logging.
+   *
+   * @param {Error|string} error
    */
   logError(error) {
     Cu.reportError(error);
@@ -175,12 +271,53 @@ class Context {
   }
 
   /**
+   * Executes the given callback, and returns an array of choice strings
+   * passed to {@see #error} during its execution.
+   *
+   * @param {function} callback
+   * @returns {object}
+   *          An object with a `result` property containing the return
+   *          value of the callback, and a `choice` property containing
+   *          an array of choices.
+   */
+  withChoices(callback) {
+    let {currentChoices, choicePathIndex} = this;
+
+    let choices = new Set();
+    this.currentChoices = choices;
+    this.choicePathIndex = this.path.length;
+
+    try {
+      let result = callback();
+
+      return {result, choices: Array.from(choices)};
+    } finally {
+      this.currentChoices = currentChoices;
+      this.choicePathIndex = choicePathIndex;
+
+      choices = Array.from(choices);
+      if (choices.length == 1) {
+        currentChoices.add(choices[0]);
+      } else if (choices.length) {
+        let n = choices.length - 1;
+        choices[n] = `or ${choices[n]}`;
+
+        this.error(null, `must either [${choices.join(", ")}]`);
+      }
+    }
+  }
+
+  /**
    * Appends the given component to the `currentTarget` path to indicate
    * that it is being processed, calls the given callback function, and
    * then restores the original path.
    *
    * This is used to identify the path of the property being processed
    * when reporting type errors.
+   *
+   * @param {string} component
+   * @param {function} callback
+   * @returns {*}
    */
   withPath(component, callback) {
     this.path.push(component);
@@ -189,6 +326,123 @@ class Context {
     } finally {
       this.path.pop();
     }
+  }
+}
+
+/**
+ * Holds methods that run the actual implementation of the extension APIs. These
+ * methods are only called if the extension API invocation matches the signature
+ * as defined in the schema. Otherwise an error is reported to the context.
+ */
+class InjectionContext extends Context {
+  constructor(params) {
+    super(params, CONTEXT_FOR_INJECTION);
+  }
+
+  /**
+   * Calls function `path`.`name` and returns its return value.
+   *
+   * @abstract
+   * @param {Array<string>} path The API path, e.g. `["storage", "local"]`.
+   * @param {string} name The method name, e.g. "get".
+   * @param {Array} args The parameters for the function.
+   * @returns {*} The return value of the invoked function.
+   */
+  callFunction(path, name, args) {
+    throw new Error("Not implemented");
+  }
+
+  /**
+   * Calls function `path`.`name` and ignores its return value.
+   *
+   * @abstract
+   * @param {Array<string>} path The API path, e.g. `["storage", "local"]`.
+   * @param {string} name The method name, e.g. "get".
+   * @param {Array} args The parameters for the function.
+   */
+  callFunctionNoReturn(path, name, args) {
+    throw new Error("Not implemented");
+  }
+
+  /**
+   * Call function `path`.`name` that completes asynchronously.
+   *
+   * @abstract
+   * @param {Array<string>} path The API path, e.g. `["storage", "local"]`.
+   * @param {string} name The method name, e.g. "get".
+   * @param {Array} args The parameters for the function.
+   * @param {function(*)} [callback] The callback to be called when the function
+   *     completes.
+   * @returns {Promise|undefined} Must be void if `callback` is set, and a
+   *     promise otherwise. The promise is resolved when the function completes.
+   */
+  callAsyncFunction(path, name, args, callback) {
+    throw new Error("Not implemented");
+  }
+
+  /**
+   * Retrieves the value of property `path`.`name`.
+   *
+   * @abstract
+   * @param {Array<string>} path The API path, e.g. `["storage", "local"]`.
+   * @param {string} name The property name.
+   * @returns {*} The value of the property.
+   */
+  getProperty(path, name) {
+    throw new Error("Not implemented");
+  }
+
+  /**
+   * Assigns the value of property `path`.`name`.
+   *
+   * @abstract
+   * @param {Array<string>} path The API path, e.g. `["storage", "local"]`.
+   * @param {string} name The property name.
+   * @param {string} value The new value of the property.
+   */
+  setProperty(path, name, value) {
+    throw new Error("Not implemented");
+  }
+
+  /**
+   * Registers `listener` for event `path`.`name`.
+   *
+   * @abstract
+   * @param {Array<string>} path The API path, e.g. `["storage", "local"]`.
+   * @param {string} name The event name, e.g. "onChanged"
+   * @param {function} listener The callback to be called when the event fires.
+   * @param {Array} args Extra parameters for EventManager.addListener.
+   * @see EventManager.addListener
+   */
+  addListener(path, name, listener, args) {
+    throw new Error("Not implemented");
+  }
+
+  /**
+   * Checks whether `listener` is listening to event `path`.`name`.
+   *
+   * @abstract
+   * @param {Array<string>} path The API path, e.g. `["storage", "local"]`.
+   * @param {string} name The event name, e.g. "onChanged"
+   * @param {function} listener The event listener.
+   * @returns {boolean} Whether `listener` was added to event `path`.`name`.
+   * @see EventManager.hasListener
+   */
+  hasListener(path, name, listener) {
+    throw new Error("Not implemented");
+  }
+
+  /**
+   * Unregisters `listener` from event `path`.`name`.
+   *
+   * @abstract
+   * @param {Array<string>} path The API path, e.g. `["storage", "local"]`.
+   * @param {string} name The event name, e.g. "onChanged"
+   * @param {function} listener The event listener.
+   * @see EventManager.removeListener
+   */
+  removeListener(path, name, listener) {
+    throw new Error("Not implemented");
   }
 }
 
@@ -243,6 +497,29 @@ const FORMATS = {
 
     throw new SyntaxError(`String ${JSON.stringify(string)} must be a relative URL`);
   },
+
+  contentSecurityPolicy(string, context) {
+    let error = contentPolicyService.validateAddonCSP(string);
+    if (error != null) {
+      throw new SyntaxError(error);
+    }
+    return string;
+  },
+
+  date(string, context) {
+    // A valid ISO 8601 timestamp.
+    const PATTERN = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d{3})?(Z|([-+]\d{2}:?\d{2})))?$/;
+    if (!PATTERN.test(string)) {
+      throw new Error(`Invalid date string ${string}`);
+    }
+    // Our pattern just checks the format, we could still have invalid
+    // values (e.g., month=99 or month=02 and day=31).  Let the Date
+    // constructor do the dirty work of validating.
+    if (isNaN(new Date(string))) {
+      throw new Error(`Invalid date string ${string}`);
+    }
+    return string;
+  },
 };
 
 // Schema files contain namespaces, and each namespace contains types,
@@ -267,11 +544,37 @@ class Entry {
     if ("deprecated" in schema) {
       this.deprecated = schema.deprecated;
     }
+
+    /**
+     * @property {string} [preprocessor]
+     * If set to a string value, and a preprocessor of the same is
+     * defined in the validation context, it will be applied to this
+     * value prior to any normalization.
+     */
+    this.preprocessor = schema.preprocess || null;
+  }
+
+  /**
+   * Preprocess the given value with the preprocessor declared in
+   * `preprocessor`.
+   *
+   * @param {*} value
+   * @param {Context} context
+   * @returns {*}
+   */
+  preprocess(value, context) {
+    if (this.preprocessor) {
+      return context.preprocessors[this.preprocessor](value, context);
+    }
+    return value;
   }
 
   /**
    * Logs a deprecation warning for this entry, based on the value of
    * its `deprecated` property.
+   *
+   * @param {Context} context
+   * @param {value} [value]
    */
   logDeprecation(context, value = null) {
     let message = "This property is deprecated";
@@ -293,6 +596,9 @@ class Entry {
   /**
    * Checks whether the entry is deprecated and, if so, logs a
    * deprecation message.
+   *
+   * @param {Context} context
+   * @param {value} [value]
    */
   checkDeprecated(context, value = null) {
     if (this.deprecated) {
@@ -300,11 +606,17 @@ class Entry {
     }
   }
 
-  // Injects JS values for the entry into the extension API
-  // namespace. The default implementation is to do
-  // nothing. |context| is used to call the actual implementation
-  // of a given function or event. It's an object with properties
-  // callFunction, addListener, removeListener, and hasListener.
+  /**
+   * Injects JS values for the entry into the extension API
+   * namespace. The default implementation is to do nothing.
+   * `context` is used to call the actual implementation
+   * of a given function or event.
+   *
+   * @param {Array<string>} path The API path, e.g. `["storage", "local"]`.
+   * @param {string} name The method name, e.g. "get".
+   * @param {object} dest The object where `path`.`name` should be stored.
+   * @param {InjectionContext} context
+   */
   inject(path, name, dest, context) {
   }
 }
@@ -335,9 +647,18 @@ class Type extends Entry {
   normalizeBase(type, value, context) {
     if (this.checkBaseType(getValueBaseType(value))) {
       this.checkDeprecated(context, value);
-      return {value};
+      return {value: this.preprocess(value, context)};
     }
-    return context.error(`Expected ${type} instead of ${JSON.stringify(value)}`);
+
+    let choice;
+    if (/^[aeiou]/.test(type)) {
+      choice = `be an ${type} value`;
+    } else {
+      choice = `be a ${type} value`;
+    }
+
+    return context.error(`Expected ${type} instead of ${JSON.stringify(value)}`,
+                         choice);
   }
 }
 
@@ -370,19 +691,30 @@ class ChoiceType extends Type {
     this.checkDeprecated(context, value);
 
     let error;
-
-    let baseType = getValueBaseType(value);
-    for (let choice of this.choices) {
-      if (choice.checkBaseType(baseType)) {
+    let {choices, result} = context.withChoices(() => {
+      for (let choice of this.choices) {
         let r = choice.normalize(value, context);
         if (!r.error) {
           return r;
         }
-        error = r.error;
+
+        error = r;
       }
+    });
+
+    if (result) {
+      return result;
+    }
+    if (choices.length <= 1) {
+      return error;
     }
 
-    return context.error(error || `Unexpected value ${JSON.stringify(value)}`);
+    let n = choices.length - 1;
+    choices[n] = `or ${choices[n]}`;
+
+    let message = `Value must either: ${choices.join(", ")}`;
+
+    return context.error(message, null);
   }
 
   checkBaseType(baseType) {
@@ -434,30 +766,38 @@ class StringType extends Type {
     if (r.error) {
       return r;
     }
+    value = r.value;
 
     if (this.enumeration) {
       if (this.enumeration.includes(value)) {
         return {value};
       }
-      return context.error(`Invalid enumeration value ${JSON.stringify(value)}`);
+
+      let choices = this.enumeration.map(JSON.stringify).join(", ");
+
+      return context.error(`Invalid enumeration value ${JSON.stringify(value)}`,
+                           `be one of [${choices}]`);
     }
 
     if (value.length < this.minLength) {
-      return context.error(`String ${JSON.stringify(value)} is too short (must be ${this.minLength})`);
+      return context.error(`String ${JSON.stringify(value)} is too short (must be ${this.minLength})`,
+                           `be longer than ${this.minLength}`);
     }
     if (value.length > this.maxLength) {
-      return context.error(`String ${JSON.stringify(value)} is too long (must be ${this.maxLength})`);
+      return context.error(`String ${JSON.stringify(value)} is too long (must be ${this.maxLength})`,
+                           `be shorter than ${this.maxLength}`);
     }
 
     if (this.pattern && !this.pattern.test(value)) {
-      return context.error(`String ${JSON.stringify(value)} must match ${this.pattern}`);
+      return context.error(`String ${JSON.stringify(value)} must match ${this.pattern}`,
+                           `match the pattern ${this.pattern.toSource()}`);
     }
 
     if (this.format) {
       try {
         r.value = this.format(r.value, context);
       } catch (e) {
-        return context.error(String(e));
+        return context.error(String(e), `match the format "${this.format.name}"`);
       }
     }
 
@@ -505,11 +845,13 @@ class ObjectType extends Type {
     return baseType == "object";
   }
 
-  normalize(value, context) {
+  // FIXME: Bug 1265371 - Refactor normalize and parseType in Schemas.jsm to reduce complexity
+  normalize(value, context) { // eslint-disable-line complexity
     let v = this.normalizeBase("object", value, context);
     if (v.error) {
       return v;
     }
+    value = v.value;
 
     if (this.isInstanceOf) {
       if (Object.keys(this.properties).length ||
@@ -519,7 +861,8 @@ class ObjectType extends Type {
       }
 
       if (!instanceOf(value, this.isInstanceOf)) {
-        return context.error(`Object must be an instance of ${this.isInstanceOf}`);
+        return context.error(`Object must be an instance of ${this.isInstanceOf}`,
+                             `be an instance of ${this.isInstanceOf}`);
       }
 
       // This is kind of a hack, but we can't normalize things that
@@ -537,7 +880,8 @@ class ObjectType extends Type {
 
     let klass = Cu.getClassName(value, true);
     if (klass != "Object") {
-      return context.error(`Expected a plain JavaScript object, got a ${klass}`);
+      return context.error(`Expected a plain JavaScript object, got a ${klass}`,
+                           `be a plain JavaScript object`);
     }
 
     let properties = Object.create(null);
@@ -548,7 +892,8 @@ class ObjectType extends Type {
       for (let prop of Object.getOwnPropertyNames(waived)) {
         let desc = Object.getOwnPropertyDescriptor(waived, prop);
         if (desc.get || desc.set) {
-          return context.error("Objects cannot have getters or setters on properties");
+          return context.error("Objects cannot have getters or setters on properties",
+                               "contain no getter or setter properties");
         }
         if (!desc.enumerable) {
           // Chrome ignores non-enumerable properties.
@@ -564,7 +909,8 @@ class ObjectType extends Type {
       let {type, optional, unsupported} = propType;
       if (unsupported) {
         if (prop in properties) {
-          return context.error(`Property "${prop}" is unsupported by Firefox`);
+          return context.error(`Property "${prop}" is unsupported by Firefox`,
+                               `not contain an unsupported "${prop}" property`);
         }
       } else if (prop in properties) {
         if (optional && (properties[prop] === null || properties[prop] === undefined)) {
@@ -579,7 +925,8 @@ class ObjectType extends Type {
         }
         remainingProps.delete(prop);
       } else if (!optional) {
-        return context.error(`Property "${prop}" is required`);
+        return context.error(`Property "${prop}" is required`,
+                             `contain the required "${prop}" property`);
       } else {
         result[prop] = null;
       }
@@ -589,7 +936,15 @@ class ObjectType extends Type {
     for (let prop of Object.keys(this.properties)) {
       let error = checkProperty(prop, this.properties[prop], result);
       if (error) {
-        return error;
+        let {onError} = this.properties[prop];
+        if (onError == "warn") {
+          context.logError(error.error);
+        } else if (onError != "ignore") {
+          return error;
+        }
+
+        result[prop] = null;
+        remainingProps.delete(prop);
       }
     }
 
@@ -614,9 +969,12 @@ class ObjectType extends Type {
         result[prop] = r.value;
       }
     } else if (remainingProps.size == 1) {
-      return context.error(`Unexpected property "${[...remainingProps]}"`);
+      return context.error(`Unexpected property "${[...remainingProps]}"`,
+                           `not contain an unexpected "${[...remainingProps]}" property`);
     } else if (remainingProps.size) {
-      return context.error(`Unexpected properties: ${[...remainingProps]}`);
+      let props = [...remainingProps].sort().join(", ");
+      return context.error(`Unexpected properties: ${props}`,
+                           `not contain the unexpected properties [${props}]`);
     }
 
     return {value: result};
@@ -639,8 +997,9 @@ class NumberType extends Type {
       return r;
     }
 
-    if (isNaN(value) || !Number.isFinite(value)) {
-      return context.error("NaN or infinity are not valid");
+    if (isNaN(r.value) || !Number.isFinite(r.value)) {
+      return context.error("NaN and infinity are not valid",
+                           "be a finite number");
     }
 
     return r;
@@ -663,17 +1022,21 @@ class IntegerType extends Type {
     if (r.error) {
       return r;
     }
+    value = r.value;
 
     // Ensure it's between -2**31 and 2**31-1
-    if ((value | 0) !== value) {
-      return context.error("Integer is out of range");
+    if (!Number.isSafeInteger(value)) {
+      return context.error("Integer is out of range",
+                           "be a valid 32 bit signed integer");
     }
 
     if (value < this.minimum) {
-      return context.error(`Integer ${value} is too small (must be at least ${this.minimum})`);
+      return context.error(`Integer ${value} is too small (must be at least ${this.minimum})`,
+                           `be at least ${this.minimum}`);
     }
     if (value > this.maximum) {
-      return context.error(`Integer ${value} is too big (must be at most ${this.maximum})`);
+      return context.error(`Integer ${value} is too big (must be at most ${this.maximum})`,
+                           `be no greater than ${this.maximum}`);
     }
 
     return r;
@@ -707,6 +1070,7 @@ class ArrayType extends Type {
     if (v.error) {
       return v;
     }
+    value = v.value;
 
     let result = [];
     for (let [i, element] of value.entries()) {
@@ -718,11 +1082,13 @@ class ArrayType extends Type {
     }
 
     if (result.length < this.minItems) {
-      return context.error(`Array requires at least ${this.minItems} items; you have ${result.length}`);
+      return context.error(`Array requires at least ${this.minItems} items; you have ${result.length}`,
+                           `have at least ${this.minItems} items`);
     }
 
     if (result.length > this.maxItems) {
-      return context.error(`Array requires at most ${this.maxItems} items; you have ${result.length}`);
+      return context.error(`Array requires at most ${this.maxItems} items; you have ${result.length}`,
+                           `have at most ${this.maxItems} items`);
     }
 
     return {value: result};
@@ -734,10 +1100,11 @@ class ArrayType extends Type {
 }
 
 class FunctionType extends Type {
-  constructor(schema, parameters, isAsync) {
+  constructor(schema, parameters, isAsync, hasAsyncCallback) {
     super(schema);
     this.parameters = parameters;
     this.isAsync = isAsync;
+    this.hasAsyncCallback = hasAsyncCallback;
   }
 
   normalize(value, context) {
@@ -831,7 +1198,7 @@ class SubModuleProperty extends Entry {
     this.properties = properties;
   }
 
-  inject(path, name, dest, wrapperFuncs) {
+  inject(path, name, dest, context) {
     let obj = Cu.createObjectIn(dest, {defineAs: name});
 
     let ns = Schemas.namespaces.get(this.namespaceName);
@@ -842,7 +1209,7 @@ class SubModuleProperty extends Entry {
 
     let functions = type.functions;
     for (let fun of functions) {
-      fun.inject(path.concat(name), fun.name, obj, wrapperFuncs);
+      fun.inject(path.concat(name), fun.name, obj, context);
     }
 
     // TODO: Inject this.properties.
@@ -910,25 +1277,23 @@ class CallEntry extends Entry {
       // When this option is set, it's up to the implementation to
       // parse arguments.
       return args;
-    } else {
-      let success = check(0, 0);
-      if (!success) {
-        this.throwError(context, "Incorrect argument types");
-      }
+    }
+    let success = check(0, 0);
+    if (!success) {
+      this.throwError(context, "Incorrect argument types");
     }
 
     // Now we normalize (and fully type check) all non-omitted arguments.
     fixedArgs = fixedArgs.map((arg, parameterIndex) => {
       if (arg === null) {
         return null;
-      } else {
-        let parameter = this.parameters[parameterIndex];
-        let r = parameter.type.normalize(arg, context);
-        if (r.error) {
-          this.throwError(context, `Type error for parameter ${parameter.name} (${r.error})`);
-        }
-        return r.value;
       }
+      let parameter = this.parameters[parameterIndex];
+      let r = parameter.type.normalize(arg, context);
+      if (r.error) {
+        this.throwError(context, `Type error for parameter ${parameter.name} (${r.error})`);
+      }
+      return r.value;
     });
 
     return fixedArgs;
@@ -937,16 +1302,22 @@ class CallEntry extends Entry {
 
 // Represents a "function" defined in a schema namespace.
 class FunctionEntry extends CallEntry {
-  constructor(schema, path, name, type, unsupported, allowAmbiguousOptionalArguments, returns) {
+  constructor(schema, path, name, type, unsupported, allowAmbiguousOptionalArguments, returns, permissions) {
     super(schema, path, name, type.parameters, allowAmbiguousOptionalArguments);
     this.unsupported = unsupported;
     this.returns = returns;
+    this.permissions = permissions;
 
     this.isAsync = type.isAsync;
+    this.hasAsyncCallback = type.hasAsyncCallback;
   }
 
   inject(path, name, dest, context) {
     if (this.unsupported) {
+      return;
+    }
+
+    if (this.permissions && !this.permissions.some(perm => context.hasPermission(perm))) {
       return;
     }
 
@@ -955,8 +1326,17 @@ class FunctionEntry extends CallEntry {
       stub = (...args) => {
         this.checkDeprecated(context);
         let actuals = this.checkParameters(args, context);
-        let callback = actuals.pop();
+        let callback = null;
+        if (this.hasAsyncCallback) {
+          callback = actuals.pop();
+        }
         return context.callAsyncFunction(path, name, actuals, callback);
+      };
+    } else if (!this.returns) {
+      stub = (...args) => {
+        this.checkDeprecated(context);
+        let actuals = this.checkParameters(args, context);
+        return context.callFunctionNoReturn(path, name, actuals);
       };
     } else {
       stub = (...args) => {
@@ -971,10 +1351,11 @@ class FunctionEntry extends CallEntry {
 
 // Represents an "event" defined in a schema namespace.
 class Event extends CallEntry {
-  constructor(schema, path, name, type, extraParameters, unsupported) {
+  constructor(schema, path, name, type, extraParameters, unsupported, permissions) {
     super(schema, path, name, extraParameters);
     this.type = type;
     this.unsupported = unsupported;
+    this.permissions = permissions;
   }
 
   checkListener(listener, context) {
@@ -990,15 +1371,19 @@ class Event extends CallEntry {
       return;
     }
 
+    if (this.permissions && !this.permissions.some(perm => context.hasPermission(perm))) {
+      return;
+    }
+
     let addStub = (listener, ...args) => {
       listener = this.checkListener(listener, context);
       let actuals = this.checkParameters(args, context);
-      return context.addListener(this.path, name, listener, actuals);
+      context.addListener(this.path, name, listener, actuals);
     };
 
     let removeStub = (listener) => {
       listener = this.checkListener(listener, context);
-      return context.removeListener(this.path, name, listener);
+      context.removeListener(this.path, name, listener);
     };
 
     let hasStub = (listener) => {
@@ -1014,6 +1399,12 @@ class Event extends CallEntry {
 }
 
 this.Schemas = {
+  initialized: false,
+
+  // Maps a schema URL to the JSON contained in that schema file. This
+  // is useful for sending the JSON across processes.
+  schemaJSON: new Map(),
+
   // Map[<schema-name> -> Map[<symbol-name> -> Entry]]
   // This keeps track of all the schemas that have been loaded so far.
   namespaces: new Map(),
@@ -1022,17 +1413,19 @@ this.Schemas = {
     let ns = this.namespaces.get(namespaceName);
     if (!ns) {
       ns = new Map();
+      ns.permissions = null;
       this.namespaces.set(namespaceName, ns);
     }
     ns.set(symbol, value);
   },
 
-  parseType(path, type, extraProperties = []) {
+  // FIXME: Bug 1265371 - Refactor normalize and parseType in Schemas.jsm to reduce complexity
+  parseType(path, type, extraProperties = []) { // eslint-disable-line complexity
     let allowedProperties = new Set(extraProperties);
 
     // Do some simple validation of our own schemas.
     function checkTypeProperties(...extra) {
-      let allowedSet = new Set([...allowedProperties, ...extra, "description", "deprecated"]);
+      let allowedSet = new Set([...allowedProperties, ...extra, "description", "deprecated", "preprocess"]);
       for (let prop of Object.keys(type)) {
         if (!allowedSet.has(prop)) {
           throw new Error(`Internal error: Namespace ${path.join(".")} has invalid type property "${prop}" in type "${type.id || JSON.stringify(type)}"`);
@@ -1073,9 +1466,8 @@ this.Schemas = {
         enumeration = enumeration.map(e => {
           if (typeof(e) == "object") {
             return e.name;
-          } else {
-            return e;
           }
+          return e;
         });
       }
 
@@ -1111,9 +1503,10 @@ this.Schemas = {
       let parseProperty = (type, extraProps = []) => {
         return {
           type: this.parseType(path, type,
-                               ["unsupported", ...extraProps]),
+                               ["unsupported", "onError", "permissions", ...extraProps]),
           optional: type.optional || false,
           unsupported: type.unsupported || false,
+          onError: type.onError || null,
         };
       };
 
@@ -1158,12 +1551,12 @@ this.Schemas = {
       return new NumberType(type);
     } else if (type.type == "integer") {
       checkTypeProperties("minimum", "maximum");
-      return new IntegerType(type, type.minimum || 0, type.maximum || Infinity);
+      return new IntegerType(type, type.minimum || -Infinity, type.maximum || Infinity);
     } else if (type.type == "boolean") {
       checkTypeProperties();
       return new BooleanType(type);
     } else if (type.type == "function") {
-      let isAsync = typeof(type.async) == "string";
+      let isAsync = Boolean(type.async);
 
       let parameters = null;
       if ("parameters" in type) {
@@ -1181,9 +1574,10 @@ this.Schemas = {
         }
       }
 
+      let hasAsyncCallback = false;
       if (isAsync) {
-        if (!parameters || !parameters.length || parameters[parameters.length - 1].name != type.async) {
-          throw new Error(`Internal error: "async" property must name the last parameter of the function.`);
+        if (parameters && parameters.length && parameters[parameters.length - 1].name == type.async) {
+          hasAsyncCallback = true;
         }
         if (type.returns || type.allowAmbiguousOptionalArguments) {
           throw new Error(`Internal error: Async functions must not have return values or ambiguous arguments.`);
@@ -1191,24 +1585,25 @@ this.Schemas = {
       }
 
       checkTypeProperties("parameters", "async", "returns");
-      return new FunctionType(type, parameters, isAsync);
+      return new FunctionType(type, parameters, isAsync, hasAsyncCallback);
     } else if (type.type == "any") {
       // Need to see what minimum and maximum are supposed to do here.
       checkTypeProperties("minimum", "maximum");
       return new AnyType(type);
-    } else {
-      throw new Error(`Unexpected type ${type.type}`);
     }
+    throw new Error(`Unexpected type ${type.type}`);
   },
 
   parseFunction(path, fun) {
     let f = new FunctionEntry(fun, path, fun.name,
                               this.parseType(path, fun,
                                              ["name", "unsupported", "returns",
+                                              "permissions",
                                               "allowAmbiguousOptionalArguments"]),
                               fun.unsupported || false,
                               fun.allowAmbiguousOptionalArguments || false,
-                              fun.returns || null);
+                              fun.returns || null,
+                              fun.permissions || null);
     return f;
   },
 
@@ -1279,55 +1674,186 @@ this.Schemas = {
     /* eslint-enable no-unused-vars */
 
     let type = this.parseType([namespaceName], event,
-                              ["name", "unsupported",
+                              ["name", "unsupported", "permissions",
                                "extraParameters", "returns", "filters"]);
 
     let e = new Event(event, [namespaceName], event.name, type, extras,
-                      event.unsupported || false);
+                      event.unsupported || false,
+                      event.permissions || null);
     this.register(namespaceName, event.name, e);
   },
 
-  load(uri) {
-    return readJSON(uri).then(json => {
-      for (let namespace of json) {
-        let name = namespace.namespace;
+  init() {
+    if (this.initialized) {
+      return;
+    }
+    this.initialized = true;
 
-        let types = namespace.types || [];
-        for (let type of types) {
-          this.loadType(name, type);
-        }
-
-        let properties = namespace.properties || {};
-        for (let propertyName of Object.keys(properties)) {
-          this.loadProperty(name, propertyName, properties[propertyName]);
-        }
-
-        let functions = namespace.functions || [];
-        for (let fun of functions) {
-          this.loadFunction(name, fun);
-        }
-
-        let events = namespace.events || [];
-        for (let event of events) {
-          this.loadEvent(name, event);
-        }
+    if (Services.appinfo.processType == Services.appinfo.PROCESS_TYPE_CONTENT) {
+      let data = Services.cpmm.initialProcessData;
+      let schemas = data["Extension:Schemas"];
+      if (schemas) {
+        this.schemaJSON = schemas;
       }
-    });
+      Services.cpmm.addMessageListener("Schema:Add", this);
+    }
+
+    this.flushSchemas();
   },
 
-  inject(dest, wrapperFuncs) {
-    for (let [namespace, ns] of this.namespaces) {
-      let obj = Cu.createObjectIn(dest, {defineAs: namespace});
-      for (let [name, entry] of ns) {
-        entry.inject([namespace], name, obj, new Context(wrapperFuncs));
+  receiveMessage(msg) {
+    switch (msg.name) {
+      case "Schema:Add":
+        this.schemaJSON.set(msg.data.url, msg.data.schema);
+        this.flushSchemas();
+        break;
+
+      case "Schema:Delete":
+        this.schemaJSON.delete(msg.data.url);
+        this.flushSchemas();
+        break;
+    }
+  },
+
+  flushSchemas() {
+    XPCOMUtils.defineLazyGetter(this, "namespaces",
+                                () => this.parseSchemas());
+  },
+
+  parseSchemas() {
+    Object.defineProperty(this, "namespaces", {
+      enumerable: true,
+      configurable: true,
+      value: new Map(),
+    });
+
+    for (let json of this.schemaJSON.values()) {
+      this.parseSchema(json);
+    }
+
+    return this.namespaces;
+  },
+
+  parseSchema(json) {
+    for (let namespace of json) {
+      let name = namespace.namespace;
+
+      let types = namespace.types || [];
+      for (let type of types) {
+        this.loadType(name, type);
       }
 
-      if (!Object.keys(obj).length) {
-        delete dest[namespace];
+      let properties = namespace.properties || {};
+      for (let propertyName of Object.keys(properties)) {
+        this.loadProperty(name, propertyName, properties[propertyName]);
+      }
+
+      let functions = namespace.functions || [];
+      for (let fun of functions) {
+        this.loadFunction(name, fun);
+      }
+
+      let events = namespace.events || [];
+      for (let event of events) {
+        this.loadEvent(name, event);
+      }
+
+      if (namespace.permissions) {
+        let ns = this.namespaces.get(name);
+        ns.permissions = namespace.permissions;
       }
     }
   },
 
+  load(url) {
+    if (Services.appinfo.processType != Services.appinfo.PROCESS_TYPE_CONTENT) {
+      return readJSON(url).then(json => {
+        this.schemaJSON.set(url, json);
+
+        let data = Services.ppmm.initialProcessData;
+        data["Extension:Schemas"] = this.schemaJSON;
+
+        Services.ppmm.broadcastAsyncMessage("Schema:Add", {url, schema: json});
+
+        this.flushSchemas();
+      });
+    }
+  },
+
+  unload(url) {
+    this.schemaJSON.delete(url);
+
+    let data = Services.ppmm.initialProcessData;
+    data["Extension:Schemas"] = this.schemaJSON;
+
+    Services.ppmm.broadcastAsyncMessage("Schema:Delete", {url});
+
+    this.flushSchemas();
+  },
+
+  /**
+   * Inject registered extension APIs into `dest`.
+   *
+   * @param {object} dest The root namespace for the APIs.
+   *     This object is usually exposed to extensions as "chrome" or "browser".
+   * @param {object} wrapperFuncs An implementation of the InjectionContext
+   *     interface, which runs the actual functionality of the generated API.
+   */
+  inject(dest, wrapperFuncs) {
+    let context = new InjectionContext(wrapperFuncs);
+
+    for (let [namespace, ns] of this.namespaces) {
+      if (ns.permissions && !ns.permissions.some(perm => context.hasPermission(perm))) {
+        continue;
+      }
+
+      let obj = Cu.createObjectIn(dest, {defineAs: namespace});
+      for (let [name, entry] of ns) {
+        if (wrapperFuncs.shouldInject(namespace, name)) {
+          entry.inject([namespace], name, obj, context);
+        }
+      }
+
+      // Remove the namespace object if it is empty
+      if (!Object.keys(obj).length) {
+        delete dest[namespace];
+        // process the next namespace.
+        continue;
+      }
+
+      // If the nested namespaced API object (e.g devtools.inspectedWindow) is not empty,
+      // then turn `dest["nested.namespace"]` into `dest["nested"]["namespace"]`.
+      if (namespace.includes(".")) {
+        let apiObj = dest[namespace];
+        delete dest[namespace];
+
+        let nsLevels = namespace.split(".");
+        let currentObj = dest;
+        for (let nsLevel of nsLevels.slice(0, -1)) {
+          if (!currentObj[nsLevel]) {
+            // Create the namespace level if it doesn't exist yet.
+            currentObj = Cu.createObjectIn(currentObj, {defineAs: nsLevel});
+          } else {
+            // Move currentObj to the nested object if it already exists.
+            currentObj = currentObj[nsLevel];
+          }
+        }
+
+        // Copy the apiObj as the final nested level.
+        currentObj[nsLevels.pop()] = apiObj;
+      }
+    }
+  },
+
+  /**
+   * Normalize `obj` according to the loaded schema for `typeName`.
+   *
+   * @param {object} obj The object to normalize against the schema.
+   * @param {string} typeName The name in the format namespace.propertyname
+   * @param {object} context An implementation of Context. Any validation errors
+   *     are reported to the given context.
+   * @returns {object} The normalized object.
+   */
   normalize(obj, typeName, context) {
     let [namespaceName, prop] = typeName.split(".");
     let ns = this.namespaces.get(namespaceName);

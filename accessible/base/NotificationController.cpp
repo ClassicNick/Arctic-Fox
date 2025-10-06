@@ -97,6 +97,17 @@ NotificationController::Shutdown()
   mNotifications.Clear();
   mEvents.Clear();
   mRelocations.Clear();
+  mEventTree.Clear();
+}
+
+EventTree*
+NotificationController::QueueMutation(Accessible* aContainer)
+{
+  EventTree* tree = mEventTree.FindOrInsert(aContainer);
+  if (tree) {
+    ScheduleProcessing();
+  }
+  return tree;
 }
 
 void
@@ -208,24 +219,6 @@ NotificationController::WillRefresh(mozilla::TimeStamp aTime)
   if (!(mDocument->mDocFlags & DocAccessible::eScrollInitialized))
     mDocument->AddScrollListener();
 
-  // Process content inserted notifications to update the tree. Process other
-  // notifications like DOM events and then flush event queue. If any new
-  // notifications are queued during this processing then they will be processed
-  // on next refresh. If notification processing queues up new events then they
-  // are processed in this refresh. If events processing queues up new events
-  // then new events are processed on next refresh.
-  // Note: notification processing or event handling may shut down the owning
-  // document accessible.
-
-  // Process only currently queued content inserted notifications.
-  for (auto iter = mContentInsertions.ConstIter(); !iter.Done(); iter.Next()) {
-    mDocument->ProcessContentInserted(iter.Key(), iter.UserData());
-    if (!mDocument) {
-      return;
-    }
-  }
-  mContentInsertions.Clear();
-
   // Process rendered text change notifications.
   for (auto iter = mTextHash.Iter(); !iter.Done(); iter.Next()) {
     nsCOMPtrHashKey<nsIContent>* entry = iter.Get();
@@ -260,7 +253,7 @@ NotificationController::WillRefresh(mozilla::TimeStamp aTime)
       if (text.mString.IsEmpty()) {
   #ifdef A11Y_LOG
         if (logging::IsEnabled(logging::eTree | logging::eText)) {
-          logging::MsgBegin("TREE", "text node lost its content");
+          logging::MsgBegin("TREE", "text node lost its content; doc: %p", mDocument);
           logging::Node("container", containerElm);
           logging::Node("content", textNode);
           logging::MsgEnd();
@@ -274,7 +267,7 @@ NotificationController::WillRefresh(mozilla::TimeStamp aTime)
       // Update text of the accessible and fire text change events.
   #ifdef A11Y_LOG
       if (logging::IsEnabled(logging::eText)) {
-        logging::MsgBegin("TEXT", "text may be changed");
+        logging::MsgBegin("TEXT", "text may be changed; doc: %p", mDocument);
         logging::Node("container", containerElm);
         logging::Node("content", textNode);
         logging::MsgEntry("old text '%s'",
@@ -293,25 +286,33 @@ NotificationController::WillRefresh(mozilla::TimeStamp aTime)
     if (!text.mString.IsEmpty()) {
   #ifdef A11Y_LOG
       if (logging::IsEnabled(logging::eTree | logging::eText)) {
-        logging::MsgBegin("TREE", "text node gains new content");
+        logging::MsgBegin("TREE", "text node gains new content; doc: %p", mDocument);
         logging::Node("container", containerElm);
         logging::Node("content", textNode);
         logging::MsgEnd();
       }
   #endif
 
-      // Make sure the text node is in accessible document still.
-      Accessible* container = mDocument->GetAccessibleOrContainer(containerNode);
-      NS_ASSERTION(container,
-                   "Text node having rendered text hasn't accessible document!");
+      Accessible* container = mDocument->AccessibleOrTrueContainer(containerNode);
+      MOZ_ASSERT(container,
+                 "Text node having rendered text hasn't accessible document!");
       if (container) {
-        nsTArray<nsCOMPtr<nsIContent> > insertedContents;
-        insertedContents.AppendElement(textNode);
-        mDocument->ProcessContentInserted(container, &insertedContents);
+        nsTArray<nsCOMPtr<nsIContent>>* list =
+          mContentInsertions.LookupOrAdd(container);
+        list->AppendElement(textNode);
       }
     }
   }
   mTextHash.Clear();
+
+  // Process content inserted notifications to update the tree.
+  for (auto iter = mContentInsertions.ConstIter(); !iter.Done(); iter.Next()) {
+    mDocument->ProcessContentInserted(iter.Key(), iter.UserData());
+    if (!mDocument) {
+      return;
+    }
+  }
+  mContentInsertions.Clear();
 
   // Bind hanging child documents.
   uint32_t hangingDocCnt = mHangingChildDocuments.Length();
@@ -381,7 +382,9 @@ NotificationController::WillRefresh(mozilla::TimeStamp aTime)
 
   // Process relocation list.
   for (uint32_t idx = 0; idx < mRelocations.Length(); idx++) {
-    mDocument->DoARIAOwnsRelocation(mRelocations[idx]);
+    if (mRelocations[idx]->IsInDocument()) {
+      mDocument->DoARIAOwnsRelocation(mRelocations[idx]);
+    }
   }
   mRelocations.Clear();
 
@@ -389,6 +392,10 @@ NotificationController::WillRefresh(mozilla::TimeStamp aTime)
   // process it synchronously.  However we do not want to reenter if fireing
   // events causes script to run.
   mObservingState = eRefreshProcessing;
+
+  RefPtr<DocAccessible> deathGrip(mDocument);
+  mEventTree.Process(deathGrip);
+  deathGrip = nullptr;
 
   ProcessEventQueue();
 
@@ -413,6 +420,10 @@ NotificationController::WillRefresh(mozilla::TimeStamp aTime)
       if (tabChild) {
         static_cast<TabChild*>(tabChild.get())->
           SendPDocAccessibleConstructor(ipcDoc, parentIPCDoc, id);
+#if defined(XP_WIN)
+        IAccessibleHolder holder(CreateHolderFromAccessible(childDoc));
+        ipcDoc->SendCOMProxy(holder);
+#endif
       }
     }
   }

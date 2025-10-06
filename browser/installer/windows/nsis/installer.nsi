@@ -5,7 +5,7 @@
 # Required Plugins:
 # AppAssocReg    http://nsis.sourceforge.net/Application_Association_Registration_plug-in
 # ApplicationID  http://nsis.sourceforge.net/ApplicationID_plug-in
-# CityHash       http://mxr.mozilla.org/mozilla-central/source/other-licenses/nsis/Contrib/CityHash
+# CityHash       http://dxr.mozilla.org/mozilla-central/source/other-licenses/nsis/Contrib/CityHash
 # ShellLink      http://nsis.sourceforge.net/ShellLink_plug-in
 # UAC            http://nsis.sourceforge.net/UAC_plug-in
 # ServicesHelper Mozilla specific plugin that is located in /other-licenses/nsis
@@ -359,17 +359,17 @@ Section "-Application" APP_IDX
   ; it doesn't cause problems always add them.
   ${SetUninstallKeys}
 
-  ; On install always add the FirefoxHTML and FirefoxURL keys.
-  ; An empty string is used for the 5th param because FirefoxHTML is not a
+  ; On install always add the ArcticFoxHTML and ArcticFoxURL keys.
+  ; An empty string is used for the 5th param because ArcticFoxHTML is not a
   ; protocol handler.
   ${GetLongPath} "$INSTDIR\${FileMainEXE}" $8
   StrCpy $2 "$\"$8$\" -osint -url $\"%1$\""
 
-  ; In Win8, the delegate execute handler picks up the value in FirefoxURL and
-  ; FirefoxHTML to launch the desktop browser when it needs to.
-  ${AddDisabledDDEHandlerValues} "FirefoxHTML" "$2" "$8,1" \
+  ; In Win8, the delegate execute handler picks up the value in ArcticFoxURL and
+  ; ArcticFoxHTML to launch the desktop browser when it needs to.
+  ${AddDisabledDDEHandlerValues} "ArcticFoxHTML" "$2" "$8,1" \
                                  "${AppRegName} Document" ""
-  ${AddDisabledDDEHandlerValues} "FirefoxURL" "$2" "$8,1" "${AppRegName} URL" \
+  ${AddDisabledDDEHandlerValues} "ArcticFoxURL" "$2" "$8,1" "${AppRegName} URL" \
                                  "true"
 
   ; For pre win8, the following keys should only be set if we can write to HKLM.
@@ -409,9 +409,45 @@ Section "-Application" APP_IDX
   ${If} ${AtLeastWin8}
     ${RemoveDEHRegistration} ${DELEGATE_EXECUTE_HANDLER_ID} \
                              $AppUserModelID \
-                             "FirefoxURL" \
-                             "FirefoxHTML"
+                             "ArcticFoxURL" \
+                             "ArcticFoxHTML"
   ${EndIf}
+  ${EndIf}
+
+!ifdef MOZ_MAINTENANCE_SERVICE
+  ; If the maintenance service page was displayed then a value was already 
+  ; explicitly selected for installing the maintenance service and 
+  ; and so InstallMaintenanceService will already be 0 or 1.
+  ; If the maintenance service page was not displayed then 
+  ; InstallMaintenanceService will be equal to "".
+  ${If} $InstallMaintenanceService == ""
+    Call IsUserAdmin
+    Pop $R0
+    ${If} $R0 == "true"
+    ; Only proceed if we have HKLM write access
+    ${AndIf} $TmpVal == "HKLM"
+      ; On Windows < XP SP3 we do not install the maintenance service.
+      ${If} ${IsWinXP}
+      ${AndIf} ${AtMostServicePack} 2
+        StrCpy $InstallMaintenanceService "0"
+      ${Else}
+        ; The user is an admin, so we should default to installing the service.
+        StrCpy $InstallMaintenanceService "1"
+      ${EndIf}
+    ${Else}
+      ; The user is not admin, so we can't install the service.
+      StrCpy $InstallMaintenanceService "0"
+    ${EndIf}
+  ${EndIf}
+
+  ${If} $InstallMaintenanceService == "1"
+    ; The user wants to install the maintenance service, so execute
+    ; the pre-packaged maintenance service installer. 
+    ; This option can only be turned on if the user is an admin so there
+    ; is no need to use ExecShell w/ verb runas to enforce elevated.
+    nsExec::Exec "$\"$INSTDIR\maintenanceservice_installer.exe$\""
+  ${EndIf}
+!endif
 
   ; These need special handling on uninstall since they may be overwritten by
   ; an install into a different location.
@@ -542,6 +578,12 @@ Section "-InstallEndCleanup"
       ${Else}
         GetFunctionAddress $0 SetAsDefaultAppUserHKCU
         UAC::ExecCodeSegment $0
+      ${EndIf}
+    ${Else}
+      ${LogHeader} "Writing default-browser opt-out"
+      WriteRegStr HKCU "Software\Mozilla\ArcticFox" "DefaultBrowserOptOut" "True"
+      ${If} ${Errors}
+        ${LogHeader} "Error writing default-browser opt-out"
       ${EndIf}
     ${EndIf}
     ; Adds a pinned Task Bar shortcut (see MigrateTaskBarShortcut for details).
@@ -844,6 +886,59 @@ Function leaveShortcuts
     Call CheckExistingInstall
   ${EndIf}
 FunctionEnd
+
+!ifdef MOZ_MAINTENANCE_SERVICE
+Function preComponents
+  ; If the service already exists, don't show this page
+  ServicesHelper::IsInstalled "MozillaMaintenance"
+  Pop $R9
+  ${If} $R9 == 1
+    ; The service already exists so don't show this page.
+    Abort
+  ${EndIf}
+
+  ; On Windows < XP SP3 we do not install the maintenance service.
+  ${If} ${IsWinXP}
+  ${AndIf} ${AtMostServicePack} 2
+    Abort
+  ${EndIf}
+
+  ; Don't show the custom components page if the
+  ; user is not an admin
+  Call IsUserAdmin
+  Pop $R9
+  ${If} $R9 != "true"
+    Abort
+  ${EndIf}
+
+  ; Only show the maintenance service page if we have write access to HKLM
+  ClearErrors
+  WriteRegStr HKLM "Software\Mozilla" \
+              "${BrandShortName}InstallerTest" "Write Test"
+  ${If} ${Errors}
+    ClearErrors
+    Abort
+  ${Else}
+    DeleteRegValue HKLM "Software\Mozilla" "${BrandShortName}InstallerTest"
+  ${EndIf}
+
+  StrCpy $PageName "Components"
+  ${CheckCustomCommon}
+  !insertmacro MUI_HEADER_TEXT "$(COMPONENTS_PAGE_TITLE)" "$(COMPONENTS_PAGE_SUBTITLE)"
+  !insertmacro MUI_INSTALLOPTIONS_DISPLAY "components.ini"
+FunctionEnd
+
+Function leaveComponents
+  ${MUI_INSTALLOPTIONS_READ} $0 "components.ini" "Settings" "State"
+  ${If} $0 != 0
+    Abort
+  ${EndIf}
+  ${MUI_INSTALLOPTIONS_READ} $InstallMaintenanceService "components.ini" "Field 2" "State"
+  ${If} $InstallType == ${INSTALLTYPE_CUSTOM}
+    Call CheckExistingInstall
+  ${EndIf}
+FunctionEnd
+!endif
 
 Function preSummary
   StrCpy $PageName "Summary"

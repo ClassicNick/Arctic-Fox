@@ -1,6 +1,12 @@
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
+/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 const {Cc, Ci, Cu} = require("chrome");
-const Services = Cu.import("resource://gre/modules/Services.jsm", {}).Services;
-const promise = require("promise");
+const Services = require("Services");
+const defer = require("devtools/shared/defer");
 
 function l10n(name) {
   const bundle = Services.strings.createBundle("chrome://devtools/locale/toolbox.properties");
@@ -24,9 +30,9 @@ function handleThreadState(toolbox, event, packet) {
   if (event === "paused") {
     toolbox.highlightTool("jsdebugger");
 
-    if (packet.why.type === 'debuggerStatement' ||
-       packet.why.type === 'breakpoint' ||
-       packet.why.type === 'exception') {
+    if (packet.why.type === "debuggerStatement" ||
+       packet.why.type === "breakpoint" ||
+       packet.why.type === "exception") {
       toolbox.raise();
       toolbox.selectTool("jsdebugger");
     }
@@ -36,15 +42,13 @@ function handleThreadState(toolbox, event, packet) {
 }
 
 function attachThread(toolbox) {
-  let deferred = promise.defer();
+  let deferred = defer();
 
   let target = toolbox.target;
   let { form: { chromeDebugger, actor } } = target;
   let threadOptions = {
     useSourceMaps: Services.prefs.getBoolPref("devtools.debugger.source-maps-enabled"),
-    autoBlackBox: Services.prefs.getBoolPref("devtools.debugger.auto-black-box"),
-    pauseOnExceptions: Services.prefs.getBoolPref("devtools.debugger.pause-on-exceptions"),
-    ignoreCaughtExceptions: Services.prefs.getBoolPref("devtools.debugger.ignore-caught-exceptions")
+    autoBlackBox: Services.prefs.getBoolPref("devtools.debugger.auto-black-box")
   };
 
   let handleResponse = (res, threadClient) => {
@@ -61,6 +65,15 @@ function attachThread(toolbox) {
       );
     }
 
+    // These flags need to be set here because the client sends them
+    // with the `resume` request. We make sure to do this before
+    // resuming to avoid another interrupt. We can't pass it in with
+    // `threadOptions` because the resume request will override them.
+    threadClient.pauseOnExceptions(
+      Services.prefs.getBoolPref("devtools.debugger.pause-on-exceptions"),
+      Services.prefs.getBoolPref("devtools.debugger.ignore-caught-exceptions")
+    );
+
     threadClient.resume(res => {
       if (res.error === "wrongOrder") {
         const box = toolbox.getNotificationBox();
@@ -72,20 +85,20 @@ function attachThread(toolbox) {
         );
       }
 
-      deferred.resolve(threadClient)
+      deferred.resolve(threadClient);
     });
-  }
+  };
 
-  if (target.isAddon) {
-    // Attaching an addon
+  if (target.isTabActor) {
+    // Attaching a tab, a browser process, or a WebExtensions add-on.
+    target.activeTab.attachThread(threadOptions, handleResponse);
+  } else if (target.isAddon) {
+    // Attaching a legacy addon.
     target.client.attachAddon(actor, res => {
       target.client.attachThread(res.threadActor, handleResponse);
     });
-  } else if (target.isTabActor) {
-    // Attaching a normal thread
-    target.activeTab.attachThread(threadOptions, handleResponse);
-  } else {
-    // Attaching the browser debugger
+  }  else {
+    // Attaching an old browser debugger or a content process.
     target.client.attachThread(chromeDebugger, handleResponse);
   }
 

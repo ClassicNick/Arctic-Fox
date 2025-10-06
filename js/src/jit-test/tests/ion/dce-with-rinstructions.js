@@ -159,6 +159,42 @@ function rursh_object(i) {
     return i;
 }
 
+var uceFault_signextend8_1 = eval(uneval(uceFault).replace('uceFault', 'uceFault_signextend8_1'));
+function rsignextend8_1(i) {
+    var x = (i << 24) >> 24;
+    if (uceFault_signextend8_1(i) || uceFault_signextend8_1(i))
+        assertEq(x, 99  /* = (99 << 24) >> 24 */);
+    assertRecoveredOnBailout(x, true);
+    return i;
+}
+
+var uceFault_signextend8_2 = eval(uneval(uceFault).replace('uceFault', 'uceFault_signextend8_2'));
+function rsignextend8_2(i) {
+    var x = ((-1 * i) << 24) >> 24;
+    if (uceFault_signextend8_2(i) || uceFault_signextend8_2(i))
+        assertEq(x, -99  /* = (-99 << 24) >> 24 */);
+    assertRecoveredOnBailout(x, true);
+    return i;
+}
+
+var uceFault_signextend16_1 = eval(uneval(uceFault).replace('uceFault', 'uceFault_signextend16_1'));
+function rsignextend16_1(i) {
+    var x = (i << 16) >> 16;
+    if (uceFault_signextend16_1(i) || uceFault_signextend16_1(i))
+        assertEq(x, 99  /* = (99 << 16) >> 16 */);
+    assertRecoveredOnBailout(x, true);
+    return i;
+}
+
+var uceFault_signextend16_2 = eval(uneval(uceFault).replace('uceFault', 'uceFault_signextend16_2'));
+function rsignextend16_2(i) {
+    var x = ((-1 * i) << 16) >> 16;
+    if (uceFault_signextend16_2(i) || uceFault_signextend16_2(i))
+        assertEq(x, -99  /* = (-99 << 16) >> 16 */);
+    assertRecoveredOnBailout(x, true);
+    return i;
+}
+
 var uceFault_add_number = eval(uneval(uceFault).replace('uceFault', 'uceFault_add_number'));
 function radd_number(i) {
     var x = 1 + i;
@@ -908,7 +944,11 @@ function rregexp_y_replace(i) {
 
     var res = "str00123456789".replace(re, "abc");
 
-    // replace will not zero the lastIndex field, if sticky flag is set
+    assertEq(re.lastIndex, 0);
+
+    assertEq(res, "str00123456789");
+
+    res = "str00123456789".replace(re, "abc");
     assertEq(re.lastIndex == 0, false);
 
     if (uceFault_regexp_y_replace(i) || uceFault_regexp_y_replace(i))
@@ -925,6 +965,11 @@ function rregexp_y_literal_replace(i) {
 
     var res = "str00123456789".replace(re, "abc");
 
+    assertEq(re.lastIndex, 0);
+
+    assertEq(res, "str00123456789");
+
+    res = "str00123456789".replace(re, "abc");
     assertEq(re.lastIndex == 0, false);
 
     if (uceFault_regexp_y_literal_replace(i) || uceFault_regexp_y_literal_replace(i))
@@ -1053,7 +1098,7 @@ function rstring_replace_y(i) {
     if (uceFault_string_replace_y(i) || uceFault_string_replace_y(i))
         assertEq(res, "abc");
     assertRecoveredOnBailout(res, false);
-    assertEq(re.lastIndex == 0, true);
+    assertEq(re.lastIndex == 0, false);
     return i;
 }
 
@@ -1297,6 +1342,10 @@ for (i = 0; i < 100; i++) {
     rrsh_object(i);
     rursh_number(i);
     rursh_object(i);
+    rsignextend8_1(i);
+    rsignextend8_2(i);
+    rsignextend16_1(i);
+    rsignextend16_2(i);
     radd_number(i);
     radd_float(i);
     radd_object(i);

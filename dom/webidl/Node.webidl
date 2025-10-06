@@ -34,8 +34,12 @@ interface Node : EventTarget {
   [Pure]
   readonly attribute DOMString? baseURI;
 
+  [Pure, BinaryName=getComposedDoc]
+  readonly attribute boolean isConnected;
   [Pure]
   readonly attribute Document? ownerDocument;
+  [Pure, Pref="dom.node.rootNode.enabled"]
+  readonly attribute Node rootNode;
   [Pure]
   readonly attribute Node? parentNode;
   [Pure]
@@ -93,16 +97,6 @@ interface Node : EventTarget {
   boolean isDefaultNamespace(DOMString? namespace);
 
   // Mozilla-specific stuff
-  // These have been moved to Element in the spec.
-  // If we move namespaceURI, prefix and localName to Element they should return
-  // a non-nullable type.
-  [Constant]
-  readonly attribute DOMString? namespaceURI;
-  [Constant]
-  readonly attribute DOMString? prefix;
-  [Constant]
-  readonly attribute DOMString? localName;
-
   [Throws, Func="IsChromeOrXBL"]
   any setUserData(DOMString key, any data);
   [Throws, Func="IsChromeOrXBL"]
@@ -113,4 +107,9 @@ interface Node : EventTarget {
   readonly attribute URI? baseURIObject;
   [ChromeOnly]
   sequence<MutationObserver> getBoundMutationObservers();
+
+#ifdef ACCESSIBILITY
+  [Pref="accessibility.AOM.enabled"]
+  readonly attribute AccessibleNode? accessibleNode;
+#endif
 };

@@ -6,7 +6,7 @@
 
 #include "nsContentUtils.h"
 #include "nsIDocument.h"
-#include "prprf.h"
+#include "mozilla/Sprintf.h"
 #include "nsGlobalWindow.h"
 #include "ScriptSettings.h"
 #include "mozilla/DOMEventTargetHelper.h"
@@ -31,8 +31,13 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INTERNAL(DOMEventTargetHelper)
     if (tmp->mOwnerWindow && tmp->mOwnerWindow->GetExtantDoc()) {
       tmp->mOwnerWindow->GetExtantDoc()->GetDocumentURI(uri);
     }
-    PR_snprintf(name, sizeof(name), "DOMEventTargetHelper %s",
-                NS_ConvertUTF16toUTF8(uri).get());
+
+    nsXPCOMCycleCollectionParticipant* participant = nullptr;
+    CallQueryInterface(tmp, &participant);
+
+    SprintfLiteral(name, "%s %s",
+                   participant->ClassName(),
+                   NS_ConvertUTF16toUTF8(uri).get());
     cb.DescribeRefCountedNode(tmp->mRefCnt.get(), name);
   } else {
     NS_IMPL_CYCLE_COLLECTION_DESCRIBE(DOMEventTargetHelper, tmp->mRefCnt.get())
@@ -160,6 +165,27 @@ DOMEventTargetHelper::DisconnectFromOwner()
   }
 }
 
+nsPIDOMWindowInner*
+DOMEventTargetHelper::GetWindowIfCurrent() const
+{
+  if (NS_FAILED(CheckInnerWindowCorrectness())) {
+    return nullptr;
+  }
+
+  return GetOwner();
+}
+
+nsIDocument*
+DOMEventTargetHelper::GetDocumentIfCurrent() const
+{
+  nsPIDOMWindowInner* win = GetWindowIfCurrent();
+  if (!win) {
+    return nullptr;
+  }
+
+  return win->GetDoc();
+}
+
 NS_IMETHODIMP
 DOMEventTargetHelper::RemoveEventListener(const nsAString& aType,
                                           nsIDOMEventListener* aListener,
@@ -201,7 +227,7 @@ DOMEventTargetHelper::AddEventListener(const nsAString& aType,
 void
 DOMEventTargetHelper::AddEventListener(const nsAString& aType,
                                        EventListener* aListener,
-                                       bool aUseCapture,
+                                       const AddEventListenerOptionsOrBoolean& aOptions,
                                        const Nullable<bool>& aWantsUntrusted,
                                        ErrorResult& aRv)
 {
@@ -221,7 +247,8 @@ DOMEventTargetHelper::AddEventListener(const nsAString& aType,
     aRv.Throw(NS_ERROR_UNEXPECTED);
     return;
   }
-  elm->AddEventListener(aType, aListener, aUseCapture, wantsUntrusted);
+
+  elm->AddEventListener(aType, aListener, aOptions, wantsUntrusted);
 }
 
 NS_IMETHODIMP
@@ -356,11 +383,10 @@ DOMEventTargetHelper::GetContextForEventHandlers(nsresult* aRv)
 nsresult
 DOMEventTargetHelper::WantsUntrusted(bool* aRetVal)
 {
-  nsresult rv;
-  nsIScriptContext* context = GetContextForEventHandlers(&rv);
+  nsresult rv = CheckInnerWindowCorrectness();
   NS_ENSURE_SUCCESS(rv, rv);
-  nsCOMPtr<nsIDocument> doc =
-    nsContentUtils::GetDocumentFromScriptContext(context);
+  
+  nsCOMPtr<nsIDocument> doc = GetDocumentIfCurrent();
   // We can let listeners on workers to always handle all the events.
   *aRetVal = (doc && !nsContentUtils::IsChromeDoc(doc)) || !NS_IsMainThread();
   return rv;

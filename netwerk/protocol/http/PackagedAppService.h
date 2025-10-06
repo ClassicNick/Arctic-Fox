@@ -13,7 +13,6 @@
 #include "PackagedAppVerifier.h"
 #include "nsIMultiPartChannel.h"
 #include "PackagedAppVerifier.h"
-#include "nsIPackagedAppChannelListener.h"
 #include "nsCOMArray.h"
 #include "nsRefPtrHashtable.h"
 
@@ -69,9 +68,9 @@ private:
     nsCOMPtr<nsICacheEntry> mEntry;
 
     // Called by PackagedAppDownloader to write data to the cache entry.
-    NS_METHOD ConsumeData(const char *aBuf,
-                          uint32_t aCount,
-                          uint32_t *aWriteCount);
+    nsresult ConsumeData(const char *aBuf,
+                         uint32_t aCount,
+                         uint32_t *aWriteCount);
 
   private:
     CacheEntryWriter() { }
@@ -129,8 +128,7 @@ private:
     // aURI is the full URI of a subresource, composed of packageURI + !// + subresourcePath
     // aRequester is the outer channel who makes the request for aURI.
     nsresult AddCallback(nsIURI *aURI,
-                         nsICacheEntryOpenCallback *aCallback,
-                         nsIChannel* aRequester);
+                         nsICacheEntryOpenCallback *aCallback);
 
     // Remove the callback from the resource callback list.
     nsresult RemoveCallbacks(nsICacheEntryOpenCallback* aCallback);
@@ -150,12 +148,12 @@ private:
     // Static method used to write data into the cache entry or discard
     // if there's no writer. Used as a writer function of
     // nsIInputStream::ReadSegments.
-    static NS_METHOD ConsumeData(nsIInputStream *aStream,
-                                 void *aClosure,
-                                 const char *aFromRawSegment,
-                                 uint32_t aToOffset,
-                                 uint32_t aCount,
-                                 uint32_t *aWriteCount);
+    static nsresult ConsumeData(nsIInputStream *aStream,
+                                void *aClosure,
+                                const char *aFromRawSegment,
+                                uint32_t aToOffset,
+                                uint32_t aCount,
+                                uint32_t *aWriteCount);
 
     //---------------------------------------------------------------
     // For PackagedAppVerifierListener.
@@ -214,9 +212,6 @@ private:
 
     // Deal with verification and delegate callbacks to the downloader.
     RefPtr<PackagedAppVerifier> mVerifier;
-
-    // The outer channels which have issued the request to the downloader.
-    nsCOMArray<nsIPackagedAppChannelListener> mRequesters;
 
     // The package origin without signed package origin identifier.
     // If you need the origin with the signity taken into account, use

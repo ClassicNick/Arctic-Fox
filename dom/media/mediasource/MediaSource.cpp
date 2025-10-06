@@ -9,6 +9,7 @@
 #include "AsyncEventRunner.h"
 #include "DecoderTraits.h"
 #include "Benchmark.h"
+#include "DecoderDoctorDiagnostics.h"
 #include "MediaSourceUtils.h"
 #include "SourceBuffer.h"
 #include "SourceBufferList.h"
@@ -29,10 +30,7 @@
 #include "mozilla/Logging.h"
 #include "nsServiceManagerUtils.h"
 #include "gfxPlatform.h"
-
-#ifdef MOZ_WIDGET_ANDROID
-#include "AndroidBridge.h"
-#endif
+#include "mozilla/Sprintf.h"
 
 struct JSContext;
 class JSObject;
@@ -74,16 +72,20 @@ static const char* const gMediaSourceTypes[6] = {
 // 2. If H264 hardware acceleration is not available.
 // 3. The CPU is considered to be fast enough
 static bool
-IsWebMForced()
+IsWebMForced(DecoderDoctorDiagnostics* aDiagnostics)
 {
   bool mp4supported =
-    DecoderTraits::IsMP4TypeAndEnabled(NS_LITERAL_CSTRING("video/mp4"));
+    DecoderTraits::IsMP4TypeAndEnabled(NS_LITERAL_CSTRING("video/mp4"),
+                                       aDiagnostics);
   bool hwsupported = gfxPlatform::GetPlatform()->CanUseHardwareVideoDecoding();
   return !mp4supported || !hwsupported || VP9Benchmark::IsVP9DecodeFast();
 }
 
-static nsresult
-IsTypeSupported(const nsAString& aType)
+namespace dom {
+
+/* static */
+nsresult
+MediaSource::IsTypeSupported(const nsAString& aType, DecoderDoctorDiagnostics* aDiagnostics)
 {
   if (aType.IsEmpty()) {
     return NS_ERROR_DOM_TYPE_ERR;
@@ -92,7 +94,7 @@ IsTypeSupported(const nsAString& aType)
   nsAutoString mimeType;
   nsresult rv = parser.GetType(mimeType);
   if (NS_FAILED(rv)) {
-    return NS_ERROR_DOM_INVALID_STATE_ERR;
+    return NS_ERROR_DOM_NOT_SUPPORTED_ERR;
   }
   NS_ConvertUTF16toUTF8 mimeTypeUTF8(mimeType);
 
@@ -101,36 +103,37 @@ IsTypeSupported(const nsAString& aType)
 
   for (uint32_t i = 0; gMediaSourceTypes[i]; ++i) {
     if (mimeType.EqualsASCII(gMediaSourceTypes[i])) {
-      if (DecoderTraits::IsMP4TypeAndEnabled(mimeTypeUTF8)) {
+      if (DecoderTraits::IsMP4TypeAndEnabled(mimeTypeUTF8, aDiagnostics)) {
         if (!Preferences::GetBool("media.mediasource.mp4.enabled", false)) {
           return NS_ERROR_DOM_NOT_SUPPORTED_ERR;
         }
         if (hasCodecs &&
             DecoderTraits::CanHandleCodecsType(mimeTypeUTF8.get(),
-                                               codecs) == CANPLAY_NO) {
-          return NS_ERROR_DOM_INVALID_STATE_ERR;
+                                               codecs,
+                                               aDiagnostics) == CANPLAY_NO) {
+          return NS_ERROR_DOM_NOT_SUPPORTED_ERR;
         }
         return NS_OK;
       } else if (DecoderTraits::IsWebMTypeAndEnabled(mimeTypeUTF8)) {
         if (!(Preferences::GetBool("media.mediasource.webm.enabled", false) ||
               (Preferences::GetBool("media.mediasource.webm.audio.enabled", true) &&
                DecoderTraits::IsWebMAudioType(mimeTypeUTF8)) ||
-              IsWebMForced())) {
+              IsWebMForced(aDiagnostics))) {
           return NS_ERROR_DOM_NOT_SUPPORTED_ERR;
         }
         if (hasCodecs &&
             DecoderTraits::CanHandleCodecsType(mimeTypeUTF8.get(),
-                                               codecs) == CANPLAY_NO) {
-          return NS_ERROR_DOM_INVALID_STATE_ERR;
+                                               codecs,
+                                               aDiagnostics) == CANPLAY_NO) {
+          return NS_ERROR_DOM_NOT_SUPPORTED_ERR;
         }
         return NS_OK;
       }
     }
   }
+
   return NS_ERROR_DOM_NOT_SUPPORTED_ERR;
 }
-
-namespace dom {
 
 /* static */ already_AddRefed<MediaSource>
 MediaSource::Constructor(const GlobalObject& aGlobal,
@@ -186,7 +189,7 @@ MediaSource::Duration()
     return UnspecifiedNaN<double>();
   }
   MOZ_ASSERT(mDecoder);
-  return mDecoder->GetMediaSourceDuration();
+  return mDecoder->GetDuration();
 }
 
 void
@@ -203,22 +206,27 @@ MediaSource::SetDuration(double aDuration, ErrorResult& aRv)
     aRv.Throw(NS_ERROR_DOM_INVALID_STATE_ERR);
     return;
   }
-  SetDuration(aDuration, MSRangeRemovalAction::RUN);
+  DurationChange(aDuration, aRv);
 }
 
 void
-MediaSource::SetDuration(double aDuration, MSRangeRemovalAction aAction)
+MediaSource::SetDuration(double aDuration)
 {
   MOZ_ASSERT(NS_IsMainThread());
   MSE_API("SetDuration(aDuration=%f)", aDuration);
-  mDecoder->SetMediaSourceDuration(aDuration, aAction);
+  mDecoder->SetMediaSourceDuration(aDuration);
 }
 
 already_AddRefed<SourceBuffer>
 MediaSource::AddSourceBuffer(const nsAString& aType, ErrorResult& aRv)
 {
   MOZ_ASSERT(NS_IsMainThread());
-  nsresult rv = mozilla::IsTypeSupported(aType);
+  DecoderDoctorDiagnostics diagnostics;
+  nsresult rv = IsTypeSupported(aType, &diagnostics);
+  diagnostics.StoreFormatDiagnostics(GetOwner()
+                                     ? GetOwner()->GetExtantDoc()
+                                     : nullptr,
+                                     aType, NS_SUCCEEDED(rv), __func__);
   MSE_API("AddSourceBuffer(aType=%s)%s",
           NS_ConvertUTF16toUTF8(aType).get(),
           rv == NS_OK ? "" : " [not supported]");
@@ -312,11 +320,7 @@ MediaSource::EndOfStream(const Optional<MediaSourceEndOfStreamError>& aError, Er
   SetReadyState(MediaSourceReadyState::Ended);
   mSourceBuffers->Ended();
   if (!aError.WasPassed()) {
-    mDecoder->SetMediaSourceDuration(mSourceBuffers->GetHighestBufferedEndTime(),
-                                     MSRangeRemovalAction::SKIP);
-    if (aRv.Failed()) {
-      return;
-    }
+    DurationChange(mSourceBuffers->GetHighestBufferedEndTime(), aRv);
     // Notify reader that all data is now available.
     mDecoder->Ended(true);
     return;
@@ -334,10 +338,14 @@ MediaSource::EndOfStream(const Optional<MediaSourceEndOfStreamError>& aError, Er
 }
 
 /* static */ bool
-MediaSource::IsTypeSupported(const GlobalObject&, const nsAString& aType)
+MediaSource::IsTypeSupported(const GlobalObject& aOwner, const nsAString& aType)
 {
   MOZ_ASSERT(NS_IsMainThread());
-  nsresult rv = mozilla::IsTypeSupported(aType);
+  DecoderDoctorDiagnostics diagnostics;
+  nsresult rv = IsTypeSupported(aType, &diagnostics);
+  nsCOMPtr<nsPIDOMWindowInner> window = do_QueryInterface(aOwner.GetAsSupports());
+  diagnostics.StoreFormatDiagnostics(window ? window->GetExtantDoc() : nullptr,
+                                     aType, NS_SUCCEEDED(rv), __func__);
 #define this nullptr
   MSE_API("IsTypeSupported(aType=%s)%s ",
           NS_ConvertUTF16toUTF8(aType).get(), rv == NS_OK ? "OK" : "[not supported]");
@@ -510,26 +518,38 @@ MediaSource::QueueAsyncSimpleEvent(const char* aName)
 }
 
 void
-MediaSource::DurationChange(double aOldDuration, double aNewDuration)
+MediaSource::DurationChange(double aNewDuration, ErrorResult& aRv)
 {
   MOZ_ASSERT(NS_IsMainThread());
-  MSE_DEBUG("DurationChange(aOldDuration=%f, aNewDuration=%f)", aOldDuration, aNewDuration);
+  MSE_DEBUG("DurationChange(aNewDuration=%f)", aNewDuration);
 
-  if (aNewDuration < aOldDuration) {
-    // Remove all buffered data from aNewDuration.
-    mSourceBuffers->RangeRemoval(aNewDuration, PositiveInfinity<double>());
+  // 1. If the current value of duration is equal to new duration, then return.
+  if (mDecoder->GetDuration() == aNewDuration) {
+    return;
   }
-  // TODO: If partial audio frames/text cues exist, clamp duration based on mSourceBuffers.
-}
 
-void
-MediaSource::NotifyEvicted(double aStart, double aEnd)
-{
-  MOZ_ASSERT(NS_IsMainThread());
-  MSE_DEBUG("NotifyEvicted(aStart=%f, aEnd=%f)", aStart, aEnd);
-  // Cycle through all SourceBuffers and tell them to evict data in
-  // the given range.
-  mSourceBuffers->Evict(aStart, aEnd);
+  // 2. If new duration is less than the highest starting presentation timestamp
+  // of any buffered coded frames for all SourceBuffer objects in sourceBuffers,
+  // then throw an InvalidStateError exception and abort these steps.
+  if (aNewDuration < mSourceBuffers->HighestStartTime()) {
+    aRv.Throw(NS_ERROR_DOM_INVALID_STATE_ERR);
+    return;
+  }
+
+  // 3. Update duration to new duration.
+  // 4. If a user agent is unable to partially render audio frames or text cues
+  // that start before and end after the duration, then run the following steps:
+  // Update new duration to the highest end time reported by the buffered
+  // attribute across all SourceBuffer objects in sourceBuffers.
+  //   1. Update new duration to the highest end time reported by the buffered
+  //      attribute across all SourceBuffer objects in sourceBuffers.
+  //   2. Update duration to new duration.
+  aNewDuration =
+    std::max(aNewDuration, mSourceBuffers->GetHighestBufferedEndTime());
+
+  // 5. Update the media duration to new duration and run the HTMLMediaElement
+  // duration change algorithm.
+  mDecoder->SetMediaSourceDuration(aNewDuration);
 }
 
 void

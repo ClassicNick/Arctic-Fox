@@ -247,7 +247,7 @@ this.AccessFu = { // jshint ignore:line
 
   _output: function _output(aPresentationData, aBrowser) {
     if (!Utils.isAliveAndVisible(
-      Utils.AccRetrieval.getAccessibleFor(aBrowser))) {
+      Utils.AccService.getAccessibleFor(aBrowser))) {
       return;
     }
     for (let presenter of aPresentationData) {
@@ -344,7 +344,7 @@ this.AccessFu = { // jshint ignore:line
       {
         // Ignore notifications that aren't from a BrowserOrApp
         let frameLoader = aSubject.QueryInterface(Ci.nsIFrameLoader);
-        if (!frameLoader.ownerIsBrowserOrAppFrame) {
+        if (!frameLoader.ownerIsMozBrowserOrAppFrame) {
           return;
         }
         this._handleMessageManager(frameLoader.messageManager);

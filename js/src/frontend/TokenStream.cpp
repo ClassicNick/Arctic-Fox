@@ -567,6 +567,11 @@ TokenStream::reportStrictModeErrorNumberVA(uint32_t offset, bool strictMode, uns
 void
 CompileError::throwError(JSContext* cx)
 {
+    if (JSREPORT_IS_WARNING(report.flags)) {
+        CallWarningReporter(cx, message, &report);
+        return;
+    }
+
     // If there's a runtime exception type associated with this error
     // number, set that as the pending exception.  For errors occuring at
     // compile time, this is very likely to be a JSEXN_SYNTAXERR.
@@ -578,26 +583,15 @@ CompileError::throwError(JSContext* cx)
     // as the non-top-level "load", "eval", or "compile" native function
     // returns false, the top-level reporter will eventually receive the
     // uncaught exception report.
-    if (!ErrorToException(cx, message, &report, nullptr, nullptr))
-        CallErrorReporter(cx, message, &report);
+    ErrorToException(cx, message, &report, nullptr, nullptr);
 }
 
 CompileError::~CompileError()
 {
-    js_free((void*)report.uclinebuf);
-    js_free((void*)report.linebuf);
+    js_free((void*)report.linebuf());
     js_free((void*)report.ucmessage);
     js_free(message);
     message = nullptr;
-
-    if (report.messageArgs) {
-        if (argumentsType == ArgumentsAreASCII) {
-            unsigned i = 0;
-            while (report.messageArgs[i])
-                js_free((void*)report.messageArgs[i++]);
-        }
-        js_free(report.messageArgs);
-    }
 
     PodZero(&report);
 }
@@ -637,7 +631,6 @@ TokenStream::reportCompileErrorNumberVA(uint32_t offset, unsigned flags, unsigne
     bool callerFilename = false;
     if (offset != NoOffset && !err.report.filename && cx->isJSContext()) {
         NonBuiltinFrameIter iter(cx->asJSContext(),
-                                 FrameIter::ALL_CONTEXTS, FrameIter::GO_THROUGH_SAVED,
                                  FrameIter::FOLLOW_DEBUGGER_EVAL_PREV_LINK,
                                  cx->compartment()->principals());
         if (!iter.done() && iter.filename()) {
@@ -647,10 +640,8 @@ TokenStream::reportCompileErrorNumberVA(uint32_t offset, unsigned flags, unsigne
         }
     }
 
-    err.argumentsType = (flags & JSREPORT_UC) ? ArgumentsAreUnicode : ArgumentsAreASCII;
-
     if (!ExpandErrorArgumentsVA(cx, GetErrorMessage, nullptr, errorNumber, &err.message,
-                                &err.report, err.argumentsType, args))
+                                nullptr, ArgumentsAreASCII, &err.report, args))
     {
         return false;
     }
@@ -691,22 +682,17 @@ TokenStream::reportCompileErrorNumberVA(uint32_t offset, unsigned flags, unsigne
         // Create the windowed strings.
         StringBuffer windowBuf(cx);
         if (!windowBuf.append(userbuf.rawCharPtrAt(windowStart), windowLength) ||
-            !windowBuf.append((char16_t)0))
+            !windowBuf.append('\0'))
+        {
+            return false;
+        }
+
+        // The window into the offending source line, without final \n.
+        UniqueTwoByteChars linebuf(windowBuf.stealChars());
+        if (!linebuf)
             return false;
 
-        // Unicode and char versions of the window into the offending source
-        // line, without final \n.
-        err.report.uclinebuf = windowBuf.stealChars();
-        if (!err.report.uclinebuf)
-            return false;
-
-        mozilla::Range<const char16_t> tbchars(err.report.uclinebuf, windowLength);
-        err.report.linebuf = JS::LossyTwoByteCharsToNewLatin1CharsZ(cx, tbchars).c_str();
-        if (!err.report.linebuf)
-            return false;
-
-        err.report.tokenptr = err.report.linebuf + (offset - windowStart);
-        err.report.uctokenptr = err.report.uclinebuf + (offset - windowStart);
+        err.report.initLinebuf(linebuf.release(), windowLength, offset - windowStart);
     }
 
     if (cx->isJSContext())
@@ -1831,7 +1817,7 @@ TokenStream::getStringOrTemplateToken(int untilChar, Token** tp)
             if (c == '\r') {
                 c = '\n';
                 if (userbuf.peekRawChar() == '\n')
-                    skipChars(1);
+                    skipCharsIgnoreEOL(1);
             }
             updateLineInfoForEOL();
             updateFlagsForEOL();

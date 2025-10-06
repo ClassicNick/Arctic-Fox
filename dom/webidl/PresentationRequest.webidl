@@ -5,8 +5,7 @@
  */
 
 [Constructor(DOMString url),
- Pref="dom.presentation.enabled",
- Func="Navigator::HasPresentationSupport"]
+ Pref="dom.presentation.controller.enabled"]
 interface PresentationRequest : EventTarget {
   /*
    * A requesting page use start() to start a new connection, and it will be
@@ -24,9 +23,25 @@ interface PresentationRequest : EventTarget {
    * - "AbortError":     User dismiss/cancel the device prompt box.
    * - "NetworkError":   Failed to establish the control channel or data channel.
    * - "TimeoutError":   Presenting page takes too long to load.
+   * - "SecurityError":  This operation is insecure.
    */
   [Throws]
   Promise<PresentationConnection> start();
+
+  /*
+   * A requesting page can use reconnect(presentationId) to reopen a
+   * non-terminated presentation connection.
+   *
+   * The promise is resolved when a new presentation connection is created.
+   * The connection state is "connecting".
+   *
+   * The promise may be rejected duo to one of the following reasons:
+   * - "OperationError": Unexpected error occurs.
+   * - "NotFoundError":  Can not find a presentation connection with the presentationId.
+   * - "SecurityError":  This operation is insecure.
+   */
+  [Throws]
+  Promise<PresentationConnection> reconnect(DOMString presentationId);
 
  /*
   * UA triggers device discovery mechanism periodically and monitor device
@@ -43,4 +58,24 @@ interface PresentationRequest : EventTarget {
    * The event is fired for all connections that are created for the controller.
    */
   attribute EventHandler onconnectionavailable;
+
+  /*
+   * A chrome page, or page which has presentation-device-manage permissiongs,
+   * uses startWithDevice() to start a new connection with specified device,
+   * and it will be returned with the promise. UA may show a prompt box with a
+   * list of available devices and ask the user to grant permission, choose a
+   * device, or cancel the operation.
+   *
+   * The promise is resolved when the presenting page is successfully loaded and
+   * the communication channel is established, i.e., the connection state is
+   * "connected".
+   *
+   * The promise may be rejected duo to one of the following reasons:
+   * - "OperationError": Unexpected error occurs.
+   * - "NotFoundError":  No available device.
+   * - "NetworkError":   Failed to establish the control channel or data channel.
+   * - "TimeoutError":   Presenting page takes too long to load.
+   */
+  [ChromeOnly, Throws]
+  Promise<PresentationConnection> startWithDevice(DOMString deviceId);
 };

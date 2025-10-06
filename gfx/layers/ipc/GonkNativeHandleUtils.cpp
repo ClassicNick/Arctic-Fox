@@ -6,10 +6,26 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "GonkNativeHandleUtils.h"
+#include "mozilla/UniquePtr.h"
+#include "mozilla/Unused.h"
 
 using namespace mozilla::layers;
 
 namespace IPC {
+
+namespace {
+
+class native_handle_Delete
+{
+public:
+  void operator()(native_handle* aNativeHandle) const
+  {
+    native_handle_close(aNativeHandle); // closes file descriptors
+    native_handle_delete(aNativeHandle);
+  }
+};
+
+} // anonymous namespace
 
 void
 ParamTraits<GonkNativeHandle>::Write(Message* aMsg,
@@ -21,8 +37,9 @@ ParamTraits<GonkNativeHandle>::Write(Message* aMsg,
   RefPtr<GonkNativeHandle::NhObj> nhObj = handle.GetAndResetNhObj();
   native_handle_t* nativeHandle = nhObj->GetAndResetNativeHandle();
 
-  aMsg->WriteSize(nativeHandle->numInts);
-  aMsg->WriteBytes((nativeHandle->data + nativeHandle->numFds), sizeof(int) * nativeHandle->numInts);
+  size_t nbytes = nativeHandle->numInts * sizeof(int);
+  aMsg->WriteSize(nbytes);
+  aMsg->WriteBytes((nativeHandle->data + nativeHandle->numFds), nbytes);
 
   for (size_t i = 0; i < static_cast<size_t>(nativeHandle->numFds); ++i) {
     aMsg->WriteFileDescriptor(base::FileDescriptor(nativeHandle->data[i], true));
@@ -31,28 +48,44 @@ ParamTraits<GonkNativeHandle>::Write(Message* aMsg,
 
 bool
 ParamTraits<GonkNativeHandle>::Read(const Message* aMsg,
-                               void** aIter, paramType* aResult)
+                               PickleIterator* aIter, paramType* aResult)
 {
-  size_t numInts;
-  if (!aMsg->ReadSize(aIter, &numInts)) {
+  size_t nbytes;
+  if (!aMsg->ReadSize(aIter, &nbytes)) {
     return false;
   }
-  numInts /= sizeof(int);
+
+  if (nbytes % sizeof(int) != 0) {
+    return false;
+  }
+
+  size_t numInts = nbytes / sizeof(int);
   size_t numFds = aMsg->num_fds();
-  native_handle* nativeHandle = native_handle_create(numFds, numInts);
-
-  const char* data = reinterpret_cast<const char*>(nativeHandle->data + nativeHandle->numFds);
-  if (!aMsg->ReadBytes(aIter, &data, numInts * sizeof(int))) {
+  mozilla::UniquePtr<native_handle, native_handle_Delete> nativeHandle(
+    native_handle_create(numFds, numInts));
+  if (!nativeHandle) {
     return false;
   }
 
-  for (size_t i = 0; i < static_cast<size_t>(nativeHandle->numFds); ++i) {
+  auto data =
+    reinterpret_cast<char*>(nativeHandle->data + nativeHandle->numFds);
+  if (!aMsg->ReadBytesInto(aIter, data, nbytes)) {
+    return false;
+  }
+
+  for (size_t i = 0; i < numFds; ++i) {
     base::FileDescriptor fd;
     if (!aMsg->ReadFileDescriptor(aIter, &fd)) {
       return false;
     }
     nativeHandle->data[i] = fd.fd;
+    nativeHandle->numFds = i + 1; // set number of valid file descriptors
   }
+
+  GonkNativeHandle handle(new GonkNativeHandle::NhObj(nativeHandle.get()));
+  handle.TransferToAnother(*aResult);
+
+  mozilla::Unused << nativeHandle.release();
 
   return true;
 }

@@ -29,7 +29,7 @@
 #include "mozilla/ipc/BackgroundUtils.h" // for PrincipalInfoToPrincipal
 
 #include "nsArrayUtils.h"
-#include "nsAutoPtr.h"
+#include "nsCharSeparatedTokenizer.h"
 #include "nsGlobalWindow.h"
 #include "nsServiceManagerUtils.h"
 #include "nsIFile.h"
@@ -76,9 +76,34 @@ using namespace mozilla::dom;
 using namespace mozilla::dom::devicestorage;
 using namespace mozilla::ipc;
 
-namespace mozilla {
+namespace mozilla
+{
   MOZ_TYPE_SPECIFIC_SCOPED_POINTER_TEMPLATE(ScopedPRFileDesc, PRFileDesc, PR_Close);
 } // namespace mozilla
+
+namespace {
+
+void
+NormalizeFilePath(nsAString& aPath)
+{
+#if defined(XP_WIN)
+  char16_t* cur = aPath.BeginWriting();
+  char16_t* end = aPath.EndWriting();
+  for (; cur < end; ++cur) {
+    if (char16_t('\\') == *cur) {
+      *cur = FILESYSTEM_DOM_PATH_SEPARATOR_CHAR;
+    }
+  }
+#endif
+}
+
+bool
+TokenizerIgnoreNothing(char16_t /* aChar */)
+{
+  return false;
+}
+
+} // anonymous namespace
 
 StaticAutoPtr<DeviceStorageUsedSpaceCache>
   DeviceStorageUsedSpaceCache::sDeviceStorageUsedSpaceCache;
@@ -461,7 +486,7 @@ DeviceStorageTypeChecker::IsSharedMediaRoot(const nsAString& aType)
 #endif
 }
 
-class IOEventComplete : public nsRunnable
+class IOEventComplete : public Runnable
 {
 public:
   IOEventComplete(DeviceStorageFile *aFile, const char *aType)
@@ -472,7 +497,7 @@ public:
 
   ~IOEventComplete() {}
 
-  NS_IMETHOD Run()
+  NS_IMETHOD Run() override
   {
     MOZ_ASSERT(NS_IsMainThread());
     nsString data;
@@ -510,7 +535,8 @@ DeviceStorageFile::DeviceStorageFile(const nsAString& aStorageType,
   if (!mPath.EqualsLiteral("")) {
     AppendRelativePath(mPath);
   }
-  NormalizeFilePath();
+
+  NormalizeFilePath(mPath);
 }
 
 DeviceStorageFile::DeviceStorageFile(const nsAString& aStorageType,
@@ -525,7 +551,7 @@ DeviceStorageFile::DeviceStorageFile(const nsAString& aStorageType,
 {
   Init();
   AppendRelativePath(aPath);
-  NormalizeFilePath();
+  NormalizeFilePath(mPath);
 }
 
 DeviceStorageFile::DeviceStorageFile(const nsAString& aStorageType,
@@ -734,7 +760,7 @@ DeviceStorageFile::CreateUnique(const nsAString& aStorageType,
 void
 DeviceStorageFile::SetPath(const nsAString& aPath) {
   mPath.Assign(aPath);
-  NormalizeFilePath();
+  NormalizeFilePath(mPath);
 }
 
 void
@@ -745,13 +771,14 @@ DeviceStorageFile::SetEditable(bool aEditable) {
 // we want to make sure that the names of file can't reach
 // outside of the type of storage the user asked for.
 bool
-DeviceStorageFile::IsSafePath()
+DeviceStorageFile::IsSafePath() const
 {
-  return IsSafePath(mRootDir) && IsSafePath(mPath);
+  return ValidateAndSplitPath(mRootDir) && ValidateAndSplitPath(mPath);
 }
 
 bool
-DeviceStorageFile::IsSafePath(const nsAString& aPath)
+DeviceStorageFile::ValidateAndSplitPath(const nsAString& aPath,
+                                        nsTArray<nsString>* aParts) const
 {
   nsAString::const_iterator start, end;
   aPath.BeginReading(start);
@@ -764,33 +791,43 @@ DeviceStorageFile::IsSafePath(const nsAString& aPath)
       StringBeginsWith(aPath, tildeSlash)) {
     NS_WARNING("Path name starts with tilde!");
     return false;
-   }
-  // split on /.  if any token is "", ., or .., return false.
-  NS_ConvertUTF16toUTF8 cname(aPath);
-  char* buffer = cname.BeginWriting();
-  const char* token;
+  }
 
-  while ((token = nsCRT::strtok(buffer, "/", &buffer))) {
-    if (PL_strcmp(token, "") == 0 ||
-        PL_strcmp(token, ".") == 0 ||
-        PL_strcmp(token, "..") == 0 ) {
+  NS_NAMED_LITERAL_STRING(kCurrentDir, ".");
+  NS_NAMED_LITERAL_STRING(kParentDir, "..");
+
+  // Split path and check each path component.
+  nsCharSeparatedTokenizerTemplate<TokenizerIgnoreNothing>
+    tokenizer(aPath, FILESYSTEM_DOM_PATH_SEPARATOR_CHAR);
+
+  while (tokenizer.hasMoreTokens()) {
+    nsDependentSubstring pathComponent = tokenizer.nextToken();
+    // The path containing empty components, such as "foo//bar", is invalid.
+    // We don't allow paths, such as "../foo", "foo/./bar" and "foo/../bar",
+    // to walk up the directory.
+    if (pathComponent.IsEmpty() ||
+        pathComponent.Equals(kCurrentDir) ||
+        pathComponent.Equals(kParentDir)) {
       return false;
+    }
+
+    if (aParts) {
+      aParts->AppendElement(pathComponent);
     }
   }
   return true;
 }
 
 void
-DeviceStorageFile::NormalizeFilePath() {
-  FileSystemUtils::LocalPathToNormalizedPath(mPath, mPath);
-}
-
-void
-DeviceStorageFile::AppendRelativePath(const nsAString& aPath) {
+DeviceStorageFile::AppendRelativePath(const nsAString& aPath)
+{
   if (!mFile) {
     return;
   }
-  if (!IsSafePath(aPath)) {
+
+  nsTArray<nsString> parts;
+
+  if (!ValidateAndSplitPath(aPath, &parts)) {
     // All of the APIs (in the child) do checks to verify that the path is
     // valid and return PERMISSION_DENIED if a non-safe path is entered.
     // This check is done in the parent and prevents a compromised
@@ -800,9 +837,13 @@ DeviceStorageFile::AppendRelativePath(const nsAString& aPath) {
     NS_WARNING(NS_LossyConvertUTF16toASCII(aPath).get());
     return;
   }
-  nsString localPath;
-  FileSystemUtils::NormalizedPathToLocalPath(aPath, localPath);
-  mFile->AppendRelativePath(localPath);
+
+  for (uint32_t i = 0; i < parts.Length(); ++i) {
+    nsresult rv = mFile->AppendRelativePath(parts[i]);
+    if (NS_WARN_IF(NS_FAILED(rv))) {
+      return;
+    }
+  }
 }
 
 nsresult
@@ -1917,6 +1958,7 @@ public:
     nsCOMPtr<nsIInputStream> stream;
     mBlob->GetInternalStream(getter_AddRefs(stream), rv);
     if (NS_WARN_IF(rv.Failed())) {
+      rv.SuppressException();
       return Reject(POST_ERROR_EVENT_UNKNOWN);
     }
 
@@ -2029,6 +2071,7 @@ public:
     nsCOMPtr<nsIInputStream> stream;
     mBlob->GetInternalStream(getter_AddRefs(stream), rv);
     if (NS_WARN_IF(rv.Failed())) {
+      rv.SuppressException();
       return Reject(POST_ERROR_EVENT_UNKNOWN);
     }
 
@@ -2443,7 +2486,7 @@ public:
     return Resolve(true);
   }
 
-  NS_IMETHODIMP GetTypes(nsIArray** aTypes) override
+  NS_IMETHOD GetTypes(nsIArray** aTypes) override
   {
     nsString storageType;
     mRequest->GetStorageType(storageType);
@@ -3934,14 +3977,7 @@ DeviceStorageRequestManager::Resolve(uint32_t aId, uint64_t aValue,
     return NS_OK;
   }
 
-  nsIGlobalObject* global = mPending[i].mRequest->GetOwnerGlobal();
-
-  AutoJSAPI jsapi;
-  if (NS_WARN_IF(!jsapi.Init(global))) {
-    return RejectInternal(i, NS_LITERAL_STRING(POST_ERROR_EVENT_UNKNOWN));
-  }
-
-  JS::RootedValue value(jsapi.cx(), JS_NumberValue((double)aValue));
+  JS::RootedValue value(RootingCx(), JS_NumberValue((double)aValue));
   return ResolveInternal(i, value);
 }
 

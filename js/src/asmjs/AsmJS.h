@@ -26,12 +26,11 @@ namespace js {
 class ExclusiveContext;
 namespace frontend {
     template <typename ParseHandler> class Parser;
-    template <typename ParseHandler> struct ParseContext;
+    class ParseContext;
     class FullParseHandler;
     class ParseNode;
 }
 typedef frontend::Parser<frontend::FullParseHandler> AsmJSParser;
-typedef frontend::ParseContext<frontend::FullParseHandler> AsmJSParseContext;
 
 // This function takes over parsing of a function starting with "use asm". The
 // return value indicates whether an error was reported which the caller should
@@ -40,7 +39,7 @@ typedef frontend::ParseContext<frontend::FullParseHandler> AsmJSParseContext;
 // indeterminate amount and the entire function should be reparsed from the
 // beginning.
 
-extern bool
+extern MOZ_MUST_USE bool
 CompileAsmJS(ExclusiveContext* cx, AsmJSParser& parser, frontend::ParseNode* stmtList,
              bool* validated);
 
@@ -54,6 +53,9 @@ IsAsmJSModule(JSFunction* fun);
 
 extern bool
 IsAsmJSFunction(JSFunction* fun);
+
+extern bool
+IsAsmJSStrictModeModuleOrFunction(JSFunction* fun);
 
 // asm.js testing natives:
 

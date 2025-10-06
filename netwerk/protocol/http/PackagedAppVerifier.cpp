@@ -82,7 +82,8 @@ NS_IMETHODIMP PackagedAppVerifier::Init(nsIPackagedAppVerifierListener* aListene
   mIsFirstResource = true;
   mManifest = EmptyCString();
 
-  NeckoOriginAttributes().PopulateFromOrigin(aPackageOrigin, mPackageOrigin);
+  bool success = NeckoOriginAttributes().PopulateFromOrigin(aPackageOrigin, mPackageOrigin);
+  NS_ENSURE_TRUE(success, NS_ERROR_FAILURE);
   mBypassVerification = (mPackageOrigin ==
       Preferences::GetCString("network.http.signed-packages.trusted-origin"));
 
@@ -127,7 +128,7 @@ PackagedAppVerifier::OnStartRequest(nsIRequest *aRequest,
   return mHasher->Init(kResourceHashType);
 }
 
-NS_METHOD
+nsresult
 PackagedAppVerifier::WriteManifest(nsIInputStream* aStream,
                                    void* aManifest,
                                    const char* aFromRawSegment,
@@ -248,13 +249,13 @@ PackagedAppVerifier::FireVerifiedEvent(bool aForManifest, bool aSuccess)
   nsCOMPtr<nsIRunnable> r;
 
   if (aForManifest) {
-    r = NS_NewRunnableMethodWithArgs<bool>(this,
-                                           &PackagedAppVerifier::OnManifestVerified,
-                                           aSuccess);
+    r = NewRunnableMethod<bool>(this,
+                                &PackagedAppVerifier::OnManifestVerified,
+                                aSuccess);
   } else {
-    r = NS_NewRunnableMethodWithArgs<bool>(this,
-                                           &PackagedAppVerifier::OnResourceVerified,
-                                           aSuccess);
+    r = NewRunnableMethod<bool>(this,
+                                &PackagedAppVerifier::OnResourceVerified,
+                                aSuccess);
   }
 
   NS_DispatchToMainThread(r);

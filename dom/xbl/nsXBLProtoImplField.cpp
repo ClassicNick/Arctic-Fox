@@ -245,12 +245,7 @@ FieldGetterImpl(JSContext *cx, const JS::CallArgs& args)
     return true;
   }
 
-  JS::Rooted<JS::Value> v(cx);
-  if (!JS_GetPropertyById(cx, thisObj, id, &v)) {
-    return false;
-  }
-  args.rval().set(v);
-  return true;
+  return JS_GetPropertyById(cx, thisObj, id, args.rval());
 }
 
 static bool
@@ -405,9 +400,8 @@ nsXBLProtoImplField::InstallField(JS::Handle<JSObject*> aBoundNode,
 
   // We are going to run script via EvaluateString, so we need a script entry
   // point, but as this is XBL related it does not appear in the HTML spec.
-  AutoEntryScript entryScript(globalObject, "XBL <field> initialization", true);
-  entryScript.TakeOwnershipOfErrorReporting();
-  JSContext* cx = entryScript.cx();
+  AutoEntryScript aes(globalObject, "XBL <field> initialization", true);
+  JSContext* cx = aes.cx();
 
   NS_ASSERTION(!::JS_IsExceptionPending(cx),
                "Shouldn't get here when an exception is pending!");
@@ -445,7 +439,7 @@ nsXBLProtoImplField::InstallField(JS::Handle<JSObject*> aBoundNode,
   if (rv == NS_SUCCESS_DOM_SCRIPT_EVALUATION_THREW) {
     // Report the exception now, before we try using the JSContext for
     // the JS_DefineUCProperty call.
-    entryScript.ReportException();
+    aes.ReportException();
   }
 
   // Now, enter the node's compartment, wrap the eval result, and define it on
@@ -500,5 +494,5 @@ nsXBLProtoImplField::Write(nsIObjectOutputStream* aStream)
   rv = aStream->Write32(mLineNumber);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  return aStream->WriteWStringZ(mFieldText ? mFieldText : MOZ_UTF16(""));
+  return aStream->WriteWStringZ(mFieldText ? mFieldText : u"");
 }

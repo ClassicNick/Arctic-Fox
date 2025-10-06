@@ -32,7 +32,7 @@ namespace {
 
 const size_t SHA1_DIGEST_LENGTH = 160 / 8;
 
-} // unnamed namespace
+} // namespace
 
 namespace mozilla { namespace pkix {
 
@@ -75,6 +75,8 @@ public:
   Time* thisUpdate;
   Time* validThrough;
   bool expired;
+
+  Input signedCertificateTimestamps;
 
   // Keep track of whether the OCSP response contains the status of the
   // certificate we're interested in. Responders might reply without
@@ -168,6 +170,9 @@ static inline Result ResponseData(
 static inline Result SingleResponse(Reader& input, Context& context);
 static Result ExtensionNotUnderstood(Reader& extnID, Input extnValue,
                                      bool critical, /*out*/ bool& understood);
+static Result RememberSingleExtension(Context& context, Reader& extnID,
+                                      Input extnValue, bool critical,
+                                      /*out*/ bool& understood);
 static inline Result CertID(Reader& input,
                             const Context& context,
                             /*out*/ bool& match);
@@ -330,6 +335,16 @@ VerifyEncodedOCSPResponse(TrustDomain& trustDomain, const struct CertID& certID,
       if (expired) {
         return Result::ERROR_OCSP_OLD_RESPONSE;
       }
+      if (context.signedCertificateTimestamps.GetLength()) {
+        Input sctList;
+        rv = ExtractSignedCertificateTimestampListFromExtension(
+          context.signedCertificateTimestamps, sctList);
+        if (rv != Success) {
+          return MapBadDERToMalformedOCSPResponse(rv);
+        }
+        context.trustDomain.NoteAuxiliaryExtension(
+          AuxiliaryExtension::SCTListFromOCSPResponse, sctList);
+      }
       return Success;
     case CertStatus::Revoked:
       return Result::ERROR_REVOKED_CERTIFICATE;
@@ -417,39 +432,25 @@ BasicResponse(Reader& input, Context& context)
   }
 
   // Parse certificates, if any
-
   NonOwningDERArray certs;
   if (!input.AtEnd()) {
-    // We ignore the lengths of the wrappers because we'll detect bad lengths
-    // during parsing--too short and we'll run out of input for parsing a cert,
-    // and too long and we'll have leftover data that won't parse as a cert.
-
-    // [0] wrapper
-    Reader wrapped;
-    rv = der::ExpectTagAndGetValueAtEnd(
-          input, der::CONTEXT_SPECIFIC | der::CONSTRUCTED | 0, wrapped);
+    rv = der::Nested(input, der::CONTEXT_SPECIFIC | der::CONSTRUCTED | 0,
+                     der::SEQUENCE, [&certs](Reader& certsDER) -> Result {
+      while (!certsDER.AtEnd()) {
+        Input cert;
+        Result rv = der::ExpectTagAndGetTLV(certsDER, der::SEQUENCE, cert);
+        if (rv != Success) {
+          return rv;
+        }
+        rv = certs.Append(cert);
+        if (rv != Success) {
+          return Result::ERROR_BAD_DER; // Too many certs
+        }
+      }
+      return Success;
+    });
     if (rv != Success) {
       return rv;
-    }
-
-    // SEQUENCE wrapper
-    Reader certsSequence;
-    rv = der::ExpectTagAndGetValueAtEnd(wrapped, der::SEQUENCE, certsSequence);
-    if (rv != Success) {
-      return rv;
-    }
-
-    // sequence of certificates
-    while (!certsSequence.AtEnd()) {
-      Input cert;
-      rv = der::ExpectTagAndGetTLV(certsSequence, der::SEQUENCE, cert);
-      if (rv != Success) {
-        return rv;
-      }
-      rv = certs.Append(cert);
-      if (rv != Success) {
-        return rv;
-      }
     }
   }
 
@@ -665,9 +666,15 @@ SingleResponse(Reader& input, Context& context)
     context.expired = true;
   }
 
-  rv = der::OptionalExtensions(input,
-                               der::CONTEXT_SPECIFIC | der::CONSTRUCTED | 1,
-                               ExtensionNotUnderstood);
+  rv = der::OptionalExtensions(
+    input,
+    der::CONTEXT_SPECIFIC | der::CONSTRUCTED | 1,
+    [&context](Reader& extnID, const Input& extnValue, bool critical,
+               /*out*/ bool& understood) {
+      return RememberSingleExtension(context, extnID, extnValue, critical,
+                                     understood);
+    });
+
   if (rv != Success) {
     return rv;
   }
@@ -837,6 +844,36 @@ ExtensionNotUnderstood(Reader& /*extnID*/, Input /*extnValue*/,
                        bool /*critical*/, /*out*/ bool& understood)
 {
   understood = false;
+  return Success;
+}
+
+Result
+RememberSingleExtension(Context& context, Reader& extnID, Input extnValue,
+                        bool /*critical*/, /*out*/ bool& understood)
+{
+  understood = false;
+
+  // SingleExtension for Signed Certificate Timestamp List.
+  // See Section 3.3 of RFC 6962.
+  // python DottedOIDToCode.py
+  //   id_ocsp_singleExtensionSctList 1.3.6.1.4.1.11129.2.4.5
+  static const uint8_t id_ocsp_singleExtensionSctList[] = {
+    0x2b, 0x06, 0x01, 0x04, 0x01, 0xd6, 0x79, 0x02, 0x04, 0x05
+  };
+
+  if (extnID.MatchRest(id_ocsp_singleExtensionSctList)) {
+    // Empty values are not allowed for this extension. Note that
+    // we assume this later, when checking if the extension was present.
+    if (extnValue.GetLength() == 0) {
+      return Result::ERROR_EXTENSION_VALUE_INVALID;
+    }
+    if (context.signedCertificateTimestamps.Init(extnValue) != Success) {
+      // Duplicate extension.
+      return Result::ERROR_EXTENSION_VALUE_INVALID;
+    }
+    understood = true;
+  }
+
   return Success;
 }
 

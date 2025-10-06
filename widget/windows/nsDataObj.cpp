@@ -33,7 +33,7 @@
 #include "mozilla/Preferences.h"
 #include "nsIContentPolicy.h"
 #include "nsContentUtils.h"
-#include "nsINode.h"
+#include "nsIPrincipal.h"
 
 #include "WinUtils.h"
 #include "mozilla/LazyIdleThread.h"
@@ -64,24 +64,25 @@ nsDataObj::CStream::~CStream()
 //-----------------------------------------------------------------------------
 // helper - initializes the stream
 nsresult nsDataObj::CStream::Init(nsIURI *pSourceURI,
-                                  nsINode* aRequestingNode)
+                                  uint32_t aContentPolicyType,
+                                  nsIPrincipal* aRequestingPrincipal)
 {
-  // we can not create a channel without a requestingNode
-  if (!aRequestingNode) {
+  // we can not create a channel without a requestingPrincipal
+  if (!aRequestingPrincipal) {
     return NS_ERROR_FAILURE;
   }
   nsresult rv;
   rv = NS_NewChannel(getter_AddRefs(mChannel),
                      pSourceURI,
-                     aRequestingNode,
-                     nsILoadInfo::SEC_NORMAL,
-                     nsIContentPolicy::TYPE_OTHER,
+                     aRequestingPrincipal,
+                     nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_INHERITS,
+                     aContentPolicyType,
                      nullptr,   // loadGroup
                      nullptr,   // aCallbacks
                      nsIRequest::LOAD_FROM_CACHE);
 
   NS_ENSURE_SUCCESS(rv, rv);
-  rv = mChannel->AsyncOpen(this, nullptr);
+  rv = mChannel->AsyncOpen2(this);
   NS_ENSURE_SUCCESS(rv, rv);
   return NS_OK;
 }
@@ -340,13 +341,14 @@ HRESULT nsDataObj::CreateStream(IStream **outStream)
 
   pStream->AddRef();
 
-  // query the requestingNode from the transferable and add it to the new channel
-  nsCOMPtr<nsIDOMNode> requestingDomNode;
-  mTransferable->GetRequestingNode(getter_AddRefs(requestingDomNode));
-  nsCOMPtr<nsINode> requestingNode = do_QueryInterface(requestingDomNode);
-  MOZ_ASSERT(requestingNode, "can not create channel without a node");
-
-  rv = pStream->Init(sourceURI, requestingNode);
+  // query the requestingPrincipal from the transferable and add it to the new channel
+  nsCOMPtr<nsIPrincipal> requestingPrincipal;
+  mTransferable->GetRequestingPrincipal(getter_AddRefs(requestingPrincipal));
+  MOZ_ASSERT(requestingPrincipal, "can not create channel without a principal");
+  // default transferable content policy is nsIContentPolicy::TYPE_OTHER
+  uint32_t contentPolicyType = nsIContentPolicy::TYPE_OTHER;
+  mTransferable->GetContentPolicyType(&contentPolicyType);
+  rv = pStream->Init(sourceURI, contentPolicyType, requestingPrincipal);
   if (NS_FAILED(rv))
   {
     pStream->Release();
@@ -1055,7 +1057,7 @@ nsDataObj :: GetFileDescriptorInternetShortcutA ( FORMATETC& aFE, STGMEDIUM& aST
   if (!CreateFilenameFromTextA(title, ".URL", 
                                fileGroupDescA->fgd[0].cFileName, NS_MAX_FILEDESCRIPTOR)) {
     nsXPIDLString untitled;
-    if (!GetLocalizedString(MOZ_UTF16("noPageTitle"), untitled) ||
+    if (!GetLocalizedString(u"noPageTitle", untitled) ||
         !CreateFilenameFromTextA(untitled, ".URL", 
                                  fileGroupDescA->fgd[0].cFileName, NS_MAX_FILEDESCRIPTOR)) {
       strcpy(fileGroupDescA->fgd[0].cFileName, "Untitled.URL");
@@ -1096,7 +1098,7 @@ nsDataObj :: GetFileDescriptorInternetShortcutW ( FORMATETC& aFE, STGMEDIUM& aST
   if (!CreateFilenameFromTextW(title, L".URL",
                                fileGroupDescW->fgd[0].cFileName, NS_MAX_FILEDESCRIPTOR)) {
     nsXPIDLString untitled;
-    if (!GetLocalizedString(MOZ_UTF16("noPageTitle"), untitled) ||
+    if (!GetLocalizedString(u"noPageTitle", untitled) ||
         !CreateFilenameFromTextW(untitled, L".URL",
                                  fileGroupDescW->fgd[0].cFileName, NS_MAX_FILEDESCRIPTOR)) {
       wcscpy(fileGroupDescW->fgd[0].cFileName, L"Untitled.URL");
@@ -1289,7 +1291,27 @@ HRESULT nsDataObj::GetText(const nsACString & aDataFlavor, FORMATETC& aFE, STGME
   // by the appropriate size to account for the null (one char for CF_TEXT, one char16_t for
   // CF_UNICODETEXT).
   DWORD allocLen = (DWORD)len;
-  if ( aFE.cfFormat == nsClipboard::CF_HTML ) {
+  if ( aFE.cfFormat == CF_TEXT ) {
+    // Someone is asking for text/plain; convert the unicode (assuming it's present)
+    // to text with the correct platform encoding.
+    size_t bufferSize = sizeof(char)*(len + 2);
+    char* plainTextData = static_cast<char*>(moz_xmalloc(bufferSize));
+    char16_t* castedUnicode = reinterpret_cast<char16_t*>(data);
+    int32_t plainTextLen = WideCharToMultiByte(CP_ACP, 0, (LPCWSTR)castedUnicode, len / 2 + 1, plainTextData, bufferSize, NULL, NULL);
+    // replace the unicode data with our plaintext data. Recall that |plainTextLen| doesn't include
+    // the null in the length.
+    free(data);
+    if ( plainTextLen ) {
+      data = plainTextData;
+      allocLen = plainTextLen;
+    }
+    else {
+      free(plainTextData);
+      NS_WARNING ( "Oh no, couldn't convert unicode to plain text" );
+      return S_OK;
+    }
+  }
+  else if ( aFE.cfFormat == nsClipboard::CF_HTML ) {
     // Someone is asking for win32's HTML flavor. Convert our html fragment
     // from unicode to UTF-8 then put it into a format specified by msft.
     NS_ConvertUTF16toUTF8 converter ( reinterpret_cast<char16_t*>(data) );
@@ -1307,7 +1329,7 @@ HRESULT nsDataObj::GetText(const nsACString & aDataFlavor, FORMATETC& aFE, STGME
       return S_OK;
     }
   }
-  else {
+  else if ( aFE.cfFormat != nsClipboard::CF_CUSTOMTYPES ) {
     // we assume that any data that isn't caught above is unicode. This may
     // be an erroneous assumption, but is true so far.
     allocLen += sizeof(char16_t);

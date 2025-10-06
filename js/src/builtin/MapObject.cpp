@@ -80,9 +80,9 @@ HashableValue::operator==(const HashableValue& other) const
 
 #ifdef DEBUG
     bool same;
-    PerThreadData* data = TlsPerThreadData.get();
-    RootedValue valueRoot(data, value);
-    RootedValue otherRoot(data, other.value);
+    JS::RootingContext* rcx = GetJSContextFromMainThread();
+    RootedValue valueRoot(rcx, value);
+    RootedValue otherRoot(rcx, other.value);
     MOZ_ASSERT(SameValue(nullptr, valueRoot, otherRoot, &same));
     MOZ_ASSERT(same == b);
 #endif
@@ -104,9 +104,7 @@ namespace {
 
 } /* anonymous namespace */
 
-const Class MapIteratorObject::class_ = {
-    "Map Iterator",
-    JSCLASS_HAS_RESERVED_SLOTS(MapIteratorObject::SlotCount),
+static const ClassOps MapIteratorObjectClassOps = {
     nullptr, /* addProperty */
     nullptr, /* delProperty */
     nullptr, /* getProperty */
@@ -115,6 +113,13 @@ const Class MapIteratorObject::class_ = {
     nullptr, /* resolve */
     nullptr, /* mayResolve */
     MapIteratorObject::finalize
+};
+
+const Class MapIteratorObject::class_ = {
+    "Map Iterator",
+    JSCLASS_HAS_RESERVED_SLOTS(MapIteratorObject::SlotCount) |
+    JSCLASS_FOREGROUND_FINALIZE,
+    &MapIteratorObjectClassOps
 };
 
 const JSFunctionSpec MapIteratorObject::methods[] = {
@@ -179,6 +184,7 @@ MapIteratorObject::create(JSContext* cx, HandleObject mapobj, ValueMap* data,
 void
 MapIteratorObject::finalize(FreeOp* fop, JSObject* obj)
 {
+    MOZ_ASSERT(fop->onMainThread());
     fop->delete_(MapIteratorObjectRange(static_cast<NativeObject*>(obj)));
 }
 
@@ -186,7 +192,15 @@ bool
 MapIteratorObject::next(JSContext* cx, Handle<MapIteratorObject*> mapIterator,
                         HandleArrayObject resultPairObj)
 {
+    // Check invariants for inlined _GetNextMapEntryForIterator.
+
+    // The array should be tenured, so that post-barrier can be done simply.
+    MOZ_ASSERT(resultPairObj->isTenured());
+
+    // The array elements should be fixed.
+    MOZ_ASSERT(resultPairObj->hasFixedElements());
     MOZ_ASSERT(resultPairObj->getDenseInitializedLength() == 2);
+    MOZ_ASSERT(resultPairObj->getDenseCapacity() >= 2);
 
     ValueMap::Range* range = MapIteratorObjectRange(mapIterator);
     if (!range || range->empty()) {
@@ -213,13 +227,33 @@ MapIteratorObject::next(JSContext* cx, Handle<MapIteratorObject*> mapIterator,
     return false;
 }
 
+/* static */ JSObject*
+MapIteratorObject::createResultPair(JSContext* cx)
+{
+    RootedArrayObject resultPairObj(cx, NewDenseFullyAllocatedArray(cx, 2, nullptr, TenuredObject));
+    if (!resultPairObj)
+        return nullptr;
+
+    Rooted<TaggedProto> proto(cx, resultPairObj->taggedProto());
+    ObjectGroup* group = ObjectGroupCompartment::makeGroup(cx, resultPairObj->getClass(), proto);
+    if (!group)
+        return nullptr;
+    resultPairObj->setGroup(group);
+
+    resultPairObj->setDenseInitializedLength(2);
+    resultPairObj->initDenseElement(0, NullValue());
+    resultPairObj->initDenseElement(1, NullValue());
+
+    // See comments in MapIteratorObject::next.
+    AddTypePropertyId(cx, resultPairObj, JSID_VOID, TypeSet::UnknownType());
+
+    return resultPairObj;
+}
+
 
 /*** Map *****************************************************************************************/
 
-const Class MapObject::class_ = {
-    "Map",
-    JSCLASS_HAS_PRIVATE |
-    JSCLASS_HAS_CACHED_PROTO(JSProto_Map),
+const ClassOps MapObject::classOps_ = {
     nullptr, // addProperty
     nullptr, // delProperty
     nullptr, // getProperty
@@ -232,6 +266,14 @@ const Class MapObject::class_ = {
     nullptr, // hasInstance
     nullptr, // construct
     mark
+};
+
+const Class MapObject::class_ = {
+    "Map",
+    JSCLASS_HAS_PRIVATE |
+    JSCLASS_HAS_CACHED_PROTO(JSProto_Map) |
+    JSCLASS_FOREGROUND_FINALIZE,
+    &MapObject::classOps_
 };
 
 const JSPropertySpec MapObject::properties[] = {
@@ -371,15 +413,15 @@ WriteBarrierPost(JSRuntime* rt, ValueSet* set, const Value& key)
 
 bool
 MapObject::getKeysAndValuesInterleaved(JSContext* cx, HandleObject obj,
-                                       JS::AutoValueVector* entries)
+                                       JS::MutableHandle<GCVector<JS::Value>> entries)
 {
     ValueMap* map = obj->as<MapObject>().getData();
     if (!map)
         return false;
 
     for (ValueMap::Range r = map->all(); !r.empty(); r.popFront()) {
-        if (!entries->append(r.front().key.get()) ||
-            !entries->append(r.front().value))
+        if (!entries.append(r.front().key.get()) ||
+            !entries.append(r.front().value))
         {
             return false;
         }
@@ -399,7 +441,7 @@ MapObject::set(JSContext* cx, HandleObject obj, HandleValue k, HandleValue v)
     if (!key.setValue(cx, k))
         return false;
 
-    RelocatableValue rval(v);
+    HeapPtr<Value> rval(v);
     if (!map->put(key, rval)) {
         ReportOutOfMemory(cx);
         return false;
@@ -428,6 +470,7 @@ MapObject::create(JSContext* cx, HandleObject proto /* = nullptr */)
 void
 MapObject::finalize(FreeOp* fop, JSObject* obj)
 {
+    MOZ_ASSERT(fop->onMainThread());
     if (ValueMap* map = obj->as<MapObject>().getData())
         fop->delete_(map);
 }
@@ -459,14 +502,16 @@ MapObject::construct(JSContext* cx, unsigned argc, Value* vp)
 
         bool isOriginalAdder = IsNativeFunction(adderVal, MapObject::set);
         RootedValue mapVal(cx, ObjectValue(*obj));
-        FastInvokeGuard fig(cx, adderVal);
+        FastCallGuard fig(cx, adderVal);
         InvokeArgs& args2 = fig.args();
 
         ForOfIterator iter(cx);
         if (!iter.init(args[0]))
             return false;
+
         RootedValue pairVal(cx);
         RootedObject pairObj(cx);
+        RootedValue dummy(cx);
         Rooted<HashableValue> hkey(cx);
         ValueMap* map = obj->getData();
         while (true) {
@@ -497,7 +542,7 @@ MapObject::construct(JSContext* cx, unsigned argc, Value* vp)
                 if (!hkey.setValue(cx, key))
                     return false;
 
-                RelocatableValue rval(val);
+                HeapPtr<Value> rval(val);
                 if (!map->put(hkey, rval)) {
                     ReportOutOfMemory(cx);
                     return false;
@@ -507,12 +552,10 @@ MapObject::construct(JSContext* cx, unsigned argc, Value* vp)
                 if (!args2.init(2))
                     return false;
 
-                args2.setCallee(adderVal);
-                args2.setThis(mapVal);
                 args2[0].set(key);
                 args2[1].set(val);
 
-                if (!fig.invoke(cx))
+                if (!fig.call(cx, adderVal, mapVal, &dummy))
                     return false;
             }
         }
@@ -547,11 +590,11 @@ MapObject::extract(HandleObject o)
 }
 
 ValueMap&
-MapObject::extract(CallReceiver call)
+MapObject::extract(const CallArgs& args)
 {
-    MOZ_ASSERT(call.thisv().isObject());
-    MOZ_ASSERT(call.thisv().toObject().hasClass(&MapObject::class_));
-    return *call.thisv().toObject().as<MapObject>().getData();
+    MOZ_ASSERT(args.thisv().isObject());
+    MOZ_ASSERT(args.thisv().toObject().hasClass(&MapObject::class_));
+    return *args.thisv().toObject().as<MapObject>().getData();
 }
 
 uint32_t
@@ -649,7 +692,7 @@ MapObject::set_impl(JSContext* cx, const CallArgs& args)
 
     ValueMap& map = extract(args);
     ARG0_KEY(cx, args, key);
-    RelocatableValue rval(args.get(1));
+    HeapPtr<Value> rval(args.get(1));
     if (!map.put(key, rval)) {
         ReportOutOfMemory(cx);
         return false;
@@ -686,14 +729,14 @@ bool
 MapObject::delete_impl(JSContext *cx, const CallArgs& args)
 {
     // MapObject::mark does not mark deleted entries. Incremental GC therefore
-    // requires that no RelocatableValue objects pointing to heap values be
-    // left alive in the ValueMap.
+    // requires that no HeapPtr<Value> objects pointing to heap values be left
+    // alive in the ValueMap.
     //
     // OrderedHashMap::remove() doesn't destroy the removed entry. It merely
     // calls OrderedHashMap::MapOps::makeEmpty. But that is sufficient, because
     // makeEmpty clears the value by doing e->value = Value(), and in the case
-    // of a ValueMap, Value() means RelocatableValue(), which is the same as
-    // RelocatableValue(UndefinedValue()).
+    // of a ValueMap, Value() means HeapPtr<Value>(), which is the same as
+    // HeapPtr<Value>(UndefinedValue()).
     MOZ_ASSERT(MapObject::is(args.thisv()));
 
     ValueMap& map = extract(args);
@@ -804,32 +847,7 @@ js::InitMapClass(JSContext* cx, HandleObject obj)
 
 /*** SetIterator *********************************************************************************/
 
-namespace {
-
-class SetIteratorObject : public NativeObject
-{
-  public:
-    static const Class class_;
-
-    enum { TargetSlot, KindSlot, RangeSlot, SlotCount };
-    static const JSFunctionSpec methods[];
-    static SetIteratorObject* create(JSContext* cx, HandleObject setobj, ValueSet* data,
-                                     SetObject::IteratorKind kind);
-    static bool next(JSContext* cx, unsigned argc, Value* vp);
-    static void finalize(FreeOp* fop, JSObject* obj);
-
-  private:
-    static inline bool is(HandleValue v);
-    inline ValueSet::Range* range();
-    inline SetObject::IteratorKind kind() const;
-    static bool next_impl(JSContext* cx, const CallArgs& args);
-};
-
-} /* anonymous namespace */
-
-const Class SetIteratorObject::class_ = {
-    "Set Iterator",
-    JSCLASS_HAS_RESERVED_SLOTS(SetIteratorObject::SlotCount),
+static const ClassOps SetIteratorObjectClassOps = {
     nullptr, /* addProperty */
     nullptr, /* delProperty */
     nullptr, /* getProperty */
@@ -838,6 +856,13 @@ const Class SetIteratorObject::class_ = {
     nullptr, /* resolve */
     nullptr, /* mayResolve */
     SetIteratorObject::finalize
+};
+
+const Class SetIteratorObject::class_ = {
+    "Set Iterator",
+    JSCLASS_HAS_RESERVED_SLOTS(SetIteratorObject::SlotCount) |
+    JSCLASS_FOREGROUND_FINALIZE,
+    &SetIteratorObjectClassOps
 };
 
 const JSFunctionSpec SetIteratorObject::methods[] = {
@@ -901,6 +926,7 @@ SetIteratorObject::create(JSContext* cx, HandleObject setobj, ValueSet* data,
 void
 SetIteratorObject::finalize(FreeOp* fop, JSObject* obj)
 {
+    MOZ_ASSERT(fop->onMainThread());
     fop->delete_(obj->as<SetIteratorObject>().range());
 }
 
@@ -963,10 +989,7 @@ SetIteratorObject::next(JSContext* cx, unsigned argc, Value* vp)
 
 /*** Set *****************************************************************************************/
 
-const Class SetObject::class_ = {
-    "Set",
-    JSCLASS_HAS_PRIVATE |
-    JSCLASS_HAS_CACHED_PROTO(JSProto_Set),
+const ClassOps SetObject::classOps_ = {
     nullptr, // addProperty
     nullptr, // delProperty
     nullptr, // getProperty
@@ -979,6 +1002,14 @@ const Class SetObject::class_ = {
     nullptr, // hasInstance
     nullptr, // construct
     mark
+};
+
+const Class SetObject::class_ = {
+    "Set",
+    JSCLASS_HAS_PRIVATE |
+    JSCLASS_HAS_CACHED_PROTO(JSProto_Set) |
+    JSCLASS_FOREGROUND_FINALIZE,
+    &SetObject::classOps_
 };
 
 const JSPropertySpec SetObject::properties[] = {
@@ -1028,14 +1059,14 @@ SetObject::initClass(JSContext* cx, JSObject* obj)
 
 
 bool
-SetObject::keys(JSContext* cx, HandleObject obj, JS::AutoValueVector* keys)
+SetObject::keys(JSContext* cx, HandleObject obj, JS::MutableHandle<GCVector<JS::Value>> keys)
 {
     ValueSet* set = obj->as<SetObject>().getData();
     if (!set)
         return false;
 
     for (ValueSet::Range r = set->all(); !r.empty(); r.popFront()) {
-        if (!keys->append(r.front().get()))
+        if (!keys.append(r.front().get()))
             return false;
     }
 
@@ -1091,6 +1122,7 @@ SetObject::mark(JSTracer* trc, JSObject* obj)
 void
 SetObject::finalize(FreeOp* fop, JSObject* obj)
 {
+    MOZ_ASSERT(fop->onMainThread());
     SetObject* setobj = static_cast<SetObject*>(obj);
     if (ValueSet* set = setobj->getData())
         fop->delete_(set);
@@ -1123,7 +1155,7 @@ SetObject::construct(JSContext* cx, unsigned argc, Value* vp)
 
         bool isOriginalAdder = IsNativeFunction(adderVal, SetObject::add);
         RootedValue setVal(cx, ObjectValue(*obj));
-        FastInvokeGuard fig(cx, adderVal);
+        FastCallGuard fig(cx, adderVal);
         InvokeArgs& args2 = fig.args();
 
         RootedValue keyVal(cx);
@@ -1131,6 +1163,7 @@ SetObject::construct(JSContext* cx, unsigned argc, Value* vp)
         if (!iter.init(args[0]))
             return false;
         Rooted<HashableValue> key(cx);
+        RootedValue dummy(cx);
         ValueSet* set = obj->getData();
         while (true) {
             bool done;
@@ -1151,11 +1184,9 @@ SetObject::construct(JSContext* cx, unsigned argc, Value* vp)
                 if (!args2.init(1))
                     return false;
 
-                args2.setCallee(adderVal);
-                args2.setThis(setVal);
                 args2[0].set(keyVal);
 
-                if (!fig.invoke(cx))
+                if (!fig.call(cx, adderVal, setVal, &dummy))
                     return false;
             }
         }
@@ -1185,11 +1216,11 @@ SetObject::extract(HandleObject o)
 }
 
 ValueSet &
-SetObject::extract(CallReceiver call)
+SetObject::extract(const CallArgs& args)
 {
-    MOZ_ASSERT(call.thisv().isObject());
-    MOZ_ASSERT(call.thisv().toObject().hasClass(&SetObject::class_));
-    return *static_cast<SetObject&>(call.thisv().toObject()).getData();
+    MOZ_ASSERT(args.thisv().isObject());
+    MOZ_ASSERT(args.thisv().toObject().hasClass(&SetObject::class_));
+    return *static_cast<SetObject&>(args.thisv().toObject()).getData();
 }
 
 uint32_t
@@ -1416,23 +1447,18 @@ js::InitSelfHostingCollectionIteratorFunctions(JSContext* cx, HandleObject obj)
 
 /*** JS static utility functions *********************************************/
 
-static
-bool
+static bool
 forEach(const char* funcName, JSContext *cx, HandleObject obj, HandleValue callbackFn, HandleValue thisArg)
 {
     CHECK_REQUEST(cx);
+
     RootedId forEachId(cx, NameToId(cx->names().forEach));
     RootedFunction forEachFunc(cx, JS::GetSelfHostedFunction(cx, funcName, forEachId, 2));
     if (!forEachFunc)
         return false;
-    InvokeArgs args(cx);
-    if (!args.init(2))
-        return false;
-    args.setCallee(JS::ObjectValue(*forEachFunc));
-    args.setThis(JS::ObjectValue(*obj));
-    args[0].set(callbackFn);
-    args[1].set(thisArg);
-    return Invoke(cx, args);
+
+    RootedValue fval(cx, ObjectValue(*forEachFunc));
+    return Call(cx, fval, obj, callbackFn, thisArg, &fval);
 }
 
 // Handles Clear/Size for public jsapi map/set access

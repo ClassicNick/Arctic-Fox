@@ -6,7 +6,9 @@
 
 "use strict";
 
-const { Cu, Cc, Ci, components } = require("chrome");
+/* eslint-disable mozilla/reject-some-requires */
+const {Cc, Ci} = require("chrome");
+/* eslint-enable mozilla/reject-some-requires */
 
 const {
   EXPAND_TAB,
@@ -16,11 +18,11 @@ const {
 } = require("devtools/shared/indentation");
 
 const ENABLE_CODE_FOLDING = "devtools.editor.enableCodeFolding";
-const KEYMAP      = "devtools.editor.keymap";
-const AUTO_CLOSE  = "devtools.editor.autoclosebrackets";
-const AUTOCOMPLETE  = "devtools.editor.autocomplete";
+const KEYMAP = "devtools.editor.keymap";
+const AUTO_CLOSE = "devtools.editor.autoclosebrackets";
+const AUTOCOMPLETE = "devtools.editor.autocomplete";
 const L10N_BUNDLE = "chrome://devtools/locale/sourceeditor.properties";
-const XUL_NS      = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
+const XUL_NS = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
 const VALID_KEYMAPS = new Set(["emacs", "vim", "sublime"]);
 
 // Maximum allowed margin (in number of lines) from top or bottom of the editor
@@ -32,11 +34,11 @@ const MAX_VERTICAL_OFFSET = 3;
 const RE_SCRATCHPAD_ERROR = /(?:@Scratchpad\/\d+:|\()(\d+):?(\d+)?(?:\)|\n)/;
 const RE_JUMP_TO_LINE = /^(\d+):?(\d+)?/;
 
+const Services = require("Services");
 const promise = require("promise");
-const events  = require("devtools/shared/event-emitter");
+const events = require("devtools/shared/event-emitter");
 const { PrefObserver } = require("devtools/client/styleeditor/utils");
 
-Cu.import("resource://gre/modules/Services.jsm");
 const L10N = Services.strings.createBundle(L10N_BUNDLE);
 
 const { OS } = Services.appinfo;
@@ -45,14 +47,13 @@ const { OS } = Services.appinfo;
 // JavaScript and CSS that is injected into an iframe in
 // order to initialize a CodeMirror instance.
 
-const CM_STYLES   = [
-  "chrome://devtools/skin/common.css",
+const CM_STYLES = [
   "chrome://devtools/content/sourceeditor/codemirror/lib/codemirror.css",
   "chrome://devtools/content/sourceeditor/codemirror/addon/dialog/dialog.css",
   "chrome://devtools/content/sourceeditor/codemirror/mozilla.css"
 ];
 
-const CM_SCRIPTS  = [
+const CM_SCRIPTS = [
   "chrome://devtools/content/shared/theme-switching.js",
   "chrome://devtools/content/sourceeditor/codemirror/lib/codemirror.js",
   "chrome://devtools/content/sourceeditor/codemirror/addon/dialog/dialog.js",
@@ -66,6 +67,7 @@ const CM_SCRIPTS  = [
   "chrome://devtools/content/sourceeditor/codemirror/mode/css.js",
   "chrome://devtools/content/sourceeditor/codemirror/mode/htmlmixed.js",
   "chrome://devtools/content/sourceeditor/codemirror/mode/clike.js",
+  "chrome://devtools/content/sourceeditor/codemirror/mode/wasm.js",
   "chrome://devtools/content/sourceeditor/codemirror/addon/selection/active-line.js",
   "chrome://devtools/content/sourceeditor/codemirror/addon/edit/trailingspace.js",
   "chrome://devtools/content/sourceeditor/codemirror/keymap/emacs.js",
@@ -78,14 +80,15 @@ const CM_SCRIPTS  = [
   "chrome://devtools/content/sourceeditor/codemirror/addon/fold/foldgutter.js"
 ];
 
-const CM_IFRAME   =
+const CM_IFRAME =
   "data:text/html;charset=utf8,<!DOCTYPE html>" +
   "<html dir='ltr'>" +
   "  <head>" +
   "    <style>" +
   "      html, body { height: 100%; }" +
   "      body { margin: 0; overflow: hidden; }" +
-  "      .CodeMirror { width: 100%; height: 100% !important; line-height: 1.25 !important;}" +
+  "      .CodeMirror { width: 100%; height: 100% !important; " +
+  "line-height: 1.25 !important;}" +
   "    </style>" +
   CM_STYLES.map(style => "<link rel='stylesheet' href='" + style + "'>").join("\n") +
   "  </head>" +
@@ -118,10 +121,11 @@ const editors = new WeakMap();
 Editor.modes = {
   text: { name: "text" },
   html: { name: "htmlmixed" },
-  css:  { name: "css" },
-  js:   { name: "javascript" },
-  vs:   { name: "x-shader/x-vertex" },
-  fs:   { name: "x-shader/x-fragment" }
+  css: { name: "css" },
+  wasm: { name: "wasm" },
+  js: { name: "javascript" },
+  vs: { name: "x-shader/x-vertex" },
+  fs: { name: "x-shader/x-fragment" }
 };
 
 /**
@@ -152,45 +156,48 @@ function Editor(config) {
 
   this.version = null;
   this.config = {
-    value:             "",
-    mode:              Editor.modes.text,
-    indentUnit:        tabSize,
-    tabSize:           tabSize,
-    contextMenu:       null,
-    matchBrackets:     true,
-    extraKeys:         {},
-    indentWithTabs:    useTabs,
-    styleActiveLine:   true,
+    value: "",
+    mode: Editor.modes.text,
+    indentUnit: tabSize,
+    tabSize: tabSize,
+    contextMenu: null,
+    matchBrackets: true,
+    extraKeys: {},
+    indentWithTabs: useTabs,
+    inputStyle: "textarea",
+    styleActiveLine: true,
     autoCloseBrackets: "()[]{}''\"\"``",
-    autoCloseEnabled:  useAutoClose,
-    theme:             "mozilla",
-    themeSwitching:    true,
-    autocomplete:      false,
-    autocompleteOpts:  {}
+    autoCloseEnabled: useAutoClose,
+    theme: "mozilla",
+    themeSwitching: true,
+    autocomplete: false,
+    autocompleteOpts: {}
   };
 
   // Additional shortcuts.
   this.config.extraKeys[Editor.keyFor("jumpToLine")] = () => this.jumpToLine();
-  this.config.extraKeys[Editor.keyFor("moveLineUp", { noaccel: true })] = () => this.moveLineUp();
-  this.config.extraKeys[Editor.keyFor("moveLineDown", { noaccel: true })] = () => this.moveLineDown();
+  this.config.extraKeys[Editor.keyFor("moveLineUp", { noaccel: true })] =
+    () => this.moveLineUp();
+  this.config.extraKeys[Editor.keyFor("moveLineDown", { noaccel: true })] =
+    () => this.moveLineDown();
   this.config.extraKeys[Editor.keyFor("toggleComment")] = "toggleComment";
 
   // Disable ctrl-[ and ctrl-] because toolbox uses those shortcuts.
   this.config.extraKeys[Editor.keyFor("indentLess")] = false;
   this.config.extraKeys[Editor.keyFor("indentMore")] = false;
 
-
   // Overwrite default config with user-provided, if needed.
-  Object.keys(config).forEach((k) => {
+  Object.keys(config).forEach(k => {
     if (k != "extraKeys") {
       this.config[k] = config[k];
       return;
     }
 
-    if (!config.extraKeys)
+    if (!config.extraKeys) {
       return;
+    }
 
-    Object.keys(config.extraKeys).forEach((key) => {
+    Object.keys(config.extraKeys).forEach(key => {
       this.config.extraKeys[key] = config.extraKeys[key];
     });
   });
@@ -210,7 +217,7 @@ function Editor(config) {
   // indent those lines. If nothing is selected and we're
   // indenting with tabs, insert one tab. Otherwise insert N
   // whitespaces where N == indentUnit option.
-  this.config.extraKeys.Tab = (cm) => {
+  this.config.extraKeys.Tab = cm => {
     if (cm.somethingSelected()) {
       cm.indentSelection("add");
       return;
@@ -221,8 +228,10 @@ function Editor(config) {
       return;
     }
 
-    var num = cm.getOption("indentUnit");
-    if (cm.getCursor().ch !== 0) num -= 1;
+    let num = cm.getOption("indentUnit");
+    if (cm.getCursor().ch !== 0) {
+      num -= 1;
+    }
     cm.replaceSelection(" ".repeat(num), "end", "+input");
   };
 
@@ -238,6 +247,7 @@ Editor.prototype = {
   container: null,
   version: null,
   config: null,
+  Doc: null,
 
   /**
    * Appends the current Editor instance to the element specified by
@@ -249,15 +259,17 @@ Editor.prototype = {
    */
   appendTo: function (el, env) {
     let def = promise.defer();
-    let cm  = editors.get(this);
+    let cm = editors.get(this);
 
-    if (!env)
+    if (!env) {
       env = el.ownerDocument.createElementNS(XUL_NS, "iframe");
+    }
 
     env.flex = 1;
 
-    if (cm)
+    if (cm) {
       throw new Error("You can append an editor only once.");
+    }
 
     let onLoad = () => {
       // Once the iframe is loaded, we can inject CodeMirror
@@ -266,13 +278,15 @@ Editor.prototype = {
       env.removeEventListener("load", onLoad, true);
       let win = env.contentWindow.wrappedJSObject;
 
-      if (!this.config.themeSwitching)
+      if (!this.config.themeSwitching) {
         win.document.documentElement.setAttribute("force-theme", "light");
+      }
 
       let scriptsToInject = CM_SCRIPTS.concat(this.config.externalScripts);
-      scriptsToInject.forEach((url) => {
-        if (url.startsWith("chrome://"))
+      scriptsToInject.forEach(url => {
+        if (url.startsWith("chrome://")) {
           Services.scriptloader.loadSubScript(url, win, "utf8");
+        }
       });
       // Replace the propertyKeywords, colorKeywords and valueKeywords
       // properties of the CSS MIME type with the values provided by Gecko.
@@ -295,12 +309,44 @@ Editor.prototype = {
       // context menus won't work).
 
       cm = win.CodeMirror(win.document.body, this.config);
-      cm.getWrapperElement().addEventListener("contextmenu", (ev) => {
+      this.Doc = win.CodeMirror.Doc;
+
+      // Disable APZ for source editors. It currently causes the line numbers to
+      // "tear off" and swim around on top of the content. Bug 1160601 tracks
+      // finding a solution that allows APZ to work with CodeMirror.
+      cm.getScrollerElement().addEventListener("wheel", ev => {
+        // By handling the wheel events ourselves, we force the platform to
+        // scroll synchronously, like it did before APZ. However, we lose smooth
+        // scrolling for users with mouse wheels. This seems acceptible vs.
+        // doing nothing and letting the gutter slide around.
         ev.preventDefault();
-        if (!this.config.contextMenu) return;
+
+        let { deltaX, deltaY } = ev;
+
+        if (ev.deltaMode == ev.DOM_DELTA_LINE) {
+          deltaX *= cm.defaultCharWidth();
+          deltaY *= cm.defaultTextHeight();
+        } else if (ev.deltaMode == ev.DOM_DELTA_PAGE) {
+          deltaX *= cm.getWrapperElement().clientWidth;
+          deltaY *= cm.getWrapperElement().clientHeight;
+        }
+
+        cm.getScrollerElement().scrollBy(deltaX, deltaY);
+      });
+
+      cm.getWrapperElement().addEventListener("contextmenu", ev => {
+        ev.preventDefault();
+
+        if (!this.config.contextMenu) {
+          return;
+        }
+
         let popup = this.config.contextMenu;
-        if (typeof popup == "string")
+        if (typeof popup == "string") {
           popup = el.ownerDocument.getElementById(this.config.contextMenu);
+        }
+
+        this.emit("popupOpen", ev, popup);
         popup.openPopupAtScreen(ev.screenX, ev.screenY, true);
       }, false);
 
@@ -313,7 +359,7 @@ Editor.prototype = {
                                       ? ["metaKey", "altKey"]
                                       : ["ctrlKey", "shiftKey"];
 
-      cm.getWrapperElement().addEventListener("keydown", (ev) => {
+      cm.getWrapperElement().addEventListener("keydown", ev => {
         let key = ev.key.toUpperCase();
         let node = ev.originalTarget;
         let isInput = node.tagName === "INPUT";
@@ -325,7 +371,9 @@ Editor.prototype = {
                        node.parentNode &&
                        node.parentNode.classList.contains("CodeMirror-dialog");
 
-        if (!ev[accel] || !(isSearchInput || isDialogInput)) return;
+        if (!ev[accel] || !(isSearchInput || isDialogInput)) {
+          return;
+        }
 
         if (key === findKey) {
           ev.preventDefault();
@@ -336,7 +384,9 @@ Editor.prototype = {
         } else if (key === findAgainKey) {
           ev.preventDefault();
 
-          if (!isSearchInput) return;
+          if (!isSearchInput) {
+            return;
+          }
 
           let query = node.value;
 
@@ -359,7 +409,6 @@ Editor.prototype = {
         }
       });
 
-
       cm.on("focus", () => this.emit("focus"));
       cm.on("scroll", () => this.emit("scroll"));
       cm.on("change", () => {
@@ -369,15 +418,15 @@ Editor.prototype = {
           this.emit("dirty-change");
         }
       });
-      cm.on("cursorActivity", (cm) => this.emit("cursorActivity"));
+      cm.on("cursorActivity", () => this.emit("cursorActivity"));
 
-      cm.on("gutterClick", (cm, line, gutter, ev) => {
+      cm.on("gutterClick", (cmArg, line, gutter, ev) => {
         let head = { line: line, ch: 0 };
         let tail = { line: line, ch: this.getText(line).length };
 
         // Shift-click on a gutter selects the whole line.
         if (ev.shiftKey) {
-          cm.setSelection(head, tail);
+          cmArg.setSelection(head, tail);
           return;
         }
 
@@ -422,9 +471,9 @@ Editor.prototype = {
 
   /**
    * Returns a boolean indicating whether the editor is ready to
-   * use.  Use appendTo(el).then(() => {}) for most cases
+   * use. Use appendTo(el).then(() => {}) for most cases
    */
-  isAppended: function() {
+  isAppended: function () {
     return editors.has(this);
   },
 
@@ -437,14 +486,30 @@ Editor.prototype = {
   },
 
   /**
-   * Load a script into editor's containing window.
+   * Loads a script into editor's containing window.
    */
   loadScript: function (url) {
     if (!this.container) {
-      throw new Error("Can't load a script until the editor is loaded.")
+      throw new Error("Can't load a script until the editor is loaded.");
     }
     let win = this.container.contentWindow.wrappedJSObject;
     Services.scriptloader.loadSubScript(url, win, "utf8");
+  },
+
+  /**
+   * Creates a CodeMirror Document
+   * @returns CodeMirror.Doc
+   */
+  createDocument: function () {
+    return new this.Doc("");
+  },
+
+  /**
+   * Replaces the current document with a new source document
+   */
+  replaceDocument: function (doc) {
+    let cm = editors.get(this);
+    cm.swapDoc(doc);
   },
 
   /**
@@ -469,8 +534,9 @@ Editor.prototype = {
   getText: function (line) {
     let cm = editors.get(this);
 
-    if (line == null)
+    if (line == null) {
       return cm.getValue();
+    }
 
     let info = cm.lineInfo(line);
     return info ? cm.lineInfo(line).text : "";
@@ -488,11 +554,11 @@ Editor.prototype = {
   },
 
   /**
-   * Reload the state of the editor based on all current preferences.
+   * Reloads the state of the editor based on all current preferences.
    * This is called automatically when any of the relevant preferences
    * change.
    */
-  reloadPreferences: function() {
+  reloadPreferences: function () {
     // Restore the saved autoCloseBrackets value if it is preffed on.
     let useAutoClose = Services.prefs.getBoolPref(AUTO_CLOSE);
     this.setOption("autoCloseBrackets",
@@ -500,10 +566,11 @@ Editor.prototype = {
 
     // If alternative keymap is provided, use it.
     const keyMap = Services.prefs.getCharPref(KEYMAP);
-    if (VALID_KEYMAPS.has(keyMap))
-      this.setOption("keyMap", keyMap)
-    else
+    if (VALID_KEYMAPS.has(keyMap)) {
+      this.setOption("keyMap", keyMap);
+    } else {
       this.setOption("keyMap", "default");
+    }
     this.updateCodeFoldingGutter();
 
     this.resetIndentUnit();
@@ -511,13 +578,13 @@ Editor.prototype = {
   },
 
   /**
-   * Set the editor's indentation based on the current prefs and
+   * Sets the editor's indentation based on the current prefs and
    * re-detect indentation if we should.
    */
-  resetIndentUnit: function() {
+  resetIndentUnit: function () {
     let cm = editors.get(this);
 
-    let iterFn = function(start, end, callback) {
+    let iterFn = function (start, end, callback) {
       cm.eachLine(start, end, (line) => {
         return callback(line.text);
       });
@@ -566,8 +633,9 @@ Editor.prototype = {
    * Deselects contents of the text area.
    */
   dropSelection: function () {
-    if (!this.somethingSelected())
+    if (!this.somethingSelected()) {
       return;
+    }
 
     this.setCursor(this.getCursor());
   },
@@ -614,12 +682,12 @@ Editor.prototype = {
    * editor view with a maximum margin of MAX_VERTICAL_OFFSET lines from top or
    * bottom.
    */
-  alignLine: function(line, align) {
+  alignLine: function (line, align) {
     let cm = editors.get(this);
     let from = cm.lineAtHeight(0, "page");
     let to = cm.lineAtHeight(cm.getWrapperElement().clientHeight, "page");
     let linesVisible = to - from;
-    let halfVisible = Math.round(linesVisible/2);
+    let halfVisible = Math.round(linesVisible / 2);
 
     // If the target line is in view, skip the vertical alignment part.
     if (line <= to && line >= from) {
@@ -647,8 +715,9 @@ Editor.prototype = {
    */
   hasMarker: function (line, gutterName, markerClass) {
     let marker = this.getMarker(line, gutterName);
-    if (!marker)
+    if (!marker) {
       return false;
+    }
 
     return marker.classList.contains(markerClass);
   },
@@ -660,19 +729,21 @@ Editor.prototype = {
   addMarker: function (line, gutterName, markerClass) {
     let cm = editors.get(this);
     let info = cm.lineInfo(line);
-    if (!info)
+    if (!info) {
       return;
+    }
 
     let gutterMarkers = info.gutterMarkers;
+    let marker;
     if (gutterMarkers) {
-      let marker = gutterMarkers[gutterName];
+      marker = gutterMarkers[gutterName];
       if (marker) {
         marker.classList.add(markerClass);
         return;
       }
     }
 
-    let marker = cm.getWrapperElement().ownerDocument.createElement("div");
+    marker = cm.getWrapperElement().ownerDocument.createElement("div");
     marker.className = markerClass;
     cm.setGutterMarker(info.line, gutterName, marker);
   },
@@ -682,8 +753,9 @@ Editor.prototype = {
    * line's gutter.
    */
   removeMarker: function (line, gutterName, markerClass) {
-    if (!this.hasMarker(line, gutterName, markerClass))
+    if (!this.hasMarker(line, gutterName, markerClass)) {
       return;
+    }
 
     let cm = editors.get(this);
     cm.lineInfo(line).gutterMarkers[gutterName].classList.remove(markerClass);
@@ -697,8 +769,9 @@ Editor.prototype = {
   addContentMarker: function (line, gutterName, markerClass, content) {
     let cm = editors.get(this);
     let info = cm.lineInfo(line);
-    if (!info)
+    if (!info) {
       return;
+    }
 
     let marker = cm.getWrapperElement().ownerDocument.createElement("div");
     marker.className = markerClass;
@@ -712,24 +785,31 @@ Editor.prototype = {
    */
   removeContentMarker: function (line, gutterName) {
     let cm = editors.get(this);
+    let info = cm.lineInfo(line);
+    if (!info) {
+      return;
+    }
+
     cm.setGutterMarker(info.line, gutterName, null);
   },
 
-  getMarker: function(line, gutterName) {
+  getMarker: function (line, gutterName) {
     let cm = editors.get(this);
     let info = cm.lineInfo(line);
-    if (!info)
+    if (!info) {
       return null;
+    }
 
     let gutterMarkers = info.gutterMarkers;
-    if (!gutterMarkers)
+    if (!gutterMarkers) {
       return null;
+    }
 
     return gutterMarkers[gutterName];
   },
 
   /**
-   * Remove all gutter markers in the gutter with the given name.
+   * Removes all gutter markers in the gutter with the given name.
    */
   removeAllMarkers: function (gutterName) {
     let cm = editors.get(this);
@@ -745,15 +825,16 @@ Editor.prototype = {
    * You don't need to worry about removing these event listeners.
    * They're automatically orphaned when clearing markers.
    */
-  setMarkerListeners: function(line, gutterName, markerClass, events, data) {
-    if (!this.hasMarker(line, gutterName, markerClass))
+  setMarkerListeners: function (line, gutterName, markerClass, eventsArg, data) {
+    if (!this.hasMarker(line, gutterName, markerClass)) {
       return;
+    }
 
     let cm = editors.get(this);
     let marker = cm.lineInfo(line).gutterMarkers[gutterName];
 
-    for (let name in events) {
-      let listener = events[name].bind(this, line, marker, data);
+    for (let name in eventsArg) {
+      let listener = eventsArg[name].bind(this, line, marker, data);
       marker.addEventListener(name, listener);
     }
   },
@@ -765,14 +846,15 @@ Editor.prototype = {
     let cm = editors.get(this);
     let info = cm.lineInfo(line);
 
-    if (!info || !info.wrapClass)
+    if (!info || !info.wrapClass) {
       return false;
+    }
 
     return info.wrapClass.split(" ").indexOf(className) != -1;
   },
 
   /**
-   * Set a CSS class name for the given line, including the text and gutter.
+   * Sets a CSS class name for the given line, including the text and gutter.
    */
   addLineClass: function (line, className) {
     let cm = editors.get(this);
@@ -792,7 +874,7 @@ Editor.prototype = {
    * be modified, for example, when typing text, this method returns a function
    * that can be used to remove the mark.
    */
-  markText: function(from, to, className = "marked-text") {
+  markText: function (from, to, className = "marked-text") {
     let cm = editors.get(this);
     let text = cm.getRange(from, to);
     let span = cm.getWrapperElement().ownerDocument.createElement("span");
@@ -894,11 +976,12 @@ Editor.prototype = {
     let doc = editors.get(this).getWrapperElement().ownerDocument;
     let div = doc.createElement("div");
     let inp = doc.createElement("input");
-    let txt = doc.createTextNode(L10N.GetStringFromName("gotoLineCmd.promptTitle"));
+    let txt =
+      doc.createTextNode(L10N.GetStringFromName("gotoLineCmd.promptTitle"));
 
     inp.type = "text";
     inp.style.width = "10em";
-    inp.style.MozMarginStart = "1em";
+    inp.style.marginInlineStart = "1em";
 
     div.appendChild(txt);
     div.appendChild(inp);
@@ -911,7 +994,7 @@ Editor.prototype = {
       // In the string above this is line 10, column 2.
       let match = sel.match(RE_SCRATCHPAD_ERROR);
       if (match) {
-        let [ , line, column ] = match;
+        let [, line, column ] = match;
         inp.value = column ? line + ":" + column : line;
         inp.selectionStart = inp.selectionEnd = inp.value.length;
       }
@@ -921,8 +1004,8 @@ Editor.prototype = {
       // Handle LINE:COLUMN as well as LINE
       let match = line.toString().match(RE_JUMP_TO_LINE);
       if (match) {
-        let [ , line, column ] = match;
-        this.setCursor({line: line - 1, ch: column ? column - 1 : 0 });
+        let [, matchLine, column ] = match;
+        this.setCursor({line: matchLine - 1, ch: column ? column - 1 : 0 });
       }
     });
   },
@@ -935,8 +1018,9 @@ Editor.prototype = {
     let start = cm.getCursor("start");
     let end = cm.getCursor("end");
 
-    if (start.line === 0)
+    if (start.line === 0) {
       return;
+    }
 
     // Get the text in the lines selected or the current line of the cursor
     // and append the text of the previous line.
@@ -965,8 +1049,9 @@ Editor.prototype = {
     let start = cm.getCursor("start");
     let end = cm.getCursor("end");
 
-    if (end.line + 1 === cm.lineCount())
+    if (end.line + 1 === cm.lineCount()) {
       return;
+    }
 
     // Get the text of next line and append the text in the lines selected
     // or the current line of the cursor.
@@ -990,8 +1075,8 @@ Editor.prototype = {
    * Returns current font size for the editor area, in pixels.
    */
   getFontSize: function () {
-    let cm  = editors.get(this);
-    let el  = cm.getWrapperElement();
+    let cm = editors.get(this);
+    let el = cm.getWrapperElement();
     let win = el.ownerDocument.defaultView;
 
     return parseInt(win.getComputedStyle(el).getPropertyValue("font-size"), 10);
@@ -1011,7 +1096,7 @@ Editor.prototype = {
    * CodeMirror.setOption, but certain ones are maintained within the editor
    * instance.
    */
-  setOption: function(o, v) {
+  setOption: function (o, v) {
     let cm = editors.get(this);
 
     // Save the state of a valid autoCloseBrackets string, so we can reset
@@ -1040,13 +1125,13 @@ Editor.prototype = {
    * CodeMirror.getOption, but certain ones are maintained within the editor
    * instance.
    */
-  getOption: function(o) {
+  getOption: function (o) {
     let cm = editors.get(this);
     if (o === "autocomplete") {
       return this.config.autocomplete;
-    } else {
-      return cm.getOption(o);
     }
+
+    return cm.getOption(o);
   },
 
   /**
@@ -1089,8 +1174,8 @@ Editor.prototype = {
    * editor.hello('Mozilla');
    */
   extend: function (funcs) {
-    Object.keys(funcs).forEach((name) => {
-      let cm  = editors.get(this);
+    Object.keys(funcs).forEach(name => {
+      let cm = editors.get(this);
       let ctx = { ed: this, cm: cm, Editor: Editor};
 
       if (name === "initialize") {
@@ -1122,9 +1207,9 @@ Editor.prototype = {
   },
 
   updateCodeFoldingGutter: function () {
-    let shouldFoldGutter = this.config.enableCodeFolding,
-        foldGutterIndex = this.config.gutters.indexOf("CodeMirror-foldgutter"),
-        cm = editors.get(this);
+    let shouldFoldGutter = this.config.enableCodeFolding;
+    let foldGutterIndex = this.config.gutters.indexOf("CodeMirror-foldgutter");
+    let cm = editors.get(this);
 
     if (shouldFoldGutter === undefined) {
       shouldFoldGutter = Services.prefs.getBoolPref(ENABLE_CODE_FOLDING);
@@ -1160,7 +1245,7 @@ Editor.prototype = {
 // Since Editor is a thin layer over CodeMirror some methods
 // are mapped directly—without any changes.
 
-CM_MAPPING.forEach(function (name) {
+CM_MAPPING.forEach(name => {
   Editor.prototype[name] = function (...args) {
     let cm = editors.get(this);
     return cm[name].apply(cm, args);
@@ -1177,7 +1262,7 @@ CM_MAPPING.forEach(function (name) {
  * CodeMirror defines all keys with modifiers in the following
  * order: Shift - Ctrl/Cmd - Alt - Key
  */
-Editor.accel = function (key, modifiers={}) {
+Editor.accel = function (key, modifiers = {}) {
   return (modifiers.shift ? "Shift-" : "") +
          (Services.appinfo.OS == "Darwin" ? "Cmd-" : "Ctrl-") +
          (modifiers.alt ? "Alt-" : "") + key;
@@ -1189,7 +1274,7 @@ Editor.accel = function (key, modifiers={}) {
  * platforms unless noaccel is specified in the options. Useful when overwriting
  * or disabling default shortcuts.
  */
-Editor.keyFor = function (cmd, opts={ noaccel: false }) {
+Editor.keyFor = function (cmd, opts = { noaccel: false }) {
   let key = L10N.GetStringFromName(cmd + ".commandkey");
   return opts.noaccel ? key : Editor.accel(key);
 };
@@ -1201,8 +1286,8 @@ Editor.keyFor = function (cmd, opts={ noaccel: false }) {
 // and easily upgradable.
 function getCSSKeywords() {
   function keySet(array) {
-    var keys = {};
-    for (var i = 0; i < array.length; ++i) {
+    let keys = {};
+    for (let i = 0; i < array.length; ++i) {
       keys[array[i]] = true;
     }
     return keys;
@@ -1210,25 +1295,24 @@ function getCSSKeywords() {
 
   let domUtils = Cc["@mozilla.org/inspector/dom-utils;1"]
                    .getService(Ci.inIDOMUtils);
-  let cssProperties = domUtils.getCSSPropertyNames(domUtils.INCLUDE_ALIASES);
-  let cssColors = {};
-  let cssValues = {};
-  cssProperties.forEach(property => {
+  let properties = domUtils.getCSSPropertyNames(domUtils.INCLUDE_ALIASES);
+  let colors = {};
+  let values = {};
+  properties.forEach(property => {
     if (property.includes("color")) {
       domUtils.getCSSValuesForProperty(property).forEach(value => {
-        cssColors[value] = true;
+        colors[value] = true;
       });
-    }
-    else {
+    } else {
       domUtils.getCSSValuesForProperty(property).forEach(value => {
-        cssValues[value] = true;
+        values[value] = true;
       });
     }
   });
   return {
-    cssProperties: keySet(cssProperties),
-    cssValues: cssValues,
-    cssColors: cssColors
+    cssProperties: keySet(properties),
+    cssValues: values,
+    cssColors: colors
   };
 }
 
@@ -1277,7 +1361,7 @@ function controller(ed) {
     },
 
     doCommand: function (cmd) {
-      let cm  = editors.get(ed);
+      let cm = editors.get(ed);
       let map = {
         "cmd_selectAll": "selectAll",
         "cmd_find": "find",
@@ -1292,8 +1376,9 @@ function controller(ed) {
         return;
       }
 
-      if (cmd == "cmd_gotoLine")
+      if (cmd == "cmd_gotoLine") {
         ed.jumpToLine();
+      }
     },
 
     onEvent: function () {}

@@ -254,8 +254,8 @@ nsPrincipal::MayLoadInternal(nsIURI* aURI)
   if (uriWithPrin) {
     uriWithPrin->GetPrincipal(getter_AddRefs(uriPrin));
   }
-  if (uriPrin && nsIPrincipal::Subsumes(uriPrin)) {
-    return true;
+  if (uriPrin) {
+    return nsIPrincipal::Subsumes(uriPrin);
   }
 
   // If this principal is associated with an addon, check whether that addon
@@ -784,6 +784,17 @@ NS_IMETHODIMP
 nsExpandedPrincipal::GetBaseDomain(nsACString& aBaseDomain)
 {
   return NS_ERROR_NOT_AVAILABLE;
+}
+
+bool
+nsExpandedPrincipal::AddonHasPermission(const nsAString& aPerm)
+{
+  for (size_t i = 0; i < mPrincipals.Length(); ++i) {
+    if (BasePrincipal::Cast(mPrincipals[i])->AddonHasPermission(aPerm)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 bool

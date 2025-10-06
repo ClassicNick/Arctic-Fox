@@ -19,13 +19,13 @@
 #include "Http2Stream.h"
 #include "Http2Push.h"
 
-#include "mozilla/Endian.h"
+#include "mozilla/EndianUtils.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/Preferences.h"
 #include "nsHttp.h"
 #include "nsHttpHandler.h"
 #include "nsHttpConnection.h"
-#include "nsISchedulingContext.h"
+#include "nsIRequestContext.h"
 #include "nsISSLSocketControl.h"
 #include "nsISSLStatus.h"
 #include "nsISSLStatusProvider.h"
@@ -34,7 +34,7 @@
 #include "nsURLHelper.h"
 #include "prnetdb.h"
 #include "sslt.h"
-#include "mozilla/Snprintf.h"
+#include "mozilla/Sprintf.h"
 #include "nsSocketTransportService2.h"
 #include "nsNetUtil.h"
 
@@ -69,6 +69,7 @@ Http2Session::Http2Session(nsISocketTransport *aSocketTransport, uint32_t versio
   , mSegmentReader(nullptr)
   , mSegmentWriter(nullptr)
   , mNextStreamID(3) // 1 is reserved for Updgrade handshakes
+  , mLastPushedID(0)
   , mConcurrentHighWater(0)
   , mDownstreamState(BUFFERING_OPENING_SETTINGS)
   , mInputFrameBufferSize(kDefaultBufferSize)
@@ -153,6 +154,8 @@ Http2Session::Shutdown()
       CloseStream(stream, NS_ERROR_NET_RESET);  // can be restarted
     } else if (stream->RecvdData()) {
       CloseStream(stream, NS_ERROR_NET_PARTIAL_TRANSFER);
+    } else if (mGoAwayReason == INADEQUATE_SECURITY) {
+      CloseStream(stream, NS_ERROR_NET_INADEQUATE_SECURITY);
     } else {
       CloseStream(stream, NS_ERROR_ABORT);
     }
@@ -380,6 +383,17 @@ Http2Session::AddStream(nsAHttpTransaction *aHttpTransaction,
 
   if (!mConnection) {
     mConnection = aHttpTransaction->Connection();
+  }
+
+  if (mClosed || mShouldGoAway) {
+    nsHttpTransaction *trans = aHttpTransaction->QueryHttpTransaction();
+    if (trans && !trans->GetPushedStream()) {
+      LOG3(("Http2Session::AddStream %p atrans=%p trans=%p session unusable - resched.\n",
+            this, aHttpTransaction, trans));
+      aHttpTransaction->SetConnection(nullptr);
+      gHttpHandler->InitiateTransaction(trans, trans->Priority());
+      return true;
+    }
   }
 
   aHttpTransaction->SetConnection(this);
@@ -632,6 +646,11 @@ Http2Session::CreateFrameHeader(charType dest, uint16_t frameLength,
 {
   MOZ_ASSERT(frameLength <= kMaxFrameData, "framelength too large");
   MOZ_ASSERT(!(streamID & 0x80000000));
+  MOZ_ASSERT(!frameFlags ||
+             (frameType != FRAME_TYPE_PRIORITY &&
+              frameType != FRAME_TYPE_RST_STREAM &&
+              frameType != FRAME_TYPE_GOAWAY &&
+              frameType != FRAME_TYPE_WINDOW_UPDATE));
 
   dest[0] = 0x00;
   NetworkEndian::writeUint16(dest + 1, frameLength);
@@ -1031,10 +1050,10 @@ Http2Session::CleanupStream(Http2Stream *aStream, nsresult aResult,
       Http2PushedStream *pushStream = static_cast<Http2PushedStream *>(aStream);
       nsAutoCString hashKey;
       pushStream->GetHashKey(hashKey);
-      nsISchedulingContext *schedulingContext = aStream->SchedulingContext();
-      if (schedulingContext) {
+      nsIRequestContext *requestContext = aStream->RequestContext();
+      if (requestContext) {
         SpdyPushCache *cache = nullptr;
-        schedulingContext->GetSpdyPushCache(&cache);
+        requestContext->GetSpdyPushCache(&cache);
         if (cache) {
           Http2PushedStream *trash = cache->RemovePushedStreamHttp2(hashKey);
           LOG3(("Http2Session::CleanupStream %p aStream=%p pushStream=%p trash=%p",
@@ -1534,6 +1553,12 @@ Http2Session::RecvPushPromise(Http2Session *self)
     promisedID = NetworkEndian::readUint32(
         self->mInputFrameBuffer.get() + kFrameHeaderBytes + paddingControlBytes);
     promisedID &= 0x7fffffff;
+    if (promisedID <= self->mLastPushedID) {
+      LOG3(("Http2Session::RecvPushPromise %p ID too low %u expected > %u.\n",
+            self, promisedID, self->mLastPushedID));
+      RETURN_SESSION_ERROR(self, PROTOCOL_ERROR);
+    }
+    self->mLastPushedID = promisedID;
   }
 
   uint32_t associatedID = self->mInputFrameID;
@@ -1593,16 +1618,20 @@ Http2Session::RecvPushPromise(Http2Session *self)
       RETURN_SESSION_ERROR(self, PROTOCOL_ERROR);
     }
     self->GenerateRstStream(REFUSED_STREAM_ERROR, promisedID);
+  } else if (!(associatedID & 1)) {
+    LOG3(("Http2Session::RecvPushPromise %p assocated=0x%X on pushed (even) stream not allowed\n",
+          self, associatedID));
+    self->GenerateRstStream(PROTOCOL_ERROR, promisedID);
   } else if (!associatedStream) {
     LOG3(("Http2Session::RecvPushPromise %p lookup associated ID failed.\n", self));
     self->GenerateRstStream(PROTOCOL_ERROR, promisedID);
   } else {
-    nsISchedulingContext *schedulingContext = associatedStream->SchedulingContext();
-    if (schedulingContext) {
-      schedulingContext->GetSpdyPushCache(&cache);
+    nsIRequestContext *requestContext = associatedStream->RequestContext();
+    if (requestContext) {
+      requestContext->GetSpdyPushCache(&cache);
       if (!cache) {
         cache = new SpdyPushCache();
-        if (!cache || NS_FAILED(schedulingContext->SetSpdyPushCache(cache))) {
+        if (!cache || NS_FAILED(requestContext->SetSpdyPushCache(cache))) {
           delete cache;
           cache = nullptr;
         }
@@ -1658,6 +1687,7 @@ Http2Session::RecvPushPromise(Http2Session *self)
     LOG3(("Http2Session::PushPromise Semantics not Implemented\n"));
     self->GenerateRstStream(REFUSED_STREAM_ERROR, promisedID);
     delete pushedStream;
+    self->ResetDownstreamState();
     return NS_OK;
   }
 
@@ -1666,6 +1696,7 @@ Http2Session::RecvPushPromise(Http2Session *self)
     // the decoded headers. Reset the stream and go away.
     self->GenerateRstStream(PROTOCOL_ERROR, promisedID);
     delete pushedStream;
+    self->ResetDownstreamState();
     return NS_OK;
   } else if (NS_FAILED(rv)) {
     // This is fatal to the session.
@@ -2004,7 +2035,7 @@ Http2Session::RecvContinuation(Http2Session *self)
   return RecvPushPromise(self);
 }
 
-class UpdateAltSvcEvent : public nsRunnable
+class UpdateAltSvcEvent : public Runnable
 {
 public:
 UpdateAltSvcEvent(const nsCString &header,
@@ -2038,7 +2069,7 @@ UpdateAltSvcEvent(const nsCString &header,
 
     AltSvcMapping::ProcessHeader(mHeader, originScheme, originHost, originPort,
                                  mCI->GetUsername(), mCI->GetPrivate(), mCallbacks,
-                                 mCI->ProxyInfo(), 0);
+                                 mCI->ProxyInfo(), 0, mCI->GetOriginAttributes());
     return NS_OK;
   }
 
@@ -2125,7 +2156,7 @@ Http2Session::RecvAltSvc(Http2Session *self)
       return NS_OK;
     }
 
-    origin.Assign(self->mInputFrameDataStream->Transaction()->RequestHead()->Origin());
+    self->mInputFrameDataStream->Transaction()->RequestHead()->Origin(origin);
   } else if (!self->mInputFrameID) {
     // ID 0 streams must supply their own origin
     if (origin.IsEmpty()) {
@@ -2135,7 +2166,7 @@ Http2Session::RecvAltSvc(Http2Session *self)
     }
   } else {
     // handling of push streams is not defined. Let's ignore it
-    LOG(("Http2Session %p Alt-Svc Stream 0 has empty origin\n", self));
+    LOG(("Http2Session %p Alt-Svc received on pushed stream - ignoring\n", self));
     self->ResetDownstreamState();
     return NS_OK;
   }
@@ -2271,8 +2302,14 @@ Http2Session::ReadSegmentsAgain(nsAHttpSegmentReader *reader,
              "Inconsistent Write Function Callback");
 
   nsresult rv = ConfirmTLSProfile();
-  if (NS_FAILED(rv))
+  if (NS_FAILED(rv)) {
+    if (mGoAwayReason == INADEQUATE_SECURITY) {
+      LOG3(("Http2Session::ReadSegments %p returning INADEQUATE_SECURITY %x",
+            this, NS_ERROR_NET_INADEQUATE_SECURITY));
+      rv = NS_ERROR_NET_INADEQUATE_SECURITY;
+    }
     return rv;
+  }
 
   if (reader)
     mSegmentReader = reader;
@@ -2417,6 +2454,12 @@ Http2Session::ReadyToProcessDataFrame(enum internalStateType newState)
           this, mInputFrameID));
     if (mInputFrameDataStream->RecvdFin() || mInputFrameDataStream->RecvdReset())
       GenerateRstStream(STREAM_CLOSED_ERROR, mInputFrameID);
+    ChangeDownstreamState(DISCARDING_DATA_FRAME);
+  } else if (mInputFrameDataSize == 0 && !mInputFrameFinal) {
+    // Only if non-final because the stream properly handles final frames of any
+    // size, and we want the stream to be able to notice its own end flag.
+    LOG3(("Http2Session::ReadyToProcessDataFrame %p streamID 0x%X "
+          "Ignoring 0-length non-terminal data frame.", this, mInputFrameID));
     ChangeDownstreamState(DISCARDING_DATA_FRAME);
   }
 
@@ -2750,11 +2793,12 @@ Http2Session::WriteSegmentsAgain(nsAHttpSegmentWriter *writer,
   if (mDownstreamState == DISCARDING_DATA_FRAME ||
       mDownstreamState == DISCARDING_DATA_FRAME_PADDING) {
     char trash[4096];
-    uint32_t count = std::min(4096U, mInputFrameDataSize - mInputFrameDataRead);
+    uint32_t discardCount = std::min(mInputFrameDataSize - mInputFrameDataRead,
+                                     4096U);
     LOG3(("Http2Session::WriteSegments %p trying to discard %d bytes of data",
-          this, count));
+          this, discardCount));
 
-    if (!count && mDownstreamState == DISCARDING_DATA_FRAME) {
+    if (!discardCount && mDownstreamState == DISCARDING_DATA_FRAME) {
       // Only do this short-cirtuit if we're not discarding a pure padding
       // frame, as we need to potentially handle the stream FIN in those cases.
       // See bug 1381016 comment 36 for more details.
@@ -2763,7 +2807,7 @@ Http2Session::WriteSegmentsAgain(nsAHttpSegmentWriter *writer,
       return NS_BASE_STREAM_WOULD_BLOCK;
     }
 
-    rv = NetworkRead(writer, trash, count, countWritten);
+    rv = NetworkRead(writer, trash, discardCount, countWritten);
 
     if (NS_FAILED(rv)) {
       LOG3(("Http2Session %p discard frame read failure %x\n", this, rv));
@@ -3304,6 +3348,7 @@ Http2Session::SetNeedsCleanup()
 
   // This will result in Close() being called
   MOZ_ASSERT(!mNeedsCleanup, "mNeedsCleanup unexpectedly set");
+  mInputFrameDataStream->SetResponseIsComplete();
   mNeedsCleanup = mInputFrameDataStream;
   ResetDownstreamState();
 }
@@ -3628,7 +3673,7 @@ Http2Session::TakeTransport(nsISocketTransport **,
   return NS_ERROR_UNEXPECTED;
 }
 
-nsHttpConnection *
+already_AddRefed<nsHttpConnection>
 Http2Session::TakeHttpConnection()
 {
   MOZ_ASSERT(false, "TakeHttpConnection of Http2Session");

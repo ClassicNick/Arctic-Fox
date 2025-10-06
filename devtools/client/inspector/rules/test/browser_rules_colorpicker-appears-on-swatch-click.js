@@ -18,19 +18,16 @@ const TEST_URI = `
   Testing the color picker tooltip!
 `;
 
-add_task(function*() {
+add_task(function* () {
   yield addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
   let {view} = yield openRuleView();
 
-  let cSwatch = getRuleViewProperty(view, "body", "color").valueSpan
-    .querySelector(".ruleview-colorswatch");
-  let bgSwatch = getRuleViewProperty(view, "body", "background-color").valueSpan
-    .querySelector(".ruleview-colorswatch");
-  let bSwatch = getRuleViewProperty(view, "body", "border").valueSpan
-    .querySelector(".ruleview-colorswatch");
+  let propertiesToTest = ["color", "background-color", "border"];
 
-  for (let swatch of [cSwatch, bgSwatch, bSwatch]) {
-    info("Testing that the colorpicker appears colorswatch click");
+  for (let property of propertiesToTest) {
+    info("Testing that the colorpicker appears on swatch click");
+    let value = getRuleViewProperty(view, "body", property).valueSpan;
+    let swatch = value.querySelector(".ruleview-colorswatch");
     yield testColorPickerAppearsOnColorSwatchClick(view, swatch);
   }
 });
@@ -42,12 +39,13 @@ function* testColorPickerAppearsOnColorSwatchClick(view, swatch) {
   let cPickerPanel = cPicker.tooltip.panel;
   ok(cPickerPanel, "The XUL panel for the color picker exists");
 
-  let onShown = cPicker.tooltip.once("shown");
+  let onColorPickerReady = cPicker.once("ready");
   swatch.click();
-  yield onShown;
+  yield onColorPickerReady;
 
   ok(true, "The color picker was shown on click of the color swatch");
   ok(!inplaceEditor(swatch.parentNode),
     "The inplace editor wasn't shown as a result of the color swatch click");
-  cPicker.hide();
+
+  yield hideTooltipAndWaitForRuleViewChanged(cPicker, view);
 }

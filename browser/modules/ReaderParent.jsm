@@ -21,16 +21,9 @@ const gStringBundle = Services.strings.createBundle("chrome://global/locale/abou
 var ReaderParent = {
 
   MESSAGES: [
-    "Reader:AddToList",
     "Reader:ArticleGet",
     "Reader:FaviconRequest",
-    "Reader:ListStatusRequest",
-    "Reader:RemoveFromList",
-    "Reader:Share",
-    "Reader:SystemUIVisibility",
     "Reader:UpdateReaderButton",
-    "Reader:SetIntPref",
-    "Reader:SetCharPref",
   ],
 
   init: function() {
@@ -47,6 +40,13 @@ var ReaderParent = {
           // Make sure the target browser is still alive before trying to send data back.
           if (message.target.messageManager) {
             message.target.messageManager.sendAsyncMessage("Reader:ArticleData", { article: article });
+          }
+        }, e => {
+          if (e && e.newURL) {
+            // Make sure the target browser is still alive before trying to send data back.
+            if (message.target.messageManager) {
+              message.target.messageManager.sendAsyncMessage("Reader:ArticleData", { newURL: e.newURL });
+            }
           }
         });
         break;
@@ -66,13 +66,6 @@ var ReaderParent = {
         }
         break;
       }
-      case "Reader:Share":
-        // XXX: To implement.
-        break;
-
-      case "Reader:SystemUIVisibility":
-        // XXX: To implement.
-        break;
 
       case "Reader:UpdateReaderButton": {
         let browser = message.target;
@@ -82,84 +75,39 @@ var ReaderParent = {
         this.updateReaderButton(browser);
         break;
       }
-      case "Reader:SetIntPref": {
-        if (message.data && message.data.name !== undefined) {
-          Services.prefs.setIntPref(message.data.name, message.data.value);
-        }
-        break;
-      }
-      case "Reader:SetCharPref": {
-        if (message.data && message.data.name !== undefined) {
-          Services.prefs.setCharPref(message.data.name, message.data.value);
-        }
-        break;
-      }
     }
   },
 
   updateReaderButton: function(browser) {
-    let win = browser.ownerDocument.defaultView;
+    let win = browser.ownerGlobal;
     if (browser != win.gBrowser.selectedBrowser) {
       return;
     }
 
     let button = win.document.getElementById("reader-mode-button");
+    let command = win.document.getElementById("View:ReaderView");
     if (browser.currentURI.spec.startsWith("about:reader")) {
       button.setAttribute("readeractive", true);
       button.hidden = false;
-      button.setAttribute("tooltiptext", gStringBundle.GetStringFromName("readerView.close"));
+      let closeText = gStringBundle.GetStringFromName("readerView.close");
+      button.setAttribute("tooltiptext", closeText);
+      command.setAttribute("label", closeText);
+      command.setAttribute("hidden", false);
     } else {
       button.removeAttribute("readeractive");
-      button.setAttribute("tooltiptext", gStringBundle.GetStringFromName("readerView.enter"));
       button.hidden = !browser.isArticle;
+      let enterText = gStringBundle.GetStringFromName("readerView.enter");
+      button.setAttribute("tooltiptext", enterText);
+      command.setAttribute("label", enterText);
+      command.setAttribute("hidden", !browser.isArticle);
     }
+    command.setAttribute("accesskey", gStringBundle.GetStringFromName("readerView.accesskey"));
   },
 
-  handleReaderButtonEvent: function(event) {
-    event.stopPropagation();
-
-    if ((event.type == "click" && event.button != 0) ||
-        (event.type == "keypress" && event.charCode != Ci.nsIDOMKeyEvent.DOM_VK_SPACE &&
-         event.keyCode != Ci.nsIDOMKeyEvent.DOM_VK_RETURN)) {
-      return; // Left click, space or enter only
-    }
-
-    let win = event.target.ownerDocument.defaultView;
+  toggleReaderMode: function(event) {
+    let win = event.target.ownerGlobal;
     let browser = win.gBrowser.selectedBrowser;
-    let url = browser.currentURI.spec;
-
-    if (url.startsWith("about:reader")) {
-      let originalURL = this._getOriginalUrl(url);
-      if (!originalURL) {
-        Cu.reportError("Error finding original URL for about:reader URL: " + url);
-      } else {
-        win.openUILinkIn(originalURL, "current", {"allowPinnedTabHostChange": true});
-      }
-    } else {
-      browser.messageManager.sendAsyncMessage("Reader:ParseDocument", { url: url });
-    }
-  },
-
-  parseReaderUrl: function(url) {
-    if (!url.startsWith("about:reader?")) {
-      return null;
-    }
-    return this._getOriginalUrl(url);
-  },
-
-  /**
-   * Returns original URL from an about:reader URL.
-   *
-   * @param url An about:reader URL.
-   * @return The original URL for the article, or null if we did not find
-   *         a properly formatted about:reader URL.
-   */
-  _getOriginalUrl: function(url) {
-    let searchParams = new URLSearchParams(url.substring("about:reader?".length));
-    if (!searchParams.has("url")) {
-      return null;
-    }
-    return decodeURIComponent(searchParams.get("url"));
+    browser.messageManager.sendAsyncMessage("Reader:ToggleReaderMode");
   },
 
   /**
@@ -171,6 +119,13 @@ var ReaderParent = {
    * @resolves JS object representing the article, or null if no article is found.
    */
   _getArticle: Task.async(function* (url, browser) {
-    return yield ReaderMode.downloadAndParseDocument(url);
+    return yield ReaderMode.downloadAndParseDocument(url).catch(e => {
+      if (e && e.newURL) {
+        // Pass up the error so we can navigate the browser in question to the new URL:
+        throw e;
+      }
+      Cu.reportError("Error downloading and parsing document: " + e);
+      return null;
+    });
   })
 };

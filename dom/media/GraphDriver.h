@@ -6,7 +6,6 @@
 #ifndef GRAPHDRIVER_H_
 #define GRAPHDRIVER_H_
 
-#include "nsAutoPtr.h"
 #include "nsAutoRef.h"
 #include "AudioBufferUtils.h"
 #include "AudioMixer.h"
@@ -55,6 +54,7 @@ class MediaStreamGraphImpl;
 
 class AudioCallbackDriver;
 class OfflineClockDriver;
+class SystemClockDriver;
 
 /**
  * A driver is responsible for the scheduling of the processing, the thread
@@ -163,6 +163,10 @@ public:
   }
 
   virtual OfflineClockDriver* AsOfflineClockDriver() {
+    return nullptr;
+  }
+
+  virtual SystemClockDriver* AsSystemClockDriver() {
     return nullptr;
   }
 
@@ -297,13 +301,20 @@ public:
   MediaTime GetIntervalForIteration() override;
   void WaitForNextIteration() override;
   void WakeUp() override;
-
+  void MarkAsFallback();
+  bool IsFallback();
+  SystemClockDriver* AsSystemClockDriver() override {
+    return this;
+  }
 
 private:
   // Those are only modified (after initialization) on the graph thread. The
   // graph thread does not run during the initialization.
   TimeStamp mInitialTimeStamp;
   TimeStamp mLastTimeStamp;
+  // This is true if this SystemClockDriver runs the graph because we could not
+  // open an audio stream.
+  bool mIsFallback;
 };
 
 /**
@@ -430,14 +441,6 @@ public:
                                          void* aPromise,
                                          dom::AudioContextOperation aOperation);
 
-  bool IsSwitchingDevice() {
-#ifdef XP_MACOSX
-    return mSelfReference;
-#else
-    return false;
-#endif
-  }
-
   /**
    * Whether the audio callback is processing. This is for asserting only.
    */
@@ -534,21 +537,12 @@ private:
    * True if microphone is being used by this process. This is synchronized by
    * the graph's monitor. */
   bool mMicrophoneActive;
-
-#ifdef XP_MACOSX
-  /* Implements the workaround for the osx audio stack when changing output
-   * devices. See comments in .cpp */
-  bool OSXDeviceSwitchingWorkaround();
-  /* Self-reference that keep this driver alive when switching output audio
-   * device and making the graph running temporarily off a SystemClockDriver.  */
-  SelfReference<AudioCallbackDriver> mSelfReference;
-  /* While switching devices, we keep track of the number of callbacks received,
-   * since OSX seems to still call us _sometimes_. */
-  uint32_t mCallbackReceivedWhileSwitching;
-#endif
+  /* True if this driver was created from a driver created because of a previous
+   * AudioCallbackDriver failure. */
+  bool mFromFallback;
 };
 
-class AsyncCubebTask : public nsRunnable
+class AsyncCubebTask : public Runnable
 {
 public:
 

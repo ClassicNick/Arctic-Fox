@@ -224,7 +224,6 @@ pref("dom.use_watchdog", false);
 // ensure that those calls don't accidentally trigger the dialog.
 pref("dom.max_script_run_time", 0);
 pref("dom.max_chrome_script_run_time", 0);
-pref("dom.max_child_script_run_time", 0);
 
 // plugins
 pref("plugin.disable", true);
@@ -253,6 +252,8 @@ pref("security.warn_viewing_mixed", false); // Warning is disabled.  See Bug 616
 // added, there may be a need to change this pref.
 pref("security.cert_pinning.enforcement_level", 2);
 
+// Audio competing between tabs
+pref("dom.audiochannel.audioCompeting", false);
 
 // Override some named colors to avoid inverse OS themes
 pref("ui.-moz-dialog", "#efebe7");
@@ -296,7 +297,6 @@ pref("ui.dragThresholdY", 25);
 
 // Layers Acceleration.  We can only have nice things on gonk, because
 // they're not maintained anywhere else.
-pref("layers.offmainthreadcomposition.enabled", true);
 pref("layers.offmainthreadcomposition.async-animations", true);
 #ifndef MOZ_WIDGET_GONK
 pref("dom.ipc.tabs.disabled", true);
@@ -350,6 +350,10 @@ pref("browser.safebrowsing.malware.enabled", true);
 pref("browser.safebrowsing.downloads.enabled", true);
 pref("browser.safebrowsing.downloads.remote.enabled", true);
 pref("browser.safebrowsing.downloads.remote.timeout_ms", 10000);
+pref("browser.safebrowsing.downloads.remote.block_dangerous",            true);
+pref("browser.safebrowsing.downloads.remote.block_dangerous_host",       true);
+pref("browser.safebrowsing.downloads.remote.block_potentially_unwanted", false);
+pref("browser.safebrowsing.downloads.remote.block_uncommon",             false);
 pref("browser.safebrowsing.debug", false);
 
 pref("browser.safebrowsing.provider.google.lists", "goog-badbinurl-shavar,goog-downloadwhite-digest256,goog-phish-shavar,goog-malware-shavar,goog-unwanted-shavar");
@@ -434,9 +438,6 @@ pref("dom.sms.enabled", true);
 //The waiting time in network manager.
 pref("network.gonk.ms-release-mms-connection", 30000);
 
-// WebContacts
-pref("dom.mozContacts.enabled", true);
-
 // Shortnumber matching needed for e.g. Brazil:
 // 03187654321 can be found with 87654321
 pref("dom.phonenumber.substringmatching.BR", 8);
@@ -509,11 +510,11 @@ pref("media.realtime_decoder.enabled", true);
 // TCPSocket
 pref("dom.mozTCPSocket.enabled", true);
 
-// WebPayment
-pref("dom.mozPay.enabled", true);
-
 // Handle hardware buttons in the b2g chrome package
 pref("b2g.keys.menu.enabled", true);
+
+// Display simulator software buttons
+pref("b2g.software-buttons", false);
 
 // Screen timeout in seconds
 pref("power.screen.timeout", 60);
@@ -766,7 +767,12 @@ pref("hal.gonk.COMPOSITOR.nice", -4);
 // this too high, then we'll send out a memory pressure event every Z seconds
 // (see below), even while we have processes that we would happily kill in
 // order to free up memory.
-pref("hal.processPriorityManager.gonk.notifyLowMemUnderKB", 14336);
+pref("gonk.notifyHardLowMemUnderKB", 14336);
+
+// Fire a memory pressure event when the system has less than Xmb of memory
+// remaining and then switch to the hard trigger, see above.  This should be
+// placed above the BACKGROUND priority class.
+pref("gonk.notifySoftLowMemUnderKB", 43008);
 
 // We wait this long before polling the memory-pressure fd after seeing one
 // memory pressure event.  (When we're not under memory pressure, we sit
@@ -858,8 +864,8 @@ pref("memory.system_memory_reporter", true);
 // Don't dump memory reports on OOM, by default.
 pref("memory.dump_reports_on_oom", false);
 
-pref("layout.imagevisibility.numscrollportwidths", 1);
-pref("layout.imagevisibility.numscrollportheights", 1);
+pref("layout.framevisibility.numscrollportwidths", 1);
+pref("layout.framevisibility.numscrollportheights", 1);
 
 // Enable native identity (persona/browserid)
 pref("dom.identity.enabled", true);
@@ -914,16 +920,6 @@ pref("network.sntp.pools", // Servers separated by ';'.
      "0.pool.ntp.org;1.pool.ntp.org;2.pool.ntp.org;3.pool.ntp.org");
 pref("network.sntp.port", 123);
 pref("network.sntp.timeout", 30); // In seconds.
-
-// Enable dataStore
-pref("dom.datastore.enabled", true);
-// When an entry is changed, use two timers to fire system messages in a more
-// moderate pattern.
-pref("dom.datastore.sysMsgOnChangeShortTimeoutSec", 10);
-pref("dom.datastore.sysMsgOnChangeLongTimeoutSec", 60);
-
-// DOM Inter-App Communication API.
-pref("dom.inter-app-communication-api.enabled", true);
 
 // Allow ADB to run for this many hours before disabling
 // (only applies when marionette is disabled)
@@ -1044,17 +1040,21 @@ pref("layout.accessiblecaret.enabled", true);
 pref("layout.accessiblecaret.use_long_tap_injector", false);
 #endif
 
+// The active caret is disallow to be dragged across the other (inactive) caret.
+pref("layout.accessiblecaret.allow_dragging_across_other_caret", false);
+
+// Hide carets and text selection dialog during scrolling.
+pref("layout.accessiblecaret.always_show_when_scrolling", false);
+
 // Enable sync and mozId with Firefox Accounts.
 pref("services.sync.fxaccounts.enabled", true);
 pref("identity.fxaccounts.enabled", true);
 
-// Mobile Identity API.
-pref("services.mobileid.server.uri", "https://msisdn.services.mozilla.com");
+// Disable Firefox Accounts device registration until bug 1238895 is fixed.
+pref("identity.fxaccounts.skipDeviceRegistration", true);
 
 // Enable mapped array buffer.
-#ifndef XP_WIN
 pref("dom.mapped_arraybuffer.enabled", true);
-#endif
 
 // SystemUpdate API
 pref("dom.system_update.enabled", true);
@@ -1083,9 +1083,6 @@ pref("dom.mozSettings.SettingsService.verbose.enabled", false);
 // readwrite.
 pref("dom.mozSettings.allowForceReadOnly", false);
 
-// RequestSync API is enabled by default on B2G.
-pref("dom.requestSync.enabled", true);
-
 // Comma separated list of activity names that can only be provided by
 // the system app in dev mode.
 pref("dom.activities.developer_mode_only", "import-app");
@@ -1097,9 +1094,6 @@ pref("dom.push.enabled", false);
 
 // Retain at most 10 processes' layers buffers
 pref("layers.compositor-lru-size", 10);
-
-// Enable Cardboard VR on mobile, assuming VR at all is enabled
-pref("dom.vr.cardboard.enabled", true);
 
 // In B2G by deafult any AudioChannelAgent is muted when created.
 pref("dom.audiochannel.mutedByDefault", true);

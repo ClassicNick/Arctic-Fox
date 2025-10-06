@@ -268,8 +268,12 @@ static nscoord
 AppUnitsFromMM(nsIFrame* aFrame, uint32_t aMM)
 {
   nsPresContext* pc = aFrame->PresContext();
+  nsIPresShell* presShell = pc->PresShell();
   float result = float(aMM) *
     (pc->DeviceContext()->AppUnitsPerPhysicalInch() / MM_PER_INCH_FLOAT);
+  if (presShell->ScaleToResolution()) {
+    result = result / presShell->GetResolution();
+  }
   return NSToCoordRound(result);
 }
 
@@ -521,9 +525,8 @@ IsElementClickableAndReadable(nsIFrame* aFrame, WidgetGUIEvent* aEvent, const Ev
   }
 
   if (testFontSize) {
-    RefPtr<nsFontMetrics> fm;
-    nsLayoutUtils::GetFontMetricsForFrame(aFrame, getter_AddRefs(fm),
-      nsLayoutUtils::FontSizeInflationFor(aFrame));
+    RefPtr<nsFontMetrics> fm =
+      nsLayoutUtils::GetInflatedFontMetricsForFrame(aFrame);
     if (fm && fm->EmHeight() > 0 && // See bug 1171731
         (pc->AppUnitsToGfxUnits(fm->EmHeight()) * cumulativeResolution) < limitReadableSize) {
       return false;
@@ -642,10 +645,10 @@ FindFrameTargetedByInputEvent(WidgetGUIEvent* aEvent,
     return target;
   }
   LayoutDeviceIntPoint widgetPoint = nsLayoutUtils::TranslateViewToWidget(
-        aRootFrame->PresContext(), view, point, aEvent->widget);
+        aRootFrame->PresContext(), view, point, aEvent->mWidget);
   if (widgetPoint.x != NS_UNCONSTRAINEDSIZE) {
     // If that succeeded, we update the point in the event
-    aEvent->refPoint = widgetPoint;
+    aEvent->mRefPoint = widgetPoint;
   }
   return target;
 }

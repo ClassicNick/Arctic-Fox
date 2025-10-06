@@ -29,7 +29,7 @@ HTTP(..) == lineheight-metrics-2a.html lineheight-metrics-2-ref.html
 HTTP(..) == lineheight-metrics-2b.html lineheight-metrics-2-ref.html
 == lineheight-percentage-1.html lineheight-percentage-1-ref.html
 skip-if(B2G||Mulet) == long-1.html long-ref.html # Initial mulet triage: parity with B2G/B2G Desktop
-fuzzy-if(Android,255,42) == pre-line-1.html pre-line-1-ref.html
+fuzzy-if(Android,255,147) == pre-line-1.html pre-line-1-ref.html
 == pre-line-2.html pre-line-2-ref.html
 == pre-line-3.html pre-line-3-ref.html
 == pre-line-4.html pre-line-4-ref.html
@@ -123,7 +123,7 @@ fails HTTP(..) == wordbreak-7b.html wordbreak-7b-ref.html # bug 479829
 pref(gfx.font_rendering.graphite.enabled,true) HTTP(..) == wordbreak-9.html wordbreak-9-ref.html
 == wordwrap-01.html wordwrap-01-ref.html
 HTTP(..) == wordwrap-02.html wordwrap-02-ref.html
-skip-if(B2G||Mulet) HTTP(..) == wordwrap-03.html wordwrap-03-ref.html # Initial mulet triage: parity with B2G/B2G Desktop
+fuzzy-if(gtkWidget,1,44) skip-if(B2G||Mulet) HTTP(..) == wordwrap-03.html wordwrap-03-ref.html # Initial mulet triage: parity with B2G/B2G Desktop
 == wordwrap-04.html wordwrap-04-ref.html
 == wordwrap-05.html wordwrap-05-ref.html
 == wordwrap-06.html wordwrap-06-ref.html

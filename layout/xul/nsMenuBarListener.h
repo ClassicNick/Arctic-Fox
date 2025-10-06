@@ -35,12 +35,15 @@ public:
   nsresult KeyPress(nsIDOMEvent* aMouseEvent);
   nsresult Blur(nsIDOMEvent* aEvent);
   nsresult MouseDown(nsIDOMEvent* aMouseEvent);
+  nsresult Fullscreen(nsIDOMEvent* aEvent);
 
   static nsresult GetMenuAccessKey(int32_t* aAccessKey);
   
   NS_DECL_ISUPPORTS
 
   static bool IsAccessKeyPressed(nsIDOMKeyEvent* event);
+
+  void OnDestroyMenuBarFrame();
 
 protected:
   /** default destructor
@@ -54,6 +57,8 @@ protected:
   // This should only be called by the nsMenuBarListener during event dispatch,
   // thus ensuring that this doesn't get destroyed during the process.
   void ToggleMenuActiveState();
+
+  bool Destroyed() const { return !mMenuBarFrame; }
 
   nsMenuBarFrame* mMenuBarFrame; // The menu bar object.
   // Whether or not the ALT key is currently down.

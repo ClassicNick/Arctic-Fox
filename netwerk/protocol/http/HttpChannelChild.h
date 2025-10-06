@@ -8,6 +8,7 @@
 #ifndef mozilla_net_HttpChannelChild_h
 #define mozilla_net_HttpChannelChild_h
 
+#include "mozilla/UniquePtr.h"
 #include "mozilla/net/HttpBaseChannel.h"
 #include "mozilla/net/PHttpChannelChild.h"
 #include "mozilla/net/ChannelEventQueue.h"
@@ -125,18 +126,19 @@ protected:
                               const nsresult& status,
                               const uint64_t& progress,
                               const uint64_t& progressMax,
-                              const nsCString& data,
                               const uint64_t& offset,
-                              const uint32_t& count) override;
+                              const uint32_t& count,
+                              const nsCString& data) override;
   bool RecvOnStopRequest(const nsresult& statusCode, const ResourceTimingStruct& timing) override;
   bool RecvOnProgress(const int64_t& progress, const int64_t& progressMax) override;
   bool RecvOnStatus(const nsresult& status) override;
   bool RecvFailedAsyncOpen(const nsresult& status) override;
-  bool RecvRedirect1Begin(const uint32_t& newChannel,
+  bool RecvRedirect1Begin(const uint32_t& registrarId,
                           const URIParams& newURI,
                           const uint32_t& redirectFlags,
                           const nsHttpResponseHead& responseHead,
-                          const nsCString& securityInfoSerialization) override;
+                          const nsCString& securityInfoSerialization,
+                          const nsCString& channelId) override;
   bool RecvRedirect3Complete() override;
   bool RecvAssociateApplicationCache(const nsCString& groupID,
                                      const nsCString& clientID) override;
@@ -166,7 +168,7 @@ private:
   void DoPreOnStopRequest(nsresult aStatus);
   void DoOnStopRequest(nsIRequest* aRequest, nsresult aChannelStatus, nsISupports* aContext);
 
-  bool ShouldInterceptURI(nsIChannel* aChannel, nsIURI* aURI, bool& aShouldUpgrade);
+  bool ShouldInterceptURI(nsIURI* aURI, bool& aShouldUpgrade);
 
   // Discard the prior interception and continue with the original network request.
   void ResetInterception();
@@ -183,7 +185,6 @@ private:
   nsCOMPtr<nsIChildChannel> mRedirectChannelChild;
   RefPtr<InterceptStreamListener> mInterceptListener;
   RefPtr<nsInputStreamPump> mSynthesizedResponsePump;
-  nsAutoPtr<nsHttpResponseHead> mSynthesizedResponseHead;
   nsCOMPtr<nsIInputStream> mSynthesizedInput;
   int64_t mSynthesizedStreamLength;
 
@@ -205,7 +206,7 @@ private:
   // If nsUnknownDecoder is involved OnStartRequest call will be delayed and
   // this queue keeps OnDataAvailable data until OnStartRequest is finally
   // called.
-  nsTArray<nsAutoPtr<ChannelEvent>> mUnknownDecoderEventQ;
+  nsTArray<UniquePtr<ChannelEvent>> mUnknownDecoderEventQ;
   bool mUnknownDecoderInvolved;
 
   // Once set, OnData and possibly OnStop will be diverted to the parent.
@@ -268,20 +269,21 @@ private:
                           const nsresult& status,
                           const uint64_t progress,
                           const uint64_t& progressMax,
-                          const nsCString& data,
                           const uint64_t& offset,
-                          const uint32_t& count);
+                          const uint32_t& count,
+                          const nsCString& data);
   void OnStopRequest(const nsresult& channelStatus, const ResourceTimingStruct& timing);
   void MaybeDivertOnStop(const nsresult& aChannelStatus);
   void OnProgress(const int64_t& progress, const int64_t& progressMax);
   void OnStatus(const nsresult& status);
   void FailedAsyncOpen(const nsresult& status);
   void HandleAsyncAbort();
-  void Redirect1Begin(const uint32_t& newChannelId,
+  void Redirect1Begin(const uint32_t& registrarId,
                       const URIParams& newUri,
                       const uint32_t& redirectFlags,
                       const nsHttpResponseHead& responseHead,
-                      const nsACString& securityInfoSerialization);
+                      const nsACString& securityInfoSerialization,
+                      const nsACString& channelId);
   void Redirect3Complete();
   void DeleteSelf();
 

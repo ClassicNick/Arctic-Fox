@@ -30,7 +30,6 @@ toolkit.jar:
 * skin/classic/global/notification.css
   skin/classic/global/netError.css
   skin/classic/global/numberbox.css
-  skin/classic/global/passwordmgr.css
   skin/classic/global/popup.css
   skin/classic/global/preferences.css
   skin/classic/global/progressmeter.css
@@ -104,7 +103,8 @@ toolkit.jar:
   skin/classic/global/icons/information-32.png                       (icons/information-32.png)
   skin/classic/global/icons/information-64.png                       (icons/information-64.png)
   skin/classic/global/icons/information-large.png                    (icons/information-large.png)
-  skin/classic/global/icons/loading_16.png                           (icons/loading_16.png)
+  skin/classic/global/icons/loading.png                              (icons/loading.png)
+  skin/classic/global/icons/loading@2x.png                           (icons/loading@2x.png)
   skin/classic/global/icons/menulist-dropmarker.png                  (icons/menulist-dropmarker.png)
   skin/classic/global/icons/notfound.png                             (icons/notfound.png)
   skin/classic/global/icons/notloading_16.png                        (icons/notloading_16.png)
@@ -161,6 +161,8 @@ toolkit.jar:
   skin/classic/global/media/unmuteButton@2x.png                      (media/unmuteButton@2x.png)
   skin/classic/global/media/noAudio.png                              (media/noAudio.png)
   skin/classic/global/media/noAudio@2x.png                           (media/noAudio@2x.png)
+  skin/classic/global/media/closeCaptionButton.png                   (media/closeCaptionButton.png)
+  skin/classic/global/media/closeCaptionButton@2x.png                (media/closeCaptionButton@2x.png)
   skin/classic/global/media/fullscreenButton.png                     (media/fullscreenButton.png)
   skin/classic/global/media/fullscreenButton@2x.png                  (media/fullscreenButton@2x.png)
   skin/classic/global/media/scrubberThumb.png                        (media/scrubberThumb.png)

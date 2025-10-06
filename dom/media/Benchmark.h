@@ -17,12 +17,12 @@
 
 namespace mozilla {
 
-class FlushableTaskQueue;
+class TaskQueue;
 class Benchmark;
 
 class BenchmarkPlayback : public QueueObject, private MediaDataDecoderCallback
 {
-public:
+  friend class Benchmark;
   explicit BenchmarkPlayback(Benchmark* aMainThreadState, MediaDataDemuxer* aDemuxer);
   void DemuxSamples();
   void DemuxNextSample();
@@ -32,15 +32,14 @@ public:
   // MediaDataDecoderCallback
   // Those methods are called on the MediaDataDecoder's task queue.
   void Output(MediaData* aData) override;
-  void Error() override;
+  void Error(MediaDataDecoderError aError) override;
   void InputExhausted() override;
   void DrainComplete() override;
   bool OnReaderTaskQueue() override;
 
-private:
   Atomic<Benchmark*> mMainThreadState;
 
-  RefPtr<FlushableTaskQueue> mDecoderTaskQueue;
+  RefPtr<TaskQueue> mDecoderTaskQueue;
   RefPtr<MediaDataDecoder> mDecoder;
 
   // Object only accessed on Thread()
@@ -53,6 +52,8 @@ private:
   bool mFinished;
 };
 
+// Init() must have been called at least once prior on the
+// main thread.
 class Benchmark : public QueueObject
 {
 public:
@@ -84,13 +85,15 @@ public:
 
   explicit Benchmark(MediaDataDemuxer* aDemuxer, const Parameters& aParameters = Parameters());
   RefPtr<BenchmarkPromise> Run();
-  void ReturnResult(uint32_t aDecodeFps);
-  void Dispose();
 
-  const Parameters mParameters;
+  static void Init();
 
 private:
+  friend class BenchmarkPlayback;
   virtual ~Benchmark();
+  void ReturnResult(uint32_t aDecodeFps);
+  void Dispose();
+  const Parameters mParameters;
   RefPtr<Benchmark> mKeepAliveUntilComplete;
   BenchmarkPlayback mPlaybackState;
   MozPromiseHolder<BenchmarkPromise> mPromise;
@@ -101,6 +104,8 @@ class VP9Benchmark
 public:
   static bool IsVP9DecodeFast();
   static const char* sBenchmarkFpsPref;
+  static const char* sBenchmarkFpsVersionCheck;
+  static const uint32_t sBenchmarkVersionID;
   static bool sHasRunTest;
 };
 }

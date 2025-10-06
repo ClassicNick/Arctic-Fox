@@ -36,22 +36,13 @@ this.AUSTLMY = {
    */
   // No update found (no notification)
   CHK_NO_UPDATE_FOUND: 0,
-  // No incompatible add-ons found during incompatible check (background download)
-  CHK_ADDON_NO_INCOMPAT: 1,
+  // Update will be downloaded in the background (background download)
+  CHK_DOWNLOAD_UPDATE: 1,
   // Showing prompt due to the update.xml specifying showPrompt
   // (update notification)
   CHK_SHOWPROMPT_SNIPPET: 2,
   // Showing prompt due to preference (update notification)
   CHK_SHOWPROMPT_PREF: 3,
-  // Incompatible add-on check disabled by preference (background download)
-  CHK_ADDON_PREF_DISABLED: 4,
-  // Incompatible add-on check not performed due to same app version as the
-  // update's app version (background download)
-  CHK_ADDON_SAME_APP_VER: 5,
-  // Incompatible add-ons found and all of them have updates (background download)
-  CHK_ADDON_UPDATES_FOR_INCOMPAT: 6,
-  // Incompatible add-ons found (update notification)
-  CHK_ADDON_HAVE_INCOMPAT: 7,
   // Already has an active update in progress (no notification)
   CHK_HAS_ACTIVEUPDATE: 8,
   // A background download is already in progress (no notification)
@@ -112,6 +103,12 @@ this.AUSTLMY = {
   CHK_INVALID_USER_OVERRIDE_URL: 33,
   // Invalid url for app.update.url.override user preference (no notification)
   CHK_INVALID_DEFAULT_OVERRIDE_URL: 34,
+  // Update elevation failures or cancelations threshold reached for this
+  // version, OSX only (no notification)
+  CHK_ELEVATION_DISABLED_FOR_VERSION: 35,
+  // User opted out of elevated updates for the available update version, OSX
+  // only (no notification)
+  CHK_ELEVATION_OPTOUT_FOR_VERSION: 36,
 
   /**
    * Submit a telemetry ping for the update check result code or a telemetry
@@ -252,7 +249,7 @@ this.AUSTLMY = {
       let id = "UPDATE_STATE_CODE_" + aSuffix;
       // enumerated type histogram
       Services.telemetry.getHistogramById(id).add(aCode);
-    } catch(e) {
+    } catch (e) {
       Cu.reportError(e);
     }
   },
@@ -277,7 +274,7 @@ this.AUSTLMY = {
       let id = "UPDATE_STATUS_ERROR_CODE_" + aSuffix;
       // enumerated type histogram
       Services.telemetry.getHistogramById(id).add(aCode);
-    } catch(e) {
+    } catch (e) {
       Cu.reportError(e);
     }
   },
@@ -303,8 +300,8 @@ this.AUSTLMY = {
           try {
             let id = "UPDATE_INVALID_LASTUPDATETIME_" + aSuffix;
             // count type histogram
-            Services.telemetry.getHistogramById().add();
-          } catch(e) {
+            Services.telemetry.getHistogramById(id).add();
+          } catch (e) {
             Cu.reportError(e);
           }
         } else {
@@ -314,7 +311,7 @@ this.AUSTLMY = {
             let id = "UPDATE_LAST_NOTIFY_INTERVAL_DAYS_" + aSuffix;
             // exponential type histogram
             Services.telemetry.getHistogramById(id).add(intervalDays);
-          } catch(e) {
+          } catch (e) {
             Cu.reportError(e);
           }
         }
@@ -336,11 +333,8 @@ this.AUSTLMY = {
                     noupdatesfound: 4,
                     manualUpdate: 5,
                     unsupported: 6,
-                    incompatibleCheck: 7,
                     updatesfoundbasic: 8,
                     updatesfoundbillboard: 9,
-                    license: 10,
-                    incompatibleList: 11,
                     downloading: 12,
                     errors: 13,
                     errorextra: 14,
@@ -385,7 +379,7 @@ this.AUSTLMY = {
       let id = "UPDATE_SERVICE_INSTALLED_" + aSuffix;
       // boolean type histogram
       Services.telemetry.getHistogramById(id).add(aInstalled);
-    } catch(e) {
+    } catch (e) {
       Cu.reportError(e);
     }
 
@@ -399,7 +393,7 @@ this.AUSTLMY = {
       // Was the service at some point installed, but is now uninstalled?
       attempted = wrk.readIntValue("Attempted");
       wrk.close();
-    } catch(e) {
+    } catch (e) {
       // Since this will throw if the registry key doesn't exist (e.g. the
       // service has never been installed) don't report an error.
     }
@@ -410,7 +404,7 @@ this.AUSTLMY = {
         // count type histogram
         Services.telemetry.getHistogramById(id).add();
       }
-    } catch(e) {
+    } catch (e) {
       Cu.reportError(e);
     }
   },
@@ -441,7 +435,7 @@ this.AUSTLMY = {
         // count type histogram
         Services.telemetry.getHistogramById(aID).add();
       }
-    } catch(e) {
+    } catch (e) {
       Cu.reportError(e);
     }
   },
@@ -472,7 +466,7 @@ this.AUSTLMY = {
         // enumerated or exponential type histogram
         Services.telemetry.getHistogramById(aID).add(val);
       }
-    } catch(e) {
+    } catch (e) {
       Cu.reportError(e);
     }
   },
@@ -501,7 +495,7 @@ this.AUSTLMY = {
         // count type histogram
         Services.telemetry.getHistogramById(aID).add();
       }
-    } catch(e) {
+    } catch (e) {
       Cu.reportError(e);
     }
   }

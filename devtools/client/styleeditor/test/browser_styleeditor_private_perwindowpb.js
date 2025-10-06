@@ -34,18 +34,18 @@ add_task(function* () {
 
 function checkDiskCacheFor(host) {
   let foundPrivateData = false;
-  let deferred = promise.defer();
+  let deferred = defer();
 
   Visitor.prototype = {
-    onCacheStorageInfo: function(num) {
+    onCacheStorageInfo: function (num) {
       info("disk storage contains " + num + " entries");
     },
-    onCacheEntryInfo: function(uri) {
+    onCacheEntryInfo: function (uri) {
       let urispec = uri.asciiSpec;
       info(urispec);
       foundPrivateData |= urispec.includes(host);
     },
-    onCacheEntryVisitCompleted: function() {
+    onCacheEntryVisitCompleted: function () {
       is(foundPrivateData, false, "web content present in disk cache");
       deferred.resolve();
     }
@@ -61,7 +61,7 @@ function checkDiskCacheFor(host) {
 }
 
 function waitForDelayedStartupFinished(win) {
-  let deferred = promise.defer();
+  let deferred = defer();
   Services.obs.addObserver(function observer(subject, topic) {
     if (win == subject) {
       Services.obs.removeObserver(observer, topic);

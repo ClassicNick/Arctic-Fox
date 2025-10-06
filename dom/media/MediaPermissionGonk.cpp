@@ -243,9 +243,12 @@ MediaPermissionRequest::Allow(JS::HandleValue aChoices)
     return NS_ERROR_INVALID_ARG;
   }
   // iterate through audio-capture and video-capture
-  AutoSafeJSContext cx;
+  AutoJSAPI jsapi;
+  if (!jsapi.Init(&aChoices.toObject())) {
+    return NS_ERROR_UNEXPECTED;
+  }
+  JSContext* cx = jsapi.cx();
   JS::Rooted<JSObject*> obj(cx, &aChoices.toObject());
-  JSAutoCompartment ac(cx, obj);
   JS::Rooted<JS::Value> v(cx);
 
   // get selected audio device name
@@ -330,7 +333,7 @@ public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSIGETUSERMEDIADEVICESSUCCESSCALLBACK
 
-  MediaDeviceSuccessCallback(RefPtr<dom::GetUserMediaRequest> &aRequest)
+  explicit MediaDeviceSuccessCallback(RefPtr<dom::GetUserMediaRequest> &aRequest)
     : mRequest(aRequest) {}
 
 protected:
@@ -395,7 +398,7 @@ public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSIDOMGETUSERMEDIAERRORCALLBACK
 
-  MediaDeviceErrorCallback(const nsAString &aCallID)
+  explicit MediaDeviceErrorCallback(const nsAString &aCallID)
     : mCallID(aCallID) {}
 
 protected:

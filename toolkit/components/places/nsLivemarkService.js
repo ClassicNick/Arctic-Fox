@@ -208,8 +208,7 @@ LivemarkService.prototype = {
         title: aLivemarkInfo.title,
         index: aLivemarkInfo.index,
         guid: aLivemarkInfo.guid,
-        dateAdded: toDate(aLivemarkInfo.dateAdded) || toDate(aLivemarkInfo.lastModified),
-        lastModified: toDate(aLivemarkInfo.lastModified),
+        dateAdded: toDate(aLivemarkInfo.dateAdded) || toDate(aLivemarkInfo.lastModified)
       });
 
       // Set feed and site URI annotations.
@@ -231,6 +230,12 @@ LivemarkService.prototype = {
       livemark.writeFeedURI(aLivemarkInfo.feedURI);
       if (aLivemarkInfo.siteURI) {
         livemark.writeSiteURI(aLivemarkInfo.siteURI);
+      }
+
+      if (aLivemarkInfo.lastModified) {
+        yield PlacesUtils.bookmarks.update({ guid: folder.guid,
+                                             lastModified: toDate(aLivemarkInfo.lastModified) });
+        livemark.lastModified = aLivemarkInfo.lastModified;
       }
 
       livemarksMap.set(folder.guid, livemark);
@@ -477,7 +482,7 @@ Livemark.prototype = {
 
     // Security check the site URI against the feed URI principal.
     let secMan = Services.scriptSecurityManager;
-    let feedPrincipal = secMan.getSimpleCodebasePrincipal(this.feedURI);
+    let feedPrincipal = secMan.createCodebasePrincipal(this.feedURI, {});
     try {
       secMan.checkLoadURIWithPrincipal(feedPrincipal, aSiteURI,
                                        Ci.nsIScriptSecurityManager.DISALLOW_INHERIT_PRINCIPAL);
@@ -523,9 +528,14 @@ Livemark.prototype = {
       // cancel the channel.
       let loadgroup = Cc["@mozilla.org/network/load-group;1"].
                       createInstance(Ci.nsILoadGroup);
+      // Creating a CodeBasePrincipal and using it as the loadingPrincipal
+      // is *not* desired and is only tolerated within this file.
+      // TODO: Find the right OriginAttributes and pass something other
+      // than {} to .createCodeBasePrincipal().
       let channel = NetUtil.newChannel({
-        uri: this.feedURI.spec,
+        uri: this.feedURI,
         loadingPrincipal: Services.scriptSecurityManager.createCodebasePrincipal(this.feedURI, {}),
+        securityFlags: Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL,
         contentPolicyType: Ci.nsIContentPolicy.TYPE_INTERNAL_XMLHTTPREQUEST
       }).QueryInterface(Ci.nsIHttpChannel);
       channel.loadGroup = loadgroup;
@@ -537,7 +547,7 @@ Livemark.prototype = {
       // Stream the result to the feed parser with this listener
       let listener = new LivemarkLoadListener(this);
       channel.notificationCallbacks = listener;
-      channel.asyncOpen(listener, null);
+      channel.asyncOpen2(listener);
 
       this.loadGroup = loadgroup;
     }
@@ -749,7 +759,7 @@ LivemarkLoadListener.prototype = {
       // We need this to make sure the item links are safe
       let feedPrincipal =
         Services.scriptSecurityManager
-                .getSimpleCodebasePrincipal(this._livemark.feedURI);
+                .createCodebasePrincipal(this._livemark.feedURI, {});
 
       // Enforce well-formedness because the existing code does
       if (!aResult || !aResult.doc || aResult.bozo) {
@@ -777,7 +787,7 @@ LivemarkLoadListener.prototype = {
                   .checkLoadURIWithPrincipal(feedPrincipal, uri,
                                              Ci.nsIScriptSecurityManager.DISALLOW_INHERIT_PRINCIPAL);
         }
-        catch(ex) {
+        catch (ex) {
           continue;
         }
 

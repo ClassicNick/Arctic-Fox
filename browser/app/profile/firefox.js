@@ -43,6 +43,8 @@ pref("extensions.getAddons.link.url", "https://addons.mozilla.org/%LOCALE%/firef
 
 // Blocklist preferences
 pref("extensions.blocklist.enabled", true);
+// OneCRL freshness checking depends on this value, so if you change it,
+// please also update security.onecrl.maximum_staleness_in_seconds.
 pref("extensions.blocklist.interval", 86400);
 pref("extensions.blocklist.level.updated", false);
 // Controls what level the blocklist switches from warning about items to forcibly
@@ -52,17 +54,35 @@ pref("extensions.blocklist.url", "https://addons.mozilla.org/blocklist/3/%APP_ID
 pref("extensions.blocklist.detailsURL", "https://www.mozilla.org/%LOCALE%/blocklist/");
 pref("extensions.blocklist.itemURL", "https://addons.mozilla.org/%LOCALE%/%APP%/blocked/%blockID%");
 
-// Kinto blocklist preferences
-pref("services.kinto.base", "https://firefox.settings.services.mozilla.com/v1");
-pref("services.kinto.bucket", "blocklists");
-pref("services.kinto.onecrl.collection", "certificates");
-pref("services.kinto.onecrl.checked", 0);
+// Blocklist preferences
+pref("services.settings.server", "https://firefox.settings.services.mozilla.com/v1");
+pref("services.blocklist.changes.path", "/buckets/monitor/collections/changes/records");
+pref("services.blocklist.bucket", "blocklists");
+pref("services.blocklist.onecrl.collection", "certificates");
+pref("services.blocklist.onecrl.checked", 0);
+pref("services.blocklist.addons.collection", "addons");
+pref("services.blocklist.addons.checked", 0);
+pref("services.blocklist.plugins.collection", "plugins");
+pref("services.blocklist.plugins.checked", 0);
+pref("services.blocklist.gfx.collection", "gfx");
+pref("services.blocklist.gfx.checked", 0);
+
+// for now, let's keep kinto update out of the release channel
+#ifdef RELEASE_BUILD
+pref("services.blocklist.update_enabled", false);
+#else
+pref("services.blocklist.update_enabled", true);
+#endif
 
 pref("extensions.update.autoUpdateDefault", true);
 
 // Disable add-ons that are not installed by the user in all scopes by default.
 // See the SCOPE constants in AddonManager.jsm for values to use here.
 pref("extensions.autoDisableScopes", 15);
+
+// Add-on content security policies.
+pref("extensions.webextensions.base-content-security-policy", "script-src 'self' https://* moz-extension: blob: filesystem: 'unsafe-eval' 'unsafe-inline'; object-src 'self' https://* moz-extension: blob: filesystem:;");
+pref("extensions.webextensions.default-content-security-policy", "script-src 'self'; object-src 'self';");
 
 // Don't require signed add-ons by default
 pref("xpinstall.signatures.required", false);
@@ -75,10 +95,7 @@ pref("browser.dictionaries.download.url", "http://repository.binaryoutcast.com/d
 pref("browser.getdevtools.url","https://addons.palemoon.org/extensions/web-development/");
 
 // Feedback URL
-pref("browser.feedback.url", "https://forums.macrumors.com/threads/arctic-fox-web-browser-for-10-6-64bit.2133051/");
-
-// Help button in slow startup dialog
-pref("browser.slowstartup.help.url", "http://www.palemoon.org/support/slowstartup.shtml");
+pref("browser.feedback.url", "https://github.com/rmottola/Arctic-Fox/discussions");
 
 // Whether to escape to a content-less page if a user presses "Get me out of here"
 // on a network error page (e.g. cert error)
@@ -171,13 +188,6 @@ pref("app.update.url", "https://github.com/rmottola/Arctic-Fox/wiki/Downloads");
 
 // Show the Update Checking/Ready UI when the user was idle for x seconds
 pref("app.update.idletime", 60);
-
-// Whether or not we show a dialog box informing the user that the update was
-// successfully applied. This is off in Firefox by default since we show a
-// upgrade start page instead! Other apps may wish to show this UI, and supply
-// a whatsNewURL field in their brand.properties that contains a link to a page
-// which tells users what's new in this new update.
-pref("app.update.showInstalledUI", false);
 
 // 0 = suppress prompting for incompatibilities if there are updates available
 //     to newer versions of installed addons that resolve them.
@@ -272,8 +282,6 @@ pref("browser.urlbar.doubleClickSelectsAll", false);
 pref("browser.urlbar.autoFill", true);
 pref("browser.urlbar.autoFill.typed", true);
 
-pref("browser.urlbar.unifiedcomplete", false);
-
 // 0: Match anywhere (e.g., middle of words)
 // 1: Match on word boundaries and then try matching anywhere
 // 2: Match only on word boundaries (e.g., after / or .)
@@ -305,7 +313,8 @@ pref("browser.urlbar.match.url", "@");
 pref("browser.urlbar.suggest.history",              true);
 pref("browser.urlbar.suggest.bookmark",             true);
 pref("browser.urlbar.suggest.openpage",             true);
-pref("browser.urlbar.suggest.searches",             true);
+pref("browser.urlbar.suggest.searches",             false);
+pref("browser.urlbar.userMadeSearchSuggestionsChoice", false);
 
 // Limit the number of characters sent to the current search engine to fetch
 // suggestions.
@@ -379,10 +388,6 @@ pref("browser.search.openintab", false);
 // context menu searches open in the foreground
 pref("browser.search.context.loadInBackground", false);
 
-// if no result, add the search term so that the panel of the new UI is shown anyway
-pref("browser.search.showOneOffButtons", true);
-
-
 // comma seperated list of of engines to hide in the search panel.
 pref("browser.search.hiddenOneOffs", "");
 
@@ -408,6 +413,11 @@ pref("browser.search.redirectWindowsSearch", true);
 #else
 pref("browser.search.redirectWindowsSearch", false);
 #endif
+
+pref("browser.search.reset.enabled", true);
+
+pref("browser.usedOnWindows10", false);
+pref("browser.usedOnWindows10.introURL", "https://www.mozilla.org/%LOCALE%/firefox/windows-10/welcome/?utm_source=firefox-browser&utm_medium=firefox-browser");
 
 pref("browser.sessionhistory.max_entries", 50);
 
@@ -460,13 +470,6 @@ pref("browser.tabs.drawInTitlebar", true);
 #else
 pref("browser.tabs.drawInTitlebar", false);
 #endif
-
-// Where to show tab close buttons:
-// 0  on active tab only
-// 1  on all tabs until tabClipWidth is reached, then active tab only
-// 2  no close buttons at all
-// 3  at the end of the tabstrip
-pref("browser.tabs.closeButtons", 1);
 
 // When tabs opened by links in other tabs via a combination of
 // browser.link.open_newwindow being set to 3 and target="_blank" etc are
@@ -629,6 +632,11 @@ pref("mousewheel.with_win.action", 1);
 pref("browser.xul.error_pages.enabled", true);
 pref("browser.xul.error_pages.expert_bad_cert", false);
 
+// Enable captive portal detection.
+#ifdef NIGHTLY_BUILD
+pref("network.captive-portal-service.enabled", true);
+#endif
+
 // If true, network link events will change the value of navigator.onLine
 pref("network.manage-offline-status", false);
 
@@ -664,6 +672,8 @@ pref("accessibility.typeaheadfind", false);
 pref("accessibility.typeaheadfind.timeout", 5000);
 pref("accessibility.typeaheadfind.linksonly", false);
 pref("accessibility.typeaheadfind.flashBar", 1);
+pref("findbar.highlightAll", true);
+pref("findbar.modalHighlight", true);
 
 // Tracks when accessibility is loaded into the previous session.
 pref("accessibility.loadedInLastSession", false);
@@ -672,13 +682,9 @@ pref("accessibility.loadedInLastSession", false);
 pref("plugins.hide_infobar_for_blocked_plugin", false);
 pref("plugins.hide_infobar_for_outdated_plugin", false);
 
-pref("plugins.update.url", "https://www.mozilla.org/%LOCALE%/plugincheck/");
-pref("plugins.update.notifyUser", false);
-
 //Enable tri-state option (Always/Never/Ask)
 pref("plugins.click_to_play", true);
-
-pref("plugins.hideMissingPluginsNotification", false);
+pref("plugins.testmode", false);
 
 
 #ifdef XP_MACOSX
@@ -794,6 +800,10 @@ pref("gecko.handlerService.schemes.ircs.3.uriTemplate", "chrome://browser-region
 pref("gecko.handlerService.allowRegisterFromDifferentHost", false);
 
 #ifdef MOZ_SAFE_BROWSING
+pref("browser.safebrowsing.downloads.remote.block_dangerous",            true);
+pref("browser.safebrowsing.downloads.remote.block_dangerous_host",       true);
+pref("browser.safebrowsing.downloads.remote.block_potentially_unwanted", false);
+pref("browser.safebrowsing.downloads.remote.block_uncommon",             false);
 // Name of the about: page contributed by safebrowsing to handle display of error
 // pages on phishing/malware hits.  (bug 399233)
 pref("urlclassifier.alternate_error_page", "blocked");
@@ -912,6 +922,7 @@ pref("places.frecency.bookmarkVisitBonus", 75);
 pref("places.frecency.downloadVisitBonus", 0);
 pref("places.frecency.permRedirectVisitBonus", 0);
 pref("places.frecency.tempRedirectVisitBonus", 0);
+pref("places.frecency.reloadVisitBonus", 0);
 pref("places.frecency.defaultVisitBonus", 0);
 
 // bonus (in percent) for place types for frecency calculations
@@ -983,16 +994,6 @@ pref("dom.ipc.plugins.enabled", true);
 
 pref("dom.ipc.shims.enabledWarnings", false);
 
-// Decode using Gecko Media Plugins in <video>, if a system decoder is not
-// availble and the preferred GMP is available.
-pref("media.gmp.decoder.enabled", true);
-
-// If decoding-via-GMP is turned on for <video>, use Adobe's GMP for decoding,
-// if it's available. Note: We won't fallback to another GMP if Adobe's is not
-// installed.
-pref("media.gmp.decoder.aac", 2);
-pref("media.gmp.decoder.h264", 2);
-
 // Start the browser in e10s mode
 pref("browser.tabs.remote.autostart", false);
 pref("browser.tabs.remote.desktopbehavior", true);
@@ -1020,12 +1021,8 @@ pref("dom.ipc.plugins.sandbox-level.flash", 0);
 #if defined(NIGHTLY_BUILD)
 pref("security.sandbox.content.level", 2);
 #else
-pref("security.sandbox.content.level", 0);
+pref("security.sandbox.content.level", 1);
 #endif
-
-// ID (a UUID when set by gecko) that is used as a per profile suffix to a low
-// integrity temp directory.
-pref("security.sandbox.content.tempDirSuffix", "");
 
 #if defined(MOZ_STACKWALKING)
 // This controls the depth of stack trace that is logged when Windows sandbox
@@ -1060,6 +1057,35 @@ pref("browser.tabs.remote", false);
 #endif
 pref("browser.tabs.remote.autostart", false);
 
+#if defined(XP_LINUX) && defined(MOZ_SANDBOX) && defined(MOZ_CONTENT_SANDBOX)
+// This pref is introduced as part of bug 742434, the naming is inspired from
+// its Windows/Mac counterpart, but on Linux it's an integer which means:
+// 0 -> "no sandbox"
+// 1 -> "content sandbox using seccomp-bpf when available"
+// 2 -> "seccomp-bpf + file broker"
+// Content sandboxing on Linux is currently in the stage of
+// 'just getting it enabled', which includes a very permissive whitelist. We
+// enable seccomp-bpf on nightly to see if everything is running, or if we need
+// to whitelist more system calls.
+//
+// So the purpose of this setting is to allow nightly users to disable the
+// sandbox while we fix their problems. This way, they won't have to wait for
+// another nightly release which disables seccomp-bpf again.
+//
+// This setting may not be required anymore once we decide to permanently
+// enable the content sandbox.
+pref("security.sandbox.content.level", 1);
+#endif
+
+#if defined(XP_MACOSX) || defined(XP_WIN)
+#if defined(MOZ_SANDBOX) && defined(MOZ_CONTENT_SANDBOX)
+// ID (a UUID when set by gecko) that is used to form the name of a
+// sandbox-writable temporary directory to be used by content processes
+// when a temporary writable file is required in a level 1 sandbox.
+pref("security.sandbox.content.tempDirSuffix", "");
+#endif
+#endif
+
 // This pref governs whether we attempt to work around problems caused by
 // plugins using OS calls to manipulate the cursor while running out-of-
 // process.  These workarounds all involve intercepting (hooking) certain
@@ -1083,7 +1109,6 @@ pref("browser.taskbar.lists.tasks.enabled", true);
 pref("browser.taskbar.lists.refreshInSeconds", 120);
 #endif
 
-#ifdef MOZ_SERVICES_SYNC
 // Info when outdated sync detected
 pref("services.sync.outdated.url", "http://www.palemoon.org/sync/update/");
 // The sync engines to use.
@@ -1106,13 +1131,13 @@ pref("services.sync.prefs.sync.browser.newtabpage.enabled", true);
 pref("services.sync.prefs.sync.browser.newtabpage.enhanced", true);
 pref("services.sync.prefs.sync.browser.newtabpage.pinned", true);
 pref("services.sync.prefs.sync.browser.offline-apps.notify", true);
+pref("services.sync.prefs.sync.browser.safebrowsing.phishing.enabled", true);
 pref("services.sync.prefs.sync.browser.search.selectedEngine", true);
 pref("services.sync.prefs.sync.browser.search.update", true);
 pref("services.sync.prefs.sync.browser.sessionstore.restore_on_demand", true);
 pref("services.sync.prefs.sync.browser.startup.homepage", true);
 pref("services.sync.prefs.sync.browser.startup.page", true);
 pref("services.sync.prefs.sync.browser.tabs.autoHide", true);
-pref("services.sync.prefs.sync.browser.tabs.closeButtons", true);
 pref("services.sync.prefs.sync.browser.tabs.loadInBackground", true);
 pref("services.sync.prefs.sync.browser.tabs.warnOnClose", true);
 pref("services.sync.prefs.sync.browser.tabs.warnOnOpen", true);
@@ -1153,10 +1178,16 @@ pref("services.sync.prefs.sync.security.OCSP.require", true);
 pref("services.sync.prefs.sync.security.default_personal_cert", true);
 pref("services.sync.prefs.sync.security.tls.version.min", true);
 pref("services.sync.prefs.sync.security.tls.version.max", true);
+pref("services.sync.prefs.sync.services.sync.syncedTabs.showRemoteIcons", true);
 pref("services.sync.prefs.sync.signon.rememberSignons", true);
 pref("services.sync.prefs.sync.spellchecker.dictionary", true);
 pref("services.sync.prefs.sync.xpinstall.whitelist.required", true);
-#endif
+
+// A preference that controls whether we should show the icon for a remote tab.
+// This pref has no UI but exists because some people may be concerned that
+// fetching these icons to show remote tabs may leak information about that
+// user's tabs and bookmarks. Note this pref is also synced.
+pref("services.sync.syncedTabs.showRemoteIcons", true);
 
 // Developer edition preferences
 #ifdef MOZ_DEV_EDITION
@@ -1202,16 +1233,31 @@ pref("browser.newtabpage.rows", 4);
 // number of columns of newtab grid
 pref("browser.newtabpage.columns", 4);
 
+// directory tiles download URL
+pref("browser.newtabpage.directory.source", "https://tiles.services.mozilla.com/v3/links/fetch/%LOCALE%/%CHANNEL%");
+
 // about:permissions
 // Maximum number of sites to return from the places database.
 // 0-100 (currently)
 pref("permissions.places-sites-limit", 50);
 
 // endpoint to send newtab click and view pings
-pref("browser.newtabpage.directory.ping", "https://tiles.up.mozillalabs.com/v2/links/");
+pref("browser.newtabpage.directory.ping", "https://tiles.services.mozilla.com/v3/links/");
 
 // activates the remote-hosted newtab page
 pref("browser.newtabpage.remote", false);
+
+// remote newtab version targeted
+pref("browser.newtabpage.remote.version", "1");
+
+// Toggles endpoints allowed for remote newtab communications
+pref("browser.newtabpage.remote.mode", "production");
+
+// content-signature tests for remote newtab
+pref("browser.newtabpage.remote.content-signing-test", false);
+
+// verification keys for remote-hosted newtab page
+pref("browser.newtabpage.remote.keys", "");
 
 // Enable the DOM fullscreen API.
 pref("full-screen-api.enabled", true);
@@ -1253,12 +1299,9 @@ pref("security.mixed_content.block_active_content", true);
 // integrity temp directory.
 pref("security.sandbox.content.tempDirSuffix", "");
 
-// 2 = allow SHA-1 only before 2016-01-01
-pref("security.pki.sha1_enforcement_level", 2);
-
 // Required blocklist freshness for OneCRL OCSP bypass
-// (default should be at least as large as extensions.blocklist.interval)
-pref("security.onecrl.maximum_staleness_in_seconds", 0);
+// (default is 1.25x extensions.blocklist.interval, or 30 hours)
+pref("security.onecrl.maximum_staleness_in_seconds", 108000);
 
 // Override the Gecko-default value of false for Firefox.
 pref("plain_text.wrap_long_lines", true);
@@ -1270,7 +1313,11 @@ pref("media.webaudio.enabled", true);
 pref("dom.debug.propagate_gesture_events_through_content", false);
 
 // The request URL of the GeoLocation backend.
-pref("geo.wifi.uri", "http://ip-api.com/json/?fields=lat,lon,status,message");
+#ifdef RELEASE_BUILD
+pref("geo.wifi.uri", "https://www.googleapis.com/geolocation/v1/geolocate?key=%GOOGLE_API_KEY%");
+#else
+pref("geo.wifi.uri", "https://location.services.mozilla.com/v1/geolocate?key=%MOZILLA_API_KEY%");
+#endif
 
 #ifdef XP_MACOSX
 #ifdef RELEASE_BUILD
@@ -1281,10 +1328,16 @@ pref("geo.provider.use_corelocation", true);
 #endif
 
 #ifdef XP_WIN
-#ifdef RELEASE_BUILD
 pref("geo.provider.ms-windows-location", false);
+#endif
+
+#ifdef MOZ_WIDGET_GTK
+#ifdef MOZ_GPSD
+#ifdef RELEASE_BUILD
+pref("geo.provider.use_gpsd", false);
 #else
-pref("geo.provider.ms-windows-location", true);
+pref("geo.provider.use_gpsd", true);
+#endif
 #endif
 #endif
 
@@ -1305,9 +1358,6 @@ pref("browser.defaultbrowser.notificationbar", false);
 // Determines if Telemetry pings can be archived locally.
 pref("toolkit.telemetry.archive.enabled", true);
 
-//Arctic Fox standalone image background color
-pref("browser.display.standalone_images.background_color", "#2E3B41");
-
 // Disable reader mode by default.
 pref("reader.parse-on-load.enabled", false);
 
@@ -1319,13 +1369,25 @@ pref("identity.sync.tokenserver.uri", "https://token.services.mozilla.com/1.0/sy
 // AMO needs "Firefox", obviously - pass on the OS (determined at build time)
 #ifdef XP_UNIX
 #ifdef XP_MACOSX
-pref("general.useragent.override.addons.mozilla.org","Mozilla/5.0 (Macintosh; Intel Mac OS X 10.8; rv:27.0) Gecko/20100101 Firefox/27.0");
+pref("general.useragent.override.addons.mozilla.org","Mozilla/5.0 (Macintosh; Intel Mac OS X 10.8; rv:52.0) Gecko/20100101 Firefox/52.0");
 #else
-pref("general.useragent.override.addons.mozilla.org","Mozilla/5.0 (Linux; X11; rv:27.0) Gecko/20100101 Firefox/27.0");
+pref("general.useragent.override.addons.mozilla.org","Mozilla/5.0 (Linux; X11; rv:52.0) Gecko/20100101 Firefox/52.0");
 #endif
 #else
-pref("general.useragent.override.addons.mozilla.org","Mozilla/5.0 (Windows NT 6.1; WOW64; rv:27.0) Gecko/20100101 Firefox/27.0");
+pref("general.useragent.override.addons.mozilla.org","Mozilla/5.0 (Windows NT 6.1; WOW64; rv:52.0) Gecko/20100101 Firefox/52.0");
 #endif
+
+
+// Decode using Gecko Media Plugins in <video>, if a system decoder is not
+// availble and the preferred GMP is available.
+pref("media.gmp.decoder.enabled", true);
+
+// If decoding-via-GMP is turned on for <video>, use Adobe's GMP for decoding,
+// if it's available. Note: We won't fallback to another GMP if Adobe's is not
+// installed.
+pref("media.gmp.decoder.aac", 2);
+pref("media.gmp.decoder.h264", 2);
+
 
 // ****************** s4e prefs ******************
 pref("status4evar.addonbar.borderStyle", false);
@@ -1369,6 +1431,23 @@ pref("status4evar.status.toolbar.maxLength", 0);
 pref("status4evar.status.popup.invertMirror", false);
 pref("status4evar.status.popup.mouseMirror", true);
 
+// Telemetry settings.
+// Determines if Telemetry pings can be archived locally.
+pref("toolkit.telemetry.archive.enabled", true);
+
+// Telemetry experiments settings.
+pref("experiments.enabled", true);
+pref("experiments.manifest.fetchIntervalSeconds", 86400);
+pref("experiments.manifest.uri", "https://telemetry-experiment.cdn.mozilla.net/manifest/v1/firefox/%VERSION%/%CHANNEL%");
+// Whether experiments are supported by the current application profile.
+pref("experiments.supported", true);
+
+// For the about:tabcrashed page
+pref("browser.tabs.crashReporting.sendReport", true);
+pref("browser.tabs.crashReporting.includeURL", false);
+pref("browser.tabs.crashReporting.emailMe", false);
+pref("browser.tabs.crashReporting.email", "");
+
 #ifdef NIGHTLY_BUILD
 pref("privacy.trackingprotection.ui.enabled", false);
 #else
@@ -1409,10 +1488,13 @@ pref("dom.ipc.reportProcessHangs", false);
 pref("dom.ipc.reportProcessHangs", true);
 #endif
 
+// On desktop, we want the URLs to be included here for ease of debugging,
+// and because (normally) these errors are not persisted anywhere.
+pref("reader.errors.includeURLs", true);
+
 pref("view_source.tab", true);
 
 pref("dom.serviceWorkers.enabled", true);
-pref("dom.serviceWorkers.interception.enabled", true);
 pref("dom.serviceWorkers.openWindow.enabled", true);
 pref("dom.webnotifications.serviceworker.enabled", true);
 
@@ -1424,3 +1506,21 @@ pref("dom.push.enabled", true);
 // by about:newtab. These values are in CSS pixels.
 pref("toolkit.pageThumbs.minWidth", 280);
 pref("toolkit.pageThumbs.minHeight", 190);
+
+pref("browser.esedbreader.loglevel", "Error");
+
+pref("browser.laterrun.enabled", false);
+
+pref("browser.migrate.automigrate.enabled", false);
+
+// Enable browser frames for use on desktop.  Only exposed to chrome callers.
+pref("dom.mozBrowserFramesEnabled", true);
+
+pref("signon.schemeUpgrades", true);
+
+// Enable the "Simplify Page" feature in Print Preview
+pref("print.use_simplify_page", true);
+
+// Space separated list of URLS that are allowed to send objects (instead of
+// only strings) through webchannels. This list is duplicated in mobile/android/app/mobile.js
+pref("webchannel.allowObject.urlWhitelist", "https://accounts.firefox.com https://content.cdn.mozilla.net https://input.mozilla.org https://support.mozilla.org https://install.mozilla.org");

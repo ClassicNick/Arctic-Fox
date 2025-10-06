@@ -82,10 +82,12 @@ function* runTests(options) {
   let extension = ExtensionTestUtils.loadExtension({
     manifest: options.manifest,
 
+    files: options.files || {},
+
     background: `(${background})(${options.getTests})`,
   });
 
-  let pageActionId = makeWidgetId(extension.id) + "-page-action";
+  let pageActionId;
   let currentWindow = window;
   let windows = [];
 
@@ -96,7 +98,7 @@ function* runTests(options) {
     } else {
       ok(image, "image exists");
 
-      is(image.src, details.icon, "icon URL is correct");
+      is(getListStyleImage(image), details.icon, "icon URL is correct");
 
       let title = details.title || options.manifest.name;
       is(image.getAttribute("tooltiptext"), title, "image title is correct");
@@ -109,6 +111,10 @@ function* runTests(options) {
 
   let awaitFinish = new Promise(resolve => {
     extension.onMessage("nextTest", (expecting, testsRemaining) => {
+      if (!pageActionId) {
+        pageActionId = `${makeWidgetId(extension.id)}-page-action`;
+      }
+
       checkDetails(expecting);
 
       if (testsRemaining) {
@@ -129,11 +135,15 @@ function* runTests(options) {
     });
   });
 
+  yield SpecialPowers.pushPrefEnv({set: [["general.useragent.locale", "es-ES"]]});
+
   yield extension.startup();
 
   yield awaitFinish;
 
   yield extension.unload();
+
+  yield SpecialPowers.popPrefEnv();
 
   let node = document.getElementById(pageActionId);
   is(node, null, "pageAction image removed from document");
@@ -154,27 +164,59 @@ add_task(function* testTabSwitchContext() {
 
       "page_action": {
         "default_icon": "default.png",
-        "default_popup": "default.html",
-        "default_title": "Default Title \u263a",
+        "default_popup": "__MSG_popup__",
+        "default_title": "Default __MSG_title__ \u263a",
       },
 
+      "default_locale": "en",
+
       "permissions": ["tabs"],
+    },
+
+    "files": {
+      "_locales/en/messages.json": {
+        "popup": {
+          "message": "default.html",
+          "description": "Popup",
+        },
+
+        "title": {
+          "message": "Title",
+          "description": "Title",
+        },
+      },
+
+      "_locales/es_ES/messages.json": {
+        "popup": {
+          "message": "default.html",
+          "description": "Popup",
+        },
+
+        "title": {
+          "message": "T\u00edtulo",
+          "description": "Title",
+        },
+      },
+
+      "default.png": imageBuffer,
+      "1.png": imageBuffer,
+      "2.png": imageBuffer,
     },
 
     getTests(tabs) {
       let details = [
         {"icon": browser.runtime.getURL("default.png"),
          "popup": browser.runtime.getURL("default.html"),
-         "title": "Default Title \u263a"},
+         "title": "Default T\u00edtulo \u263a"},
         {"icon": browser.runtime.getURL("1.png"),
          "popup": browser.runtime.getURL("default.html"),
-         "title": "Default Title \u263a"},
+         "title": "Default T\u00edtulo \u263a"},
         {"icon": browser.runtime.getURL("2.png"),
          "popup": browser.runtime.getURL("2.html"),
          "title": "Title 2"},
         {"icon": browser.runtime.getURL("2.png"),
          "popup": browser.runtime.getURL("2.html"),
-         "title": "Default Title \u263a"},
+         "title": "Default T\u00edtulo \u263a"},
       ];
 
       let promiseTabLoad = details => {
@@ -187,8 +229,6 @@ add_task(function* testTabSwitchContext() {
           });
         });
       };
-      let tabLoadPromise;
-
       return [
         expect => {
           browser.test.log("Initial state. No icon visible.");
@@ -196,8 +236,9 @@ add_task(function* testTabSwitchContext() {
         },
         expect => {
           browser.test.log("Show the icon on the first tab, expect default properties.");
-          browser.pageAction.show(tabs[0]);
-          expect(details[0]);
+          browser.pageAction.show(tabs[0]).then(() => {
+            expect(details[0]);
+          });
         },
         expect => {
           browser.test.log("Change the icon. Expect default properties excluding the icon.");
@@ -207,26 +248,24 @@ add_task(function* testTabSwitchContext() {
         expect => {
           browser.test.log("Create a new tab. No icon visible.");
           browser.tabs.create({active: true, url: "about:blank?0"}, tab => {
-            tabLoadPromise = promiseTabLoad({url: "about:blank?0", id: tab.id});
             tabs.push(tab.id);
             expect(null);
           });
         },
         expect => {
           browser.test.log("Await tab load. No icon visible.");
-          tabLoadPromise.then(() => {
-            expect(null);
-          });
+          expect(null);
         },
         expect => {
           browser.test.log("Change properties. Expect new properties.");
           let tabId = tabs[1];
-          browser.pageAction.show(tabId);
-          browser.pageAction.setIcon({tabId, path: "2.png"});
-          browser.pageAction.setPopup({tabId, popup: "2.html"});
-          browser.pageAction.setTitle({tabId, title: "Title 2"});
+          browser.pageAction.show(tabId).then(() => {
+            browser.pageAction.setIcon({tabId, path: "2.png"});
+            browser.pageAction.setPopup({tabId, popup: "2.html"});
+            browser.pageAction.setTitle({tabId, title: "Title 2"});
 
-          expect(details[2]);
+            expect(details[2]);
+          });
         },
         expect => {
           browser.test.log("Clear the title. Expect default title.");
@@ -247,8 +286,9 @@ add_task(function* testTabSwitchContext() {
         },
         expect => {
           browser.test.log("Show the icon. Expect default properties again.");
-          browser.pageAction.show(tabs[1]);
-          expect(details[0]);
+          browser.pageAction.show(tabs[1]).then(() => {
+            expect(details[0]);
+          });
         },
         expect => {
           browser.test.log("Switch back to the first tab. Expect previously set properties.");
@@ -258,9 +298,10 @@ add_task(function* testTabSwitchContext() {
         },
         expect => {
           browser.test.log("Hide the icon on tab 2. Switch back, expect hidden.");
-          browser.pageAction.hide(tabs[1]);
-          browser.tabs.update(tabs[1], {active: true}, () => {
-            expect(null);
+          browser.pageAction.hide(tabs[1]).then(() => {
+            browser.tabs.update(tabs[1], {active: true}, () => {
+              expect(null);
+            });
           });
         },
         expect => {
@@ -271,8 +312,9 @@ add_task(function* testTabSwitchContext() {
         },
         expect => {
           browser.test.log("Hide the icon. Expect hidden.");
-          browser.pageAction.hide(tabs[0]);
-          expect(null);
+          browser.pageAction.hide(tabs[0]).then(() => {
+            expect(null);
+          });
         },
       ];
     },
@@ -289,6 +331,10 @@ add_task(function* testDefaultTitle() {
       },
 
       "permissions": ["tabs"],
+    },
+
+    files: {
+      "icon.png": imageBuffer,
     },
 
     getTests(tabs) {
@@ -308,8 +354,9 @@ add_task(function* testDefaultTitle() {
         },
         expect => {
           browser.test.log("Show the icon on the first tab, expect extension title as default title.");
-          browser.pageAction.show(tabs[0]);
-          expect(details[0]);
+          browser.pageAction.show(tabs[0]).then(() => {
+            expect(details[0]);
+          });
         },
         expect => {
           browser.test.log("Change the title. Expect new title.");

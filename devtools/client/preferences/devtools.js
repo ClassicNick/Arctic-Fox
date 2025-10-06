@@ -33,7 +33,7 @@ pref("devtools.toolbox.sidebar.width", 500);
 pref("devtools.toolbox.host", "bottom");
 pref("devtools.toolbox.previousHost", "side");
 pref("devtools.toolbox.selectedTool", "webconsole");
-pref("devtools.toolbox.toolbarSpec", '["splitconsole", "paintflashing toggle","tilt toggle","scratchpad","resize toggle","eyedropper","screenshot --fullpage", "rulers", "measure"]');
+pref("devtools.toolbox.toolbarSpec", '["splitconsole", "paintflashing toggle","scratchpad","resize toggle","screenshot --fullpage", "rulers", "measure"]');
 pref("devtools.toolbox.sideEnabled", true);
 pref("devtools.toolbox.zoomValue", "1");
 pref("devtools.toolbox.splitconsoleEnabled", false);
@@ -44,13 +44,12 @@ pref("devtools.command-button-pick.enabled", true);
 pref("devtools.command-button-frames.enabled", true);
 pref("devtools.command-button-splitconsole.enabled", true);
 pref("devtools.command-button-paintflashing.enabled", false);
-pref("devtools.command-button-tilt.enabled", false);
 pref("devtools.command-button-scratchpad.enabled", false);
 pref("devtools.command-button-responsive.enabled", true);
-pref("devtools.command-button-eyedropper.enabled", false);
 pref("devtools.command-button-screenshot.enabled", false);
 pref("devtools.command-button-rulers.enabled", false);
 pref("devtools.command-button-measure.enabled", false);
+pref("devtools.command-button-noautohide.enabled", false);
 
 // Inspector preferences
 // Enable the Inspector
@@ -69,8 +68,10 @@ pref("devtools.inspector.showAllAnonymousContent", false);
 // Enable the MDN docs tooltip
 pref("devtools.inspector.mdnDocsTooltip.enabled", true);
 
-// Collapse attributes that are too long.
-// Use -1 to not collapse attributes at all.
+// Enable to collapse attributes that are too long.
+pref("devtools.markup.collapseAttributes", true);
+
+// Length to collapse attributes
 pref("devtools.markup.collapseAttributeLength", 120);
 
 // DevTools default color unit
@@ -83,6 +84,7 @@ pref("devtools.responsiveUI.no-reload-notification", false);
 pref("devtools.debugger.enabled", true);
 pref("devtools.debugger.chrome-debugging-host", "localhost");
 pref("devtools.debugger.chrome-debugging-port", 6080);
+pref("devtools.debugger.chrome-debugging-websocket", false);
 pref("devtools.debugger.remote-host", "localhost");
 pref("devtools.debugger.remote-timeout", 20000);
 pref("devtools.debugger.pause-on-exceptions", false);
@@ -93,6 +95,7 @@ pref("devtools.debugger.auto-pretty-print", false);
 pref("devtools.debugger.auto-black-box", true);
 pref("devtools.debugger.workers", false);
 pref("devtools.debugger.promise", false);
+pref("devtools.debugger.new-debugger-frontend", false);
 
 // The default Debugger UI settings
 pref("devtools.debugger.ui.panes-workers-and-sources-width", 200);
@@ -103,10 +106,14 @@ pref("devtools.debugger.ui.variables-only-enum-visible", false);
 pref("devtools.debugger.ui.variables-searchbox-visible", false);
 
 // Enable the Memory tools
-pref("devtools.memory.enabled", false);
+pref("devtools.memory.enabled", true);
 
-pref("devtools.memory.custom-breakdowns", "{}");
-pref("devtools.memory.custom-dominator-tree-breakdowns", "{}");
+pref("devtools.memory.custom-census-displays", "{}");
+pref("devtools.memory.custom-label-displays", "{}");
+pref("devtools.memory.custom-tree-map-displays", "{}");
+
+pref("devtools.memory.max-individuals", 1000);
+pref("devtools.memory.max-retaining-paths", 10);
 
 // Enable the Performance tools
 pref("devtools.performance.enabled", true);
@@ -169,11 +176,6 @@ pref("devtools.netmonitor.har.forceExport", false);
 pref("devtools.netmonitor.har.pageLoadedTimeout", 1500);
 pref("devtools.netmonitor.har.enableAutoExportToFile", false);
 
-// Enable the Tilt inspector
-pref("devtools.tilt.enabled", true);
-pref("devtools.tilt.intro_transition", true);
-pref("devtools.tilt.outro_transition", true);
-
 // Scratchpad settings
 // - recentFileMax: The maximum number of recently-opened files
 //                  stored. Setting this preference to 0 will not
@@ -212,6 +214,12 @@ pref("devtools.canvasdebugger.enabled", false);
 // Enable the Web Audio Editor
 pref("devtools.webaudioeditor.enabled", false);
 
+// Enable Scratchpad
+pref("devtools.scratchpad.enabled", false);
+
+// Make sure the DOM panel is hidden by default
+pref("devtools.dom.enabled", false);
+
 // Web Audio Editor Inspector Width should be a preference
 pref("devtools.webaudioeditor.inspectorWidth", 300);
 
@@ -239,7 +247,7 @@ pref("devtools.webconsole.filter.info", true);
 pref("devtools.webconsole.filter.log", true);
 pref("devtools.webconsole.filter.secerror", true);
 pref("devtools.webconsole.filter.secwarn", true);
-pref("devtools.webconsole.filter.serviceworkers", false);
+pref("devtools.webconsole.filter.serviceworkers", true);
 pref("devtools.webconsole.filter.sharedworkers", false);
 pref("devtools.webconsole.filter.windowlessworkers", false);
 pref("devtools.webconsole.filter.servererror", false);
@@ -272,9 +280,6 @@ pref("devtools.browserconsole.filter.serverwarn", false);
 pref("devtools.browserconsole.filter.serverinfo", false);
 pref("devtools.browserconsole.filter.serverlog", false);
 
-// Text size in the Web Console. Use 0 for the system default size.
-pref("devtools.webconsole.fontSize", 0);
-
 // Max number of inputs to store in web console history.
 pref("devtools.webconsole.inputHistoryCount", 50);
 
@@ -291,6 +296,15 @@ pref("devtools.webconsole.timestampMessages", false);
 // Web Console automatic multiline mode: |true| if you want incomplete statements
 // to automatically trigger multiline editing (equivalent to shift + enter).
 pref("devtools.webconsole.autoMultiline", true);
+
+// Enable the experimental webconsole frontend (work in progress)
+pref("devtools.webconsole.new-frontend-enabled", false);
+
+// Enable the experimental support for source maps in console (work in progress)
+pref("devtools.sourcemap.locations.enabled", false);
+
+// The number of lines that are displayed in the web console.
+pref("devtools.hud.loglimit", 1000);
 
 // The number of lines that are displayed in the web console for the Net,
 // CSS, JS and Web Developer categories. These defaults should be kept in sync
@@ -326,9 +340,14 @@ pref("devtools.fontinspector.enabled", true);
 // version for each user.
 pref("devtools.telemetry.tools.opened.version", "{}");
 
-// Enable the JSON View tool (an inspector for application/json documents)
-#ifdef MOZ_DEV_EDITION
-  pref("devtools.jsonview.enabled", true);
+// Enable the JSON View tool (an inspector for application/json documents) on
+// Nightly and Dev. Edition.
+#ifdef RELEASE_BUILD
+pref("devtools.jsonview.enabled", false);
 #else
-  pref("devtools.jsonview.enabled", false);
+pref("devtools.jsonview.enabled", true);
 #endif
+
+// Disable the HTML responsive design tool by default.  Currently disabled until
+// ready to replace the legacy XUL version.
+pref("devtools.responsive.html.enabled", false);

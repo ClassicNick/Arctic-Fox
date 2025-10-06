@@ -10,14 +10,17 @@
 #include "mozilla/dom/ContentChild.h"
 #include "mozilla/dom/TabChild.h"
 #include "mozilla/layout/RemotePrintJobChild.h"
-#include "mozilla/unused.h"
+#include "mozilla/Unused.h"
 #include "nsIDocShell.h"
 #include "nsIDocShellTreeOwner.h"
 #include "nsIPrintingPromptService.h"
+#include "nsIPrintSession.h"
 #include "nsPIDOMWindow.h"
 #include "nsPrintOptionsImpl.h"
+#include "nsServiceManagerUtils.h"
 #include "PrintDataUtils.h"
 #include "PrintProgressDialogChild.h"
+#include "PrintSettingsDialogChild.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
@@ -73,29 +76,27 @@ nsPrintingProxy::ShowPrintDialog(mozIDOMWindowProxy *parent,
   NS_ENSURE_ARG(webBrowserPrint);
   NS_ENSURE_ARG(printSettings);
 
-  // Get the root docshell owner of this nsIDOMWindow, which
-  // should map to a TabChild, which we can then pass up to
+  // Get the TabChild for this nsIDOMWindow, which we can then pass up to
   // the parent.
   nsCOMPtr<nsPIDOMWindowOuter> pwin = nsPIDOMWindowOuter::From(parent);
   NS_ENSURE_STATE(pwin);
   nsCOMPtr<nsIDocShell> docShell = pwin->GetDocShell();
   NS_ENSURE_STATE(docShell);
-  nsCOMPtr<nsIDocShellTreeOwner> owner;
-  nsresult rv = docShell->GetTreeOwner(getter_AddRefs(owner));
-  NS_ENSURE_SUCCESS(rv, rv);
 
-  nsCOMPtr<nsITabChild> tabchild = do_GetInterface(owner);
+  nsCOMPtr<nsITabChild> tabchild = docShell->GetTabChild();
   NS_ENSURE_STATE(tabchild);
 
   TabChild* pBrowser = static_cast<TabChild*>(tabchild.get());
 
   // Next, serialize the nsIWebBrowserPrint and nsIPrintSettings we were given.
-  nsCOMPtr<nsIPrintOptions> po =
+  nsresult rv = NS_OK;
+  nsCOMPtr<nsIPrintSettingsService> printSettingsSvc =
     do_GetService("@mozilla.org/gfx/printsettings-service;1", &rv);
   NS_ENSURE_SUCCESS(rv, rv);
 
   PrintData inSettings;
-  rv = po->SerializeToPrintData(printSettings, webBrowserPrint, &inSettings);
+  rv = printSettingsSvc->SerializeToPrintData(printSettings, webBrowserPrint,
+                                              &inSettings);
   NS_ENSURE_SUCCESS(rv, rv);
 
   // Now, the waiting game. The parent process should be showing
@@ -115,7 +116,8 @@ nsPrintingProxy::ShowPrintDialog(mozIDOMWindowProxy *parent,
   rv = dialog->result();
   NS_ENSURE_SUCCESS(rv, rv);
 
-  rv = po->DeserializeToPrintSettings(dialog->data(), printSettings);
+  rv = printSettingsSvc->DeserializeToPrintSettings(dialog->data(),
+                                                    printSettings);
   return NS_OK;
 }
 
@@ -134,17 +136,13 @@ nsPrintingProxy::ShowProgress(mozIDOMWindowProxy*      parent,
   NS_ENSURE_ARG(printProgressParams);
   NS_ENSURE_ARG(notifyOnOpen);
 
-  // Get the root docshell owner of this nsIDOMWindow, which
-  // should map to a TabChild, which we can then pass up to
+  // Get the TabChild for this nsIDOMWindow, which we can then pass up to
   // the parent.
   nsCOMPtr<nsPIDOMWindowOuter> pwin = nsPIDOMWindowOuter::From(parent);
   NS_ENSURE_STATE(pwin);
   nsCOMPtr<nsIDocShell> docShell = pwin->GetDocShell();
   NS_ENSURE_STATE(docShell);
-  nsCOMPtr<nsIDocShellTreeOwner> owner;
-  nsresult rv = docShell->GetTreeOwner(getter_AddRefs(owner));
-  NS_ENSURE_SUCCESS(rv, rv);
-  nsCOMPtr<nsITabChild> tabchild = do_GetInterface(owner);
+  nsCOMPtr<nsITabChild> tabchild = docShell->GetTabChild();
   TabChild* pBrowser = static_cast<TabChild*>(tabchild.get());
 
   RefPtr<PrintProgressDialogChild> dialogChild =
@@ -152,13 +150,29 @@ nsPrintingProxy::ShowProgress(mozIDOMWindowProxy*      parent,
 
   SendPPrintProgressDialogConstructor(dialogChild);
 
-  mozilla::Unused << SendShowProgress(pBrowser, dialogChild,
+  // Get the RemotePrintJob if we have one available.
+  RefPtr<mozilla::layout::RemotePrintJobChild> remotePrintJob;
+  if (printSettings) {
+    nsCOMPtr<nsIPrintSession> printSession;
+    nsresult rv = printSettings->GetPrintSession(getter_AddRefs(printSession));
+    if (NS_SUCCEEDED(rv) && printSession) {
+      printSession->GetRemotePrintJob(getter_AddRefs(remotePrintJob));
+    }
+  }
+
+  nsresult rv = NS_OK;
+  mozilla::Unused << SendShowProgress(pBrowser, dialogChild, remotePrintJob,
                                       isForPrinting, notifyOnOpen, &rv);
   if (NS_FAILED(rv)) {
     return rv;
   }
 
-  NS_ADDREF(*webProgressListener = dialogChild);
+  // If we have a RemotePrintJob that will be being used as a more general
+  // forwarder for print progress listeners. Once we always have one we can
+  // remove the interface from PrintProgressDialogChild.
+  if (!remotePrintJob) {
+    NS_ADDREF(*webProgressListener = dialogChild);
+  }
   NS_ADDREF(*printProgressParams = dialogChild);
 
   return NS_OK;
@@ -186,12 +200,12 @@ nsPrintingProxy::SavePrintSettings(nsIPrintSettings* aPS,
                                    uint32_t aFlags)
 {
   nsresult rv;
-  nsCOMPtr<nsIPrintOptions> po =
+  nsCOMPtr<nsIPrintSettingsService> printSettingsSvc =
     do_GetService("@mozilla.org/gfx/printsettings-service;1", &rv);
   NS_ENSURE_SUCCESS(rv, rv);
 
   PrintData settings;
-  rv = po->SerializeToPrintData(aPS, nullptr, &settings);
+  rv = printSettingsSvc->SerializeToPrintData(aPS, nullptr, &settings);
   NS_ENSURE_SUCCESS(rv, rv);
 
   Unused << SendSavePrintSettings(settings, aUsePrinterNamePrefix, aFlags,
@@ -212,11 +226,9 @@ nsPrintingProxy::AllocPPrintProgressDialogChild()
 bool
 nsPrintingProxy::DeallocPPrintProgressDialogChild(PPrintProgressDialogChild* aActor)
 {
-  // The parent process will never initiate the PPrintProgressDialog
-  // protocol connection, so no need to provide an deallocator here.
-  NS_NOTREACHED("Deallocator for PPrintProgressDialogChild should not be "
-                "called on nsPrintingProxy.");
-  return false;
+  // The PrintProgressDialogChild implements refcounting, and
+  // will take itself out.
+  return true;
 }
 
 PPrintSettingsDialogChild*

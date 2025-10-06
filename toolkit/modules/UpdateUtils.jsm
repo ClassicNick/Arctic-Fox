@@ -131,18 +131,15 @@ XPCOMUtils.defineLazyGetter(UpdateUtils, "Locale", function() {
   let channel;
   let locale;
   for (let res of ['app', 'gre']) {
-    channel = Services.io.newChannel2("resource://" + res + "/" + FILE_UPDATE_LOCALE,
-                                      null,
-                                      null,
-                                      null,      // aLoadingNode
-                                      Services.scriptSecurityManager.getSystemPrincipal(),
-                                      null,      // aTriggeringPrincipal
-                                      Ci.nsILoadInfo.SEC_NORMAL,
-                                      Ci.nsIContentPolicy.TYPE_INTERNAL_XMLHTTPREQUEST);
+    channel = NetUtil.newChannel({
+      uri: "resource://" + res + "/" + FILE_UPDATE_LOCALE,
+      contentPolicyType: Ci.nsIContentPolicy.TYPE_INTERNAL_XMLHTTPREQUEST,
+      loadUsingSystemPrincipal: true
+    });
     try {
-      let inputStream = channel.open();
+      let inputStream = channel.open2();
       locale = NetUtil.readInputStreamToString(inputStream, inputStream.available());
-    } catch(e) {}
+    } catch (e) {}
     if (locale)
       return locale.trim();
   }
@@ -315,7 +312,7 @@ XPCOMUtils.defineLazyGetter(UpdateUtils, "OSVersion", function() {
             let winVer = OSVERSIONINFOEXW();
             winVer.dwOSVersionInfoSize = OSVERSIONINFOEXW.size;
 
-            if(0 !== GetVersionEx(winVer.address())) {
+            if (0 !== GetVersionEx(winVer.address())) {
               osVersion += "." + winVer.wServicePackMajor +
                            "." + winVer.wServicePackMinor;
             } else {

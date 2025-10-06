@@ -1,5 +1,5 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -24,7 +24,9 @@ namespace mozilla {
 // the same name get the same SharedThreadPool. Users must store a reference
 // to the pool, and when the last reference to a SharedThreadPool is dropped
 // the pool is shutdown and deleted. Users aren't required to manually
-// shutdown the pool, and can release references on any thread.
+// shutdown the pool, and can release references on any thread. This can make
+// it significantly easier to use thread pools, because the caller doesn't need
+// to worry about joining and tearing it down.
 //
 // On Windows all threads in the pool have MSCOM initialized with
 // COINIT_MULTITHREADED. Note that not all users of MSCOM use this mode see [1],
@@ -32,14 +34,13 @@ namespace mozilla {
 // cause some functions to fail. So be careful when using Win32 APIs on a
 // SharedThreadPool, and avoid sharing objects if at all possible.
 //
-// [1] http://mxr.mozilla.org/mozilla-central/search?string=coinitialize
+// [1] https://dxr.mozilla.org/mozilla-central/search?q=coinitialize&redirect=false
 class SharedThreadPool : public nsIThreadPool
 {
 public:
 
   // Gets (possibly creating) the shared thread pool singleton instance with
   // thread pool named aName.
-  // *Must* be called on the main thread.
   static already_AddRefed<SharedThreadPool> Get(const nsCString& aName,
                                             uint32_t aThreadLimit = 4);
 
@@ -54,12 +55,20 @@ public:
   // Forward behaviour to wrapped thread pool implementation.
   NS_FORWARD_SAFE_NSITHREADPOOL(mPool);
 
+  // Call this when dispatching from an event on the same
+  // threadpool that is about to complete. We should not create a new thread
+  // in that case since a thread is about to become idle.
+  nsresult TailDispatch(nsIRunnable *event) { return Dispatch(event, NS_DISPATCH_TAIL); }
+
   NS_IMETHOD DispatchFromScript(nsIRunnable *event, uint32_t flags) override {
       return Dispatch(event, flags);
   }
 
-  NS_IMETHOD Dispatch(already_AddRefed<nsIRunnable>&& event, uint32_t flags) override
+  NS_IMETHOD Dispatch(already_AddRefed<nsIRunnable> event, uint32_t flags) override
     { return !mEventTarget ? NS_ERROR_NULL_POINTER : mEventTarget->Dispatch(Move(event), flags); }
+
+  NS_IMETHOD DelayedDispatch(already_AddRefed<nsIRunnable>, uint32_t) override
+    { return NS_ERROR_NOT_IMPLEMENTED; }
 
   using nsIEventTarget::Dispatch;
 

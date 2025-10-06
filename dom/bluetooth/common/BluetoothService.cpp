@@ -18,12 +18,13 @@
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/Services.h"
 #include "mozilla/StaticPtr.h"
-#include "mozilla/unused.h"
+#include "mozilla/Unused.h"
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/ContentParent.h"
 #include "mozilla/dom/bluetooth/BluetoothTypes.h"
 #include "mozilla/dom/ipc/BlobChild.h"
 #include "mozilla/dom/ipc/BlobParent.h"
+#include "nsAutoPtr.h"
 #include "nsContentUtils.h"
 #include "nsIObserverService.h"
 #include "nsISettingsService.h"
@@ -123,7 +124,7 @@ BluetoothService::ToggleBtAck::ToggleBtAck(bool aEnabled)
   : mEnabled(aEnabled)
 { }
 
-NS_METHOD
+NS_IMETHODIMP
 BluetoothService::ToggleBtAck::Run()
 {
   BluetoothService::AcknowledgeToggleBt(mEnabled);
@@ -303,7 +304,12 @@ BluetoothService::UnregisterAllSignalHandlers(BluetoothSignalObserver* aHandler)
   for (auto iter = mBluetoothSignalObserverTable.Iter();
        !iter.Done();
        iter.Next()) {
+
+    // FIXME: Remove #include <nsAutoPtr.h> near the top
+    // of this file when the hash table has been converted
+    // to |UniquePtr<>|
     nsAutoPtr<BluetoothSignalObserverList>& ol = iter.Data();
+
     ol->RemoveObserver(aHandler);
     // We shouldn't have duplicate instances in the ObserverList, but there's
     // no appropriate way to do duplication check while registering, so
@@ -428,7 +434,7 @@ BluetoothService::StartBluetooth(bool aIsStartup,
     }
   } else {
     BT_WARNING("Bluetooth has already been enabled before.");
-    RefPtr<nsRunnable> runnable = new BluetoothService::ToggleBtAck(true);
+    RefPtr<Runnable> runnable = new BluetoothService::ToggleBtAck(true);
     if (NS_FAILED(NS_DispatchToMainThread(runnable))) {
       BT_WARNING("Failed to dispatch to main thread!");
     }
@@ -459,7 +465,7 @@ BluetoothService::StopBluetooth(bool aIsStartup,
     }
   } else {
     BT_WARNING("Bluetooth has already been enabled/disabled before.");
-    RefPtr<nsRunnable> runnable = new BluetoothService::ToggleBtAck(false);
+    RefPtr<Runnable> runnable = new BluetoothService::ToggleBtAck(false);
     if (NS_FAILED(NS_DispatchToMainThread(runnable))) {
       BT_WARNING("Failed to dispatch to main thread!");
     }
@@ -543,7 +549,7 @@ BluetoothService::HandleSettingsChanged(nsISupports* aSubject)
   // The string that we're interested in will be a JSON string that looks like:
   //  {"key":"bluetooth.enabled","value":true}
 
-  RootedDictionary<SettingChangeNotification> setting(nsContentUtils::RootingCx());
+  RootedDictionary<SettingChangeNotification> setting(RootingCx());
   if (!WrappedJSToDictionary(aSubject, setting)) {
     return NS_OK;
   }

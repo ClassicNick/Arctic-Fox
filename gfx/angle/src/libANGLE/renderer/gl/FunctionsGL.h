@@ -392,6 +392,27 @@ class FunctionsGL
     PFNGLTEXIMAGE3DMULTISAMPLEPROC texImage3DMultisample;
     PFNGLWAITSYNCPROC waitSync;
 
+    // EXT_direct_state_access. Needed by NV_path_rendering.
+    PFNGLMATRIXLOADFEXTPROC matrixLoadEXT;
+
+    // NV_path_rendering (originally written against 3.2 compatibility profile)
+    PFNGLGENPATHSNVPROC genPathsNV;
+    PFNGLDELETEPATHSNVPROC delPathsNV;
+    PFNGLPATHCOMMANDSNVPROC pathCommandsNV;
+    PFNGLISPATHNVPROC isPathNV;
+    PFNGLPATHPARAMETERFNVPROC setPathParameterfNV;
+    PFNGLPATHPARAMETERINVPROC setPathParameteriNV;
+    PFNGLGETPATHPARAMETERFVNVPROC getPathParameterfNV;
+    PFNGLGETPATHPARAMETERIVNVPROC getPathParameteriNV;
+    PFNGLPATHSTENCILFUNCNVPROC pathStencilFuncNV;
+
+    PFNGLSTENCILFILLPATHNVPROC stencilFillPathNV;
+    PFNGLSTENCILSTROKEPATHNVPROC stencilStrokePathNV;
+    PFNGLCOVERFILLPATHNVPROC coverFillPathNV;
+    PFNGLCOVERSTROKEPATHNVPROC coverStrokePathNV;
+    PFNGLSTENCILTHENCOVERFILLPATHNVPROC stencilThenCoverFillPathNV;
+    PFNGLSTENCILTHENCOVERSTROKEPATHNVPROC stencilThenCoverStrokePathNV;
+
     // 3.3
     PFNGLBINDFRAGDATALOCATIONINDEXEDPROC bindFragDataLocationIndexed;
     PFNGLBINDSAMPLERPROC bindSampler;
@@ -619,6 +640,7 @@ class FunctionsGL
     PFNGLVERTEXATTRIBIFORMATPROC vertexAttribIFormat;
     PFNGLVERTEXATTRIBLFORMATPROC vertexAttribLFormat;
     PFNGLVERTEXBINDINGDIVISORPROC vertexBindingDivisor;
+    PFNGLCOVERAGEMODULATIONNVPROC coverageModulationNV;
 
     // 4.4
     PFNGLBINDBUFFERSBASEPROC bindBuffersBase;
@@ -743,7 +765,18 @@ class FunctionsGL
     PFNGLVERTEXARRAYVERTEXBUFFERPROC vertexArrayVertexBuffer;
     PFNGLVERTEXARRAYVERTEXBUFFERSPROC vertexArrayVertexBuffers;
 
+    // ES 3.2
+    PFNGLBLENDBARRIERPROC blendBarrier;
+    PFNGLPRIMITIVEBOUNDINGBOXPROC primitiveBoundingBox;
+
+    // ES extensions
+    PFNGLEGLIMAGETARGETRENDERBUFFERSTORAGEOESPROC eglImageTargetRenderbufferStorageOES;
+    PFNGLEGLIMAGETARGETTEXTURE2DOESPROC eglImageTargetTexture2DOES;
+
   private:
+    void initializeProcsDesktopGL();
+    void initializeProcsGLES();
+
     virtual void *loadProcAddress(const std::string &function) = 0;
 };
 

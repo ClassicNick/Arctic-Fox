@@ -12,9 +12,20 @@
 #include "nsTArray.h"
 #include "nsStringGlue.h"
 
-namespace base {
-  class Histogram;
-} // namespace base
+#include "mozilla/TelemetryHistogramEnums.h"
+#include "mozilla/TelemetryScalarEnums.h"
+
+/******************************************************************************
+ * This implements the Telemetry system.
+ * It allows recording into histograms as well some more specialized data
+ * points and gives access to the data.
+ *
+ * For documentation on how to add and use new Telemetry probes, see:
+ * https://developer.mozilla.org/en-US/docs/Mozilla/Performance/Adding_a_new_Telemetry_probe
+ *
+ * For more general information on Telemetry see:
+ * https://wiki.mozilla.org/Telemetry
+ *****************************************************************************/
 
 namespace mozilla {
 namespace HangMonitor {
@@ -22,12 +33,17 @@ namespace HangMonitor {
 } // namespace HangMonitor
 namespace Telemetry {
 
-#include "mozilla/TelemetryHistogramEnums.h"
-
 enum TimerResolution {
   Millisecond,
   Microsecond
 };
+
+/**
+ * Create and destroy the underlying base::StatisticsRecorder singleton.
+ * Creation has to be done very early in the startup sequence.
+ */
+void CreateStatisticsRecorder();
+void DestroyStatisticsRecorder();
 
 /**
  * Initialize the Telemetry service on the main thread at startup.
@@ -35,7 +51,7 @@ enum TimerResolution {
 void Init();
 
 /**
- * Adds sample to a histogram defined in TelemetryHistograms.h
+ * Adds sample to a histogram defined in TelemetryHistogramEnums.h
  *
  * @param id - histogram id
  * @param sample - value to record.
@@ -43,7 +59,7 @@ void Init();
 void Accumulate(ID id, uint32_t sample);
 
 /**
- * Adds sample to a keyed histogram defined in TelemetryHistograms.h
+ * Adds sample to a keyed histogram defined in TelemetryHistogramEnums.h
  *
  * @param id - keyed histogram id
  * @param key - the string key
@@ -52,7 +68,7 @@ void Accumulate(ID id, uint32_t sample);
 void Accumulate(ID id, const nsCString& key, uint32_t sample = 1);
 
 /**
- * Adds a sample to a histogram defined in TelemetryHistograms.h.
+ * Adds a sample to a histogram defined in TelemetryHistogramEnums.h.
  * This function is here to support telemetry measurements from Java,
  * where we have only names and not numeric IDs.  You should almost
  * certainly be using the by-enum-id version instead of this one.
@@ -63,7 +79,7 @@ void Accumulate(ID id, const nsCString& key, uint32_t sample = 1);
 void Accumulate(const char* name, uint32_t sample);
 
 /**
- * Adds a sample to a histogram defined in TelemetryHistograms.h.
+ * Adds a sample to a histogram defined in TelemetryHistogramEnums.h.
  * This function is here to support telemetry measurements from Java,
  * where we have only names and not numeric IDs.  You should almost
  * certainly be using the by-enum-id version instead of this one.
@@ -75,13 +91,46 @@ void Accumulate(const char* name, uint32_t sample);
 void Accumulate(const char *name, const nsCString& key, uint32_t sample = 1);
 
 /**
- * Adds time delta in milliseconds to a histogram defined in TelemetryHistograms.h
+ * Adds sample to a categorical histogram defined in TelemetryHistogramEnums.h
+ * This is the typesafe - and preferred - way to use the categorical histograms
+ * by passing values from the corresponding Telemetry::LABELS_* enum.
+ *
+ * @param enumValue - Label value from one of the Telemetry::LABELS_* enums.
+ */
+template<class E>
+void AccumulateCategorical(E enumValue) {
+  static_assert(IsCategoricalLabelEnum<E>::value,
+                "Only categorical label enum types are supported.");
+  Accumulate(static_cast<ID>(CategoricalLabelId<E>::value),
+             static_cast<uint32_t>(enumValue));
+};
+
+/**
+ * Adds sample to a categorical histogram defined in TelemetryHistogramEnums.h
+ * This string will be matched against the labels defined in Histograms.json.
+ * If the string does not match a label defined for the histogram, nothing will
+ * be recorded.
+ *
+ * @param id - The histogram id.
+ * @param label - A string label value that is defined in Histograms.json for this histogram.
+ */
+void AccumulateCategorical(ID id, const nsCString& label);
+
+/**
+ * Adds time delta in milliseconds to a histogram defined in TelemetryHistogramEnums.h
  *
  * @param id - histogram id
  * @param start - start time
  * @param end - end time
  */
 void AccumulateTimeDelta(ID id, TimeStamp start, TimeStamp end = TimeStamp::Now());
+
+/**
+ * This clears the data for a histogram in TelemetryHistogramEnums.h.
+ *
+ * @param id - histogram id
+ */
+void ClearHistogram(ID id);
 
 /**
  * Enable/disable recording for this histogram at runtime.
@@ -93,17 +142,7 @@ void AccumulateTimeDelta(ID id, TimeStamp start, TimeStamp end = TimeStamp::Now(
  */
 void SetHistogramRecordingEnabled(ID id, bool enabled);
 
-/**
- * Return a raw Histogram for direct manipulation for users who can not use Accumulate().
- */
-base::Histogram* GetHistogramById(ID id);
-
 const char* GetHistogramName(ID id);
-
-/**
- * Return a raw histogram for keyed histograms.
- */
-base::Histogram* GetKeyedHistogramById(ID id, const nsAString&);
 
 /**
  * Those wrappers are needed because the VS versions we use do not support free
@@ -273,7 +312,7 @@ class ProcessedStack;
  * @param aFirefoxUptime - Firefox uptime at the time of the hang, in minutes
  * @param aAnnotations - Any annotations to be added to the report
  */
-#if defined(MOZ_ENABLE_PROFILER_SPS) && !defined(MOZILLA_XPCOMRT_API)
+#if defined(MOZ_ENABLE_PROFILER_SPS)
 void RecordChromeHang(uint32_t aDuration,
                       ProcessedStack &aStack,
                       int32_t aSystemUptime,
@@ -302,6 +341,40 @@ void RecordThreadHangStats(ThreadHangStats& aStats);
  * @param aProfileDir The profile directory whose lock attempt failed
  */
 void WriteFailedProfileLock(nsIFile* aProfileDir);
+
+/**
+ * Adds the value to the given scalar.
+ *
+ * @param aId The scalar enum id.
+ * @param aValue The unsigned value to add to the scalar.
+ */
+void ScalarAdd(mozilla::Telemetry::ScalarID aId, uint32_t aValue);
+
+/**
+ * Sets the scalar to the given value.
+ *
+ * @param aId The scalar enum id.
+ * @param aValue The numeric, unsigned value to set the scalar to.
+ */
+void ScalarSet(mozilla::Telemetry::ScalarID aId, uint32_t aValue);
+
+/**
+ * Sets the scalar to the given value.
+ *
+ * @param aId The scalar enum id.
+ * @param aValue The string value to set the scalar to, truncated to
+ *        50 characters if exceeding that length.
+ */
+void ScalarSet(mozilla::Telemetry::ScalarID aId, const nsAString& aValue);
+
+/**
+ * Sets the scalar to the maximum of the current and the passed value.
+ *
+ * @param aId The scalar enum id.
+ * @param aValue The unsigned value the scalar is set to if its greater
+ *        than the current value.
+ */
+void ScalarSetMaximum(mozilla::Telemetry::ScalarID aId, uint32_t aValue);
 
 } // namespace Telemetry
 } // namespace mozilla

@@ -341,7 +341,7 @@ XPCConvert::NativeData2JS(MutableHandleValue d, const void* s,
         }
 
         xpcObjectHelper helper(iface);
-        return NativeInterface2JSObject(d, nullptr, helper, iid, nullptr, true, pErr);
+        return NativeInterface2JSObject(d, nullptr, helper, iid, true, pErr);
     }
 
     default:
@@ -361,7 +361,7 @@ CheckChar16InCharRange(char16_t c)
         /* U+0080/U+0100 - U+FFFF data lost. */
         static const size_t MSG_BUF_SIZE = 64;
         char msg[MSG_BUF_SIZE];
-        JS_snprintf(msg, MSG_BUF_SIZE, "char16_t out of char range; high bits of data lost: 0x%x", c);
+        snprintf(msg, MSG_BUF_SIZE, "char16_t out of char range; high bits of data lost: 0x%x", int(c));
         NS_WARNING(msg);
         return false;
     }
@@ -519,7 +519,7 @@ XPCConvert::JSData2Native(void* d, HandleValue s,
         nsAString* ws = *((nsAString**)d);
 
         if (!str) {
-            ws->AssignLiteral(MOZ_UTF16("undefined"));
+            ws->AssignLiteral(u"undefined");
         } else if (XPCStringConvert::IsDOMString(str)) {
             // The characters represent an existing nsStringBuffer that
             // was shared by XPCStringConvert::ReadableToJSVal.
@@ -693,7 +693,7 @@ XPCConvert::JSData2Native(void* d, HandleValue s,
                     *pErr = NS_ERROR_XPC_BAD_CONVERT_JS_NULL_REF;
                 return false;
             }
-            nsCOMPtr<nsIAtom> atom = NS_NewAtom(autoStr);
+            nsCOMPtr<nsIAtom> atom = NS_Atomize(autoStr);
             atom.forget((nsISupports**)d);
             return true;
         }
@@ -744,11 +744,9 @@ XPCConvert::NativeInterface2JSObject(MutableHandleValue d,
                                      nsIXPConnectJSObjectHolder** dest,
                                      xpcObjectHelper& aHelper,
                                      const nsID* iid,
-                                     XPCNativeInterface** Interface,
                                      bool allowNativeWrapper,
                                      nsresult* pErr)
 {
-    MOZ_ASSERT_IF(Interface, iid);
     if (!iid)
         iid = &NS_GET_IID(nsISupports);
 
@@ -822,20 +820,10 @@ XPCConvert::NativeInterface2JSObject(MutableHandleValue d,
     }
 
     // Go ahead and create an XPCWrappedNative for this object.
-    AutoMarkingNativeInterfacePtr iface(cx);
-    if (iid) {
-        if (Interface)
-            iface = *Interface;
-
-        if (!iface) {
-            iface = XPCNativeInterface::GetNewOrUsed(iid);
-            if (!iface)
-                return false;
-
-            if (Interface)
-                *Interface = iface;
-        }
-    }
+    RefPtr<XPCNativeInterface> iface =
+        XPCNativeInterface::GetNewOrUsed(iid);
+    if (!iface)
+        return false;
 
     RefPtr<XPCWrappedNative> wrapper;
     nsresult rv = XPCWrappedNative::GetNewOrUsed(aHelper, xpcscope, iface,
@@ -1083,10 +1071,7 @@ XPCConvert::JSValToXPCException(MutableHandleValue s,
         JSObject* unwrapped = js::CheckedUnwrap(obj, /* stopAtWindowProxy = */ false);
         if (!unwrapped)
             return NS_ERROR_XPC_SECURITY_MANAGER_VETO;
-        XPCWrappedNative* wrapper = IS_WN_REFLECTOR(unwrapped) ? XPCWrappedNative::Get(unwrapped)
-                                                               : nullptr;
-        if (wrapper) {
-            nsISupports* supports = wrapper->GetIdentityObject();
+        if (nsISupports* supports = UnwrapReflectorToISupports(unwrapped)) {
             nsCOMPtr<nsIException> iface = do_QueryInterface(supports);
             if (iface) {
                 // just pass through the exception (with extra ref and all)
@@ -1113,29 +1098,6 @@ XPCConvert::JSValToXPCException(MutableHandleValue s,
                 return JSErrorToXPCException(message.ptr(), ifaceName,
                                              methodName, report, exceptn);
             }
-
-
-            bool found;
-
-            // heuristic to see if it might be usable as an xpcexception
-            if (!JS_HasProperty(cx, obj, "message", &found))
-                return NS_ERROR_FAILURE;
-
-            if (found && !JS_HasProperty(cx, obj, "result", &found))
-                return NS_ERROR_FAILURE;
-
-            if (found) {
-                // lets try to build a wrapper around the JSObject
-                nsXPCWrappedJS* jswrapper;
-                nsresult rv =
-                    nsXPCWrappedJS::GetNewOrUsed(obj, NS_GET_IID(nsIException), &jswrapper);
-                if (NS_FAILED(rv))
-                    return rv;
-
-                *exceptn = static_cast<nsIException*>(jswrapper->GetXPTCStub());
-                return NS_OK;
-            }
-
 
             // XXX we should do a check against 'js_ErrorClass' here and
             // do the right thing - even though it has no JSErrorReport,
@@ -1249,16 +1211,15 @@ XPCConvert::JSErrorToXPCException(const char* message,
             bestMessage.AssignLiteral("JavaScript Error");
         }
 
-        const char16_t* uclinebuf =
-            static_cast<const char16_t*>(report->uclinebuf);
+        const char16_t* linebuf = report->linebuf();
 
         data = new nsScriptError();
         data->InitWithWindowID(
             bestMessage,
             NS_ConvertASCIItoUTF16(report->filename),
-            uclinebuf ? nsDependentString(uclinebuf) : EmptyString(),
+            linebuf ? nsDependentString(linebuf, report->linebufLength()) : EmptyString(),
             report->lineno,
-            report->uctokenptr - report->uclinebuf, report->flags,
+            report->tokenOffset(), report->flags,
             NS_LITERAL_CSTRING("XPConnect JavaScript"),
             nsJSUtils::GetCurrentlyRunningCodeInnerWindowID(cx));
     }

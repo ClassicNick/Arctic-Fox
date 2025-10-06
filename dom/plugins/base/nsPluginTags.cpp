@@ -17,7 +17,7 @@
 #include "nsNPAPIPlugin.h"
 #include "nsCharSeparatedTokenizer.h"
 #include "mozilla/Preferences.h"
-#include "mozilla/unused.h"
+#include "mozilla/Unused.h"
 #include "nsNetUtil.h"
 #include <cctype>
 #include "mozilla/dom/EncodingUtils.h"
@@ -236,6 +236,7 @@ nsPluginTag::nsPluginTag(nsPluginInfo* aPluginInfo,
     mIsJavaPlugin(false),
     mIsFlashPlugin(false),
     mSupportsAsyncInit(false),
+    mSupportsAsyncRender(false),
     mFullPath(aPluginInfo->fFullPath),
     mLastModifiedTime(aLastModifiedTime),
     mSandboxLevel(0),
@@ -266,10 +267,12 @@ nsPluginTag::nsPluginTag(const char* aName,
   : nsIInternalPluginTag(aName, aDescription, aFileName, aVersion),
     mId(sNextId++),
     mContentProcessRunningCount(0),
+    mHadLocalInstance(false),
     mLibrary(nullptr),
     mIsJavaPlugin(false),
     mIsFlashPlugin(false),
     mSupportsAsyncInit(false),
+    mSupportsAsyncRender(false),
     mFullPath(aFullPath),
     mLastModifiedTime(aLastModifiedTime),
     mSandboxLevel(0),
@@ -297,6 +300,7 @@ nsPluginTag::nsPluginTag(uint32_t aId,
                          bool aIsJavaPlugin,
                          bool aIsFlashPlugin,
                          bool aSupportsAsyncInit,
+                         bool aSupportsAsyncRender,
                          int64_t aLastModifiedTime,
                          bool aFromExtension,
                          int32_t aSandboxLevel)
@@ -308,6 +312,7 @@ nsPluginTag::nsPluginTag(uint32_t aId,
     mIsJavaPlugin(aIsJavaPlugin),
     mIsFlashPlugin(aIsFlashPlugin),
     mSupportsAsyncInit(aSupportsAsyncInit),
+    mSupportsAsyncRender(aSupportsAsyncRender),
     mLastModifiedTime(aLastModifiedTime),
     mSandboxLevel(aSandboxLevel),
     mNiceFileName(),
@@ -323,7 +328,7 @@ nsPluginTag::~nsPluginTag()
   NS_ASSERTION(!mNext, "Risk of exhausting the stack space, bug 486349");
 }
 
-NS_IMPL_ISUPPORTS(nsPluginTag, nsIPluginTag, nsIInternalPluginTag)
+NS_IMPL_ISUPPORTS(nsPluginTag, nsPluginTag,  nsIInternalPluginTag, nsIPluginTag)
 
 void nsPluginTag::InitMime(const char* const* aMimeTypes,
                            const char* const* aMimeDescriptions,
@@ -702,6 +707,13 @@ nsPluginTag::HasSameNameAndMimes(const nsPluginTag *aPluginTag) const
   return true;
 }
 
+NS_IMETHODIMP
+nsPluginTag::GetLoaded(bool* aIsLoaded)
+{
+  *aIsLoaded = !!mPlugin;
+  return NS_OK;
+}
+
 void nsPluginTag::TryUnloadPlugin(bool inShutdown)
 {
   // We never want to send NPP_Shutdown to an in-process plugin unless
@@ -1026,5 +1038,13 @@ nsFakePluginTag::GetLastModifiedTime(PRTime* aLastModifiedTime)
   // FIXME-jsplugins What should this return, if anything?
   MOZ_ASSERT(aLastModifiedTime);
   *aLastModifiedTime = 0;
+  return NS_OK;
+}
+
+// We don't load fake plugins out of a library, so they should always be there.
+NS_IMETHODIMP
+nsFakePluginTag::GetLoaded(bool* ret)
+{
+  *ret = true;
   return NS_OK;
 }

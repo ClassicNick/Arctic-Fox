@@ -6,14 +6,17 @@
 #ifndef WEBGL_FRAMEBUFFER_H_
 #define WEBGL_FRAMEBUFFER_H_
 
+#include <vector>
+
 #include "mozilla/LinkedList.h"
 #include "mozilla/WeakPtr.h"
 #include "nsWrapperCache.h"
 
 #include "WebGLObjectModel.h"
-#include "WebGLStrongTypes.h"
 #include "WebGLRenderbuffer.h"
+#include "WebGLStrongTypes.h"
 #include "WebGLTexture.h"
+#include "WebGLTypes.h"
 
 namespace mozilla {
 
@@ -23,10 +26,6 @@ class WebGLTexture;
 
 template<typename T>
 class PlacementArray;
-
-namespace gl {
-    class GLContext;
-} // namespace gl
 
 class WebGLFBAttachPoint
 {
@@ -38,7 +37,7 @@ private:
     WebGLRefPtr<WebGLRenderbuffer> mRenderbufferPtr;
     TexImageTarget mTexImageTarget;
     GLint mTexImageLayer;
-    GLint mTexImageLevel;
+    uint32_t mTexImageLevel;
 
     // PlacementArray needs a default constructor.
     template<typename T>
@@ -48,7 +47,6 @@ private:
         : mFB(nullptr)
         , mAttachmentPoint(0)
     { }
-
 
 public:
     WebGLFBAttachPoint(WebGLFramebuffer* fb, GLenum attachmentPoint);
@@ -60,6 +58,7 @@ public:
     bool IsDeleteRequested() const;
 
     const webgl::FormatUsageInfo* Format() const;
+    uint32_t Samples() const;
 
     bool HasAlpha() const;
     bool IsReadableFloat() const;
@@ -89,7 +88,7 @@ public:
     GLint Layer() const {
         return mTexImageLayer;
     }
-    GLint MipLevel() const {
+    uint32_t MipLevel() const {
         return mTexImageLevel;
     }
     void AttachmentName(nsCString* out) const;
@@ -98,7 +97,6 @@ public:
     void SetImageDataStatus(WebGLImageDataStatus x);
 
     void Size(uint32_t* const out_width, uint32_t* const out_height) const;
-    //const WebGLRectangleObject& RectangleObject() const;
 
     bool HasImage() const;
     bool IsComplete(WebGLContext* webgl, nsCString* const out_info) const;
@@ -153,7 +151,7 @@ public:
     template<typename A, typename B>
     void AppendNew(A a, B b) {
         if (mSize == mCapacity)
-            MOZ_CRASH("Bad EmplaceAppend.");
+            MOZ_CRASH("GFX: Bad EmplaceAppend.");
 
         // Placement `new`:
         new (&(mArray[mSize])) T(a, b);
@@ -229,6 +227,7 @@ public:
     bool HasDefinedAttachments() const;
     bool HasIncompleteAttachments(nsCString* const out_info) const;
     bool AllImageRectsMatch() const;
+    bool AllImageSamplesMatch() const;
     FBStatus PrecheckFramebufferStatus(nsCString* const out_info) const;
     FBStatus CheckFramebufferStatus(nsCString* const out_info) const;
 
@@ -252,6 +251,14 @@ public:
     const WebGLFBAttachPoint& DepthStencilAttachment() const {
         return mDepthStencilAttachment;
     }
+
+    void SetReadBufferMode(GLenum readBufferMode) {
+        mReadBufferMode = readBufferMode;
+    }
+
+    GLenum ReadBufferMode() const { return mReadBufferMode; }
+
+    void GatherAttachments(std::vector<const WebGLFBAttachPoint*>* const out) const;
 
 protected:
     WebGLFBAttachPoint* GetAttachPoint(GLenum attachment); // Fallible

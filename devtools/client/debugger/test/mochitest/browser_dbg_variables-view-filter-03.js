@@ -1,5 +1,7 @@
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
+/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 /* Any copyright is dedicated to the Public Domain.
-   http://creativecommons.org/publicdomain/zero/1.0/ */
+ * http://creativecommons.org/publicdomain/zero/1.0/ */
 
 /**
  * Make sure that the variables view correctly filters nodes when triggered
@@ -15,7 +17,11 @@ function test() {
   // Debug test slaves are a bit slow at this test.
   requestLongerTimeout(2);
 
-  initDebugger(TAB_URL).then(([aTab,, aPanel]) => {
+  let options = {
+    source: TAB_URL,
+    line: 1
+  };
+  initDebugger(TAB_URL, options).then(([aTab,, aPanel]) => {
     gTab = aTab;
     gPanel = aPanel;
     gDebugger = gPanel.panelWin;
@@ -25,8 +31,7 @@ function test() {
     // The first 'with' scope should be expanded by default, but the
     // variables haven't been fetched yet. This is how 'with' scopes work.
     promise.all([
-      waitForSourceAndCaret(gPanel, ".html", 22),
-      waitForDebuggerEvents(gPanel, gDebugger.EVENTS.FETCHED_SCOPES),
+      waitForCaretAndScopes(gPanel, 22),
       waitForDebuggerEvents(gPanel, gDebugger.EVENTS.FETCHED_VARIABLES)
     ]).then(prepareVariablesAndProperties)
       .then(testVariablesAndPropertiesFiltering)
@@ -43,7 +48,8 @@ function testVariablesAndPropertiesFiltering() {
   let localScope = gVariables.getScopeAtIndex(0);
   let withScope = gVariables.getScopeAtIndex(1);
   let functionScope = gVariables.getScopeAtIndex(2);
-  let globalScope = gVariables.getScopeAtIndex(3);
+  let globalLexicalScope = gVariables.getScopeAtIndex(3);
+  let globalScope = gVariables.getScopeAtIndex(4);
 
   function testFiltered() {
     is(localScope.expanded, true,
@@ -52,6 +58,8 @@ function testVariablesAndPropertiesFiltering() {
       "The withScope should be expanded.");
     is(functionScope.expanded, true,
       "The functionScope should be expanded.");
+    is(globalLexicalScope.expanded, true,
+      "The globalScope should be expanded.");
     is(globalScope.expanded, true,
       "The globalScope should be expanded.");
 
@@ -61,6 +69,8 @@ function testVariablesAndPropertiesFiltering() {
       "There should be 0 variables displayed in the with scope.");
     is(functionScope.target.querySelectorAll(".variables-view-variable:not([unmatched])").length, 0,
       "There should be 0 variables displayed in the function scope.");
+    is(globalLexicalScope.target.querySelectorAll(".variables-view-variable:not([unmatched])").length, 0,
+      "There should be 0 variables displayed in the global scope.");
     is(globalScope.target.querySelectorAll(".variables-view-variable:not([unmatched])").length, 0,
       "There should be 0 variables displayed in the global scope.");
 
@@ -70,6 +80,8 @@ function testVariablesAndPropertiesFiltering() {
       "There should be 0 properties displayed in the with scope.");
     is(functionScope.target.querySelectorAll(".variables-view-property:not([unmatched])").length, 0,
       "There should be 0 properties displayed in the function scope.");
+    is(globalLexicalScope.target.querySelectorAll(".variables-view-property:not([unmatched])").length, 0,
+      "There should be 0 properties displayed in the global scope.");
     is(globalScope.target.querySelectorAll(".variables-view-property:not([unmatched])").length, 0,
       "There should be 0 properties displayed in the global scope.");
   }
@@ -86,6 +98,7 @@ function testVariablesAndPropertiesFiltering() {
     localScope.collapse();
     withScope.collapse();
     functionScope.collapse();
+    globalLexicalScope.collapse();
     globalScope.collapse();
 
     is(localScope.expanded, false,
@@ -94,6 +107,8 @@ function testVariablesAndPropertiesFiltering() {
       "The withScope should not be expanded.");
     is(functionScope.expanded, false,
       "The functionScope should not be expanded.");
+    is(globalLexicalScope.expanded, false,
+      "The globalScope should not be expanded.");
     is(globalScope.expanded, false,
       "The globalScope should not be expanded.");
 
@@ -115,7 +130,8 @@ function prepareVariablesAndProperties() {
   let localScope = gVariables.getScopeAtIndex(0);
   let withScope = gVariables.getScopeAtIndex(1);
   let functionScope = gVariables.getScopeAtIndex(2);
-  let globalScope = gVariables.getScopeAtIndex(3);
+  let globalLexicalScope = gVariables.getScopeAtIndex(3);
+  let globalScope = gVariables.getScopeAtIndex(4);
 
   is(localScope.expanded, true,
     "The localScope should be expanded.");
@@ -123,6 +139,8 @@ function prepareVariablesAndProperties() {
     "The withScope should not be expanded yet.");
   is(functionScope.expanded, false,
     "The functionScope should not be expanded yet.");
+  is(globalLexicalScope.expanded, false,
+    "The globalScope should not be expanded yet.");
   is(globalScope.expanded, false,
     "The globalScope should not be expanded yet.");
 
@@ -135,6 +153,8 @@ function prepareVariablesAndProperties() {
       "The withScope should now be expanded.");
     is(functionScope.expanded, true,
       "The functionScope should now be expanded.");
+    is(globalLexicalScope.expanded, true,
+      "The globalScope should now be expanded.");
     is(globalScope.expanded, true,
       "The globalScope should now be expanded.");
 
@@ -143,12 +163,13 @@ function prepareVariablesAndProperties() {
 
   withScope.expand();
   functionScope.expand();
+  globalLexicalScope.expand();
   globalScope.expand();
 
   return deferred.promise;
 }
 
-registerCleanupFunction(function() {
+registerCleanupFunction(function () {
   gTab = null;
   gPanel = null;
   gDebugger = null;

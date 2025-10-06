@@ -15,6 +15,7 @@ var Cr = Components.results;
  */
 
 Cu.import("resource://gre/modules/Services.jsm");
+Cu.import("resource://gre/modules/NetUtil.jsm");
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/BrowserElementPromptService.jsm");
 
@@ -22,10 +23,6 @@ XPCOMUtils.defineLazyGetter(this, "DOMApplicationRegistry", function () {
   Cu.import("resource://gre/modules/Webapps.jsm");
   return DOMApplicationRegistry;
 });
-
-XPCOMUtils.defineLazyServiceGetter(this, "systemMessenger",
-                                   "@mozilla.org/system-message-internal;1",
-                                   "nsISystemMessagesInternal");
 
 function debug(msg) {
   //dump("BrowserElementParent - " + msg + "\n");
@@ -250,7 +247,6 @@ function BrowserElementParent() {
   this._pendingDOMFullscreen = false;
 
   Services.obs.addObserver(this, 'oop-frameloader-crashed', /* ownsWeak = */ true);
-  Services.obs.addObserver(this, 'copypaste-docommand', /* ownsWeak = */ true);
   Services.obs.addObserver(this, 'ask-children-to-execute-copypaste-command', /* ownsWeak = */ true);
   Services.obs.addObserver(this, 'back-docommand', /* ownsWeak = */ true);
 
@@ -389,7 +385,6 @@ BrowserElementParent.prototype = {
       "got-audio-channel-muted": this._gotDOMRequestResult,
       "got-set-audio-channel-muted": this._gotDOMRequestResult,
       "got-is-audio-channel-active": this._gotDOMRequestResult,
-      "got-structured-data": this._gotDOMRequestResult,
       "got-web-manifest": this._gotDOMRequestResult,
     };
 
@@ -463,6 +458,7 @@ BrowserElementParent.prototype = {
     /* username and password */
     let detail = {
       host:     authDetail.host,
+      path:     authDetail.path,
       realm:    authDetail.realm,
       isProxy:  authDetail.isProxy
     };
@@ -1001,36 +997,17 @@ BrowserElementParent.prototype = {
                                              Ci.nsIRequestObserver])
     };
 
-    // If we have a URI we'll use it to get the triggering principal to use,
-    // if not available a null principal is acceptable.
-    let referrer = null;
-    let principal = null;
-    if (_options.referrer) {
-      // newURI can throw on malformed URIs.
-      try {
-        referrer = Services.io.newURI(_options.referrer, null, null);
-      }
-      catch(e) {
-        debug('Malformed referrer -- ' + e);
-      }
+    let referrer = Services.io.newURI(_options.referrer, null, null);
+    let principal =
+      Services.scriptSecurityManager.createCodebasePrincipal(
+        referrer, this._frameLoader.loadContext.originAttributes);
 
-      // This simply returns null if there is no principal available
-      // for the requested uri. This is an acceptable fallback when
-      // calling newChannelFromURI2.
-      principal =
-        Services.scriptSecurityManager.createCodebasePrincipal(
-          referrer, this._frameLoader.loadContext.originAttributes);
-    }
-
-    debug('Using principal? ' + !!principal);
-
-    let channel =
-      Services.io.newChannelFromURI2(url,
-                                     null,       // No document.
-                                     principal,  // Loading principal
-                                     principal,  // Triggering principal
-                                     Ci.nsILoadInfo.SEC_NORMAL,
-                                     Ci.nsIContentPolicy.TYPE_OTHER);
+    let channel = NetUtil.newChannel({
+      uri: url,
+      loadingPrincipal: principal,
+      securityFlags: SEC_ALLOW_CROSS_ORIGIN_DATA_INHERITS,
+      contentPolicyType: Ci.nsIContentPolicy.TYPE_OTHER
+    });
 
     // XXX We would set private browsing information prior to calling this.
     channel.notificationCallbacks = interfaceRequestor;
@@ -1055,7 +1032,7 @@ BrowserElementParent.prototype = {
     }
 
     // Set-up complete, let's get things started.
-    channel.asyncOpen(new DownloadListener(), null);
+    channel.asyncOpen2(new DownloadListener());
 
     return req;
   },
@@ -1206,28 +1183,6 @@ BrowserElementParent.prototype = {
                                 {audioChannel: aAudioChannel});
   },
 
-  notifyChannel: function(aEvent, aManifest, aAudioChannel) {
-    var self = this;
-    var req = Services.DOMRequest.createRequest(self._window);
-
-    // Since the pageURI of the app has been registered to the system messager,
-    // when the app was installed. The system messager can only use the manifest
-    // to send the message to correct page.
-    let manifestURL = Services.io.newURI(aManifest, null, null);
-    systemMessenger.sendMessage(aEvent, aAudioChannel, null, manifestURL)
-      .then(function() {
-        Services.DOMRequest.fireSuccess(req,
-          Cu.cloneInto(true, self._window));
-      }, function() {
-        debug("Error : NotifyChannel fail.");
-        Services.DOMRequest.fireErrorAsync(req,
-          Cu.cloneInto("NotifyChannel fail.", self._window));
-      });
-    return req;
-  },
-
-  getStructuredData: defineDOMRequestMethod('get-structured-data'),
-
   getWebManifest: defineDOMRequestMethod('get-web-manifest'),
   /**
    * Called when the visibility of the window which owns this iframe changes.
@@ -1293,11 +1248,6 @@ BrowserElementParent.prototype = {
     case 'oop-frameloader-crashed':
       if (this._isAlive() && subject == this._frameLoader) {
         this._fireFatalError();
-      }
-      break;
-    case 'copypaste-docommand':
-      if (this._isAlive() && this._frameElement.isEqualNode(subject.wrappedJSObject)) {
-        this._sendAsyncMsg('do-command', { command: data });
       }
       break;
     case 'ask-children-to-execute-copypaste-command':

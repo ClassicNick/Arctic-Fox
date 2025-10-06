@@ -28,7 +28,7 @@ namespace layers {
 
 class ActiveElementManager;
 
-typedef Function<void(const ScrollableLayerGuid&,
+typedef function<void(const ScrollableLayerGuid&,
                       uint64_t /* input block id */,
                       bool /* prevent default */)>
         ContentReceivedInputBlockCallback;
@@ -47,13 +47,16 @@ public:
   NS_INLINE_DECL_REFCOUNTING(APZEventState);
 
   void ProcessSingleTap(const CSSPoint& aPoint,
+                        const CSSToLayoutDeviceScale& aScale,
                         Modifiers aModifiers,
                         const ScrollableLayerGuid& aGuid);
   void ProcessLongTap(const nsCOMPtr<nsIPresShell>& aUtils,
                       const CSSPoint& aPoint,
+                      const CSSToLayoutDeviceScale& aScale,
                       Modifiers aModifiers,
                       const ScrollableLayerGuid& aGuid,
                       uint64_t aInputBlockId);
+  void ProcessLongTapUp();
   void ProcessTouchEvent(const WidgetTouchEvent& aEvent,
                          const ScrollableLayerGuid& aGuid,
                          uint64_t aInputBlockId,
@@ -84,6 +87,7 @@ private:
   bool mEndTouchIsClick;
   bool mTouchEndCancelled;
   int mActiveAPZTransforms;
+  int32_t mLastTouchIdentifier;
 };
 
 } // namespace layers

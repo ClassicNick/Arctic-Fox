@@ -7,18 +7,19 @@
 // Tests that the contextual menu items shown when clicking on links in
 // attributes actually do the right things.
 
-const TEST_URL = TEST_URL_ROOT + "doc_markup_links.html";
+const TEST_URL = URL_ROOT + "doc_markup_links.html";
 
-add_task(function*() {
-  let {inspector} = yield addTab(TEST_URL).then(openInspector);
+add_task(function* () {
+  let {inspector} = yield openInspectorForURL(TEST_URL);
 
   info("Select a node with a URI attribute");
   yield selectNode("video", inspector);
 
   info("Set the popupNode to the node that contains the uri");
   let {editor} = yield getContainerForSelector("video", inspector);
-  let popupNode = editor.attrElements.get("poster").querySelector(".link");
-  inspector.panelDoc.popupNode = popupNode;
+  openContextMenuAndGetAllItems(inspector, {
+    target: editor.attrElements.get("poster").querySelector(".link"),
+  });
 
   info("Follow the link and wait for the new tab to open");
   let onTabOpened = once(gBrowser.tabContainer, "TabOpen");
@@ -27,7 +28,7 @@ add_task(function*() {
   yield waitForTabLoad(tab);
 
   ok(true, "A new tab opened");
-  is(tab.linkedBrowser.currentURI.spec, TEST_URL_ROOT + "doc_markup_tooltip.png",
+  is(tab.linkedBrowser.currentURI.spec, URL_ROOT + "doc_markup_tooltip.png",
     "The URL for the new tab is correct");
   gBrowser.removeTab(tab);
 
@@ -36,8 +37,9 @@ add_task(function*() {
 
   info("Set the popupNode to the node that contains the ref");
   ({editor} = yield getContainerForSelector("label", inspector));
-  popupNode = editor.attrElements.get("for").querySelector(".link");
-  inspector.panelDoc.popupNode = popupNode;
+  openContextMenuAndGetAllItems(inspector, {
+    target: editor.attrElements.get("for").querySelector(".link"),
+  });
 
   info("Follow the link and wait for the new node to be selected");
   let onSelection = inspector.selection.once("new-node-front");
@@ -52,8 +54,9 @@ add_task(function*() {
 
   info("Set the popupNode to the node that contains the ref");
   ({editor} = yield getContainerForSelector("output", inspector));
-  popupNode = editor.attrElements.get("for").querySelectorAll(".link")[2];
-  inspector.panelDoc.popupNode = popupNode;
+  openContextMenuAndGetAllItems(inspector, {
+    target: editor.attrElements.get("for").querySelectorAll(".link")[2],
+  });
 
   info("Try to follow the link and check that no new node were selected");
   let onFailed = inspector.once("idref-attribute-link-failed");
@@ -66,7 +69,7 @@ add_task(function*() {
 });
 
 function waitForTabLoad(tab) {
-  let def = promise.defer();
+  let def = defer();
   tab.addEventListener("load", function onLoad(e) {
     // Skip load event for about:blank
     if (tab.linkedBrowser.currentURI.spec === "about:blank") {

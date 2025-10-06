@@ -4,7 +4,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "nsAutoPtr.h"
 
 #include "jsapi.h"
 #include "jsfriendapi.h"
@@ -15,6 +14,7 @@
 
 using namespace JS;
 using namespace mozilla::scache;
+using mozilla::UniquePtr;
 
 // We only serialize scripts with system principals. So we don't serialize the
 // principals when writing a script. Instead, when reading it back, we set the
@@ -23,14 +23,13 @@ nsresult
 ReadCachedScript(StartupCache* cache, nsACString& uri, JSContext* cx,
                  nsIPrincipal* systemPrincipal, MutableHandleScript scriptp)
 {
-    nsAutoArrayPtr<char> buf;
+    UniquePtr<char[]> buf;
     uint32_t len;
-    nsresult rv = cache->GetBuffer(PromiseFlatCString(uri).get(),
-                                   getter_Transfers(buf), &len);
+    nsresult rv = cache->GetBuffer(PromiseFlatCString(uri).get(), &buf, &len);
     if (NS_FAILED(rv))
         return rv; // don't warn since NOT_AVAILABLE is an ok error
 
-    scriptp.set(JS_DecodeScript(cx, buf, len));
+    scriptp.set(JS_DecodeScript(cx, buf.get(), len));
     if (!scriptp)
         return NS_ERROR_OUT_OF_MEMORY;
     return NS_OK;

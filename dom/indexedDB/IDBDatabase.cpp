@@ -38,9 +38,8 @@
 #include "mozilla/ipc/FileDescriptor.h"
 #include "mozilla/ipc/InputStreamParams.h"
 #include "mozilla/ipc/InputStreamUtils.h"
+#include "nsAutoPtr.h"
 #include "nsCOMPtr.h"
-#include "nsContentUtils.h"
-#include "nsIConsoleService.h"
 #include "nsIDocument.h"
 #include "nsIObserver.h"
 #include "nsIObserverService.h"
@@ -49,6 +48,7 @@
 #include "nsThreadUtils.h"
 #include "ProfilerHelpers.h"
 #include "ReportInternalError.h"
+#include "ScriptErrorHelper.h"
 #include "nsQueryObject.h"
 
 // Include this last to avoid path problems on Windows.
@@ -68,7 +68,7 @@ const char kMemoryPressureObserverTopic[] = "memory-pressure";
 const char kWindowObserverTopic[] = "inner-window-destroyed";
 
 class CancelableRunnableWrapper final
-  : public nsICancelableRunnable
+  : public CancelableRunnable
 {
   nsCOMPtr<nsIRunnable> mRunnable;
 
@@ -80,14 +80,12 @@ public:
     MOZ_ASSERT(aRunnable);
   }
 
-  NS_DECL_ISUPPORTS
-
 private:
   ~CancelableRunnableWrapper()
   { }
 
   NS_DECL_NSIRUNNABLE
-  NS_DECL_NSICANCELABLERUNNABLE
+  nsresult Cancel() override;
 };
 
 class DatabaseFile final
@@ -131,50 +129,6 @@ private:
 };
 
 } // namespace
-
-class IDBDatabase::LogWarningRunnable final
-  : public nsRunnable
-{
-  nsCString mMessageName;
-  nsString mFilename;
-  uint32_t mLineNumber;
-  uint32_t mColumnNumber;
-  uint64_t mInnerWindowID;
-  bool mIsChrome;
-
-public:
-  LogWarningRunnable(const char* aMessageName,
-                     const nsAString& aFilename,
-                     uint32_t aLineNumber,
-                     uint32_t aColumnNumber,
-                     bool aIsChrome,
-                     uint64_t aInnerWindowID)
-    : mMessageName(aMessageName)
-    , mFilename(aFilename)
-    , mLineNumber(aLineNumber)
-    , mColumnNumber(aColumnNumber)
-    , mInnerWindowID(aInnerWindowID)
-    , mIsChrome(aIsChrome)
-  {
-    MOZ_ASSERT(!NS_IsMainThread());
-  }
-
-  static void
-  LogWarning(const char* aMessageName,
-             const nsAString& aFilename,
-             uint32_t aLineNumber,
-             uint32_t aColumnNumber,
-             bool aIsChrome,
-             uint64_t aInnerWindowID);
-
-  NS_DECL_ISUPPORTS_INHERITED
-
-private:
-  ~LogWarningRunnable()
-  { }
-
-  NS_DECL_NSIRUNNABLE
-};
 
 class IDBDatabase::Observer final
   : public nsIObserver
@@ -222,6 +176,7 @@ IDBDatabase::IDBDatabase(IDBOpenDBRequest* aRequest,
   , mFileHandleDisabled(aRequest->IsFileHandleDisabled())
   , mClosed(false)
   , mInvalidated(false)
+  , mQuotaExceeded(false)
 {
   MOZ_ASSERT(aRequest);
   MOZ_ASSERT(aFactory);
@@ -324,8 +279,8 @@ IDBDatabase::CloseInternal()
         obsSvc->RemoveObserver(mObserver, kCycleCollectionObserverTopic);
         obsSvc->RemoveObserver(mObserver, kMemoryPressureObserverTopic);
 
-        MOZ_ALWAYS_TRUE(NS_SUCCEEDED(
-          obsSvc->RemoveObserver(mObserver, kWindowObserverTopic)));
+        MOZ_ALWAYS_SUCCEEDS(
+          obsSvc->RemoveObserver(mObserver, kWindowObserverTopic));
       }
 
       mObserver = nullptr;
@@ -601,42 +556,28 @@ IDBDatabase::DeleteObjectStore(const nsAString& aName, ErrorResult& aRv)
 }
 
 already_AddRefed<IDBTransaction>
-IDBDatabase::Transaction(const StringOrStringSequence& aStoreNames,
+IDBDatabase::Transaction(JSContext* aCx,
+                         const StringOrStringSequence& aStoreNames,
                          IDBTransactionMode aMode,
                          ErrorResult& aRv)
 {
   AssertIsOnOwningThread();
 
-  aRv.MightThrowJSException();
-
-  if (aMode == IDBTransactionMode::Readwriteflush &&
+  if ((aMode == IDBTransactionMode::Readwriteflush ||
+       aMode == IDBTransactionMode::Cleanup) &&
       !IndexedDatabaseManager::ExperimentalFeaturesEnabled()) {
     // Pretend that this mode doesn't exist. We don't have a way to annotate
     // certain enum values as depending on preferences so we just duplicate the
     // normal exception generation here.
-    ThreadsafeAutoJSContext cx;
-
-    // Disable any automatic error reporting that might be set up so that we
-    // can grab the exception object.
-    AutoForceSetExceptionOnContext forceExn(cx);
-
-    MOZ_ALWAYS_FALSE(
-      ThrowErrorMessage(cx,
-                        MSG_INVALID_ENUM_VALUE,
-                        "Argument 2 of IDBDatabase.transaction",
-                        "readwriteflush",
-                        "IDBTransactionMode"));
-    MOZ_ASSERT(JS_IsExceptionPending(cx));
-
-    JS::Rooted<JS::Value> exception(cx);
-    MOZ_ALWAYS_TRUE(JS_GetPendingException(cx, &exception));
-
-    aRv.ThrowJSException(cx, exception);
+    aRv.ThrowTypeError<MSG_INVALID_ENUM_VALUE>(
+      NS_LITERAL_STRING("Argument 2 of IDBDatabase.transaction"),
+      NS_LITERAL_STRING("readwriteflush"),
+      NS_LITERAL_STRING("IDBTransactionMode"));
     return nullptr;
   }
 
   RefPtr<IDBTransaction> transaction;
-  aRv = Transaction(aStoreNames, aMode, getter_AddRefs(transaction));
+  aRv = Transaction(aCx, aStoreNames, aMode, getter_AddRefs(transaction));
   if (NS_WARN_IF(aRv.Failed())) {
     return nullptr;
   }
@@ -645,13 +586,15 @@ IDBDatabase::Transaction(const StringOrStringSequence& aStoreNames,
 }
 
 nsresult
-IDBDatabase::Transaction(const StringOrStringSequence& aStoreNames,
+IDBDatabase::Transaction(JSContext* aCx,
+                         const StringOrStringSequence& aStoreNames,
                          IDBTransactionMode aMode,
                          IDBTransaction** aTransaction)
 {
   AssertIsOnOwningThread();
 
-  if (NS_WARN_IF(aMode == IDBTransactionMode::Readwriteflush &&
+  if (NS_WARN_IF((aMode == IDBTransactionMode::Readwriteflush ||
+                  aMode == IDBTransactionMode::Cleanup) &&
                  !IndexedDatabaseManager::ExperimentalFeaturesEnabled())) {
     IDB_REPORT_INTERNAL_ERR();
     return NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR;
@@ -724,20 +667,29 @@ IDBDatabase::Transaction(const StringOrStringSequence& aStoreNames,
       mode = IDBTransaction::READ_ONLY;
       break;
     case IDBTransactionMode::Readwrite:
-      mode = IDBTransaction::READ_WRITE;
+      if (mQuotaExceeded) {
+        mode = IDBTransaction::CLEANUP;
+        mQuotaExceeded = false;
+      } else {
+        mode = IDBTransaction::READ_WRITE;
+      }
       break;
     case IDBTransactionMode::Readwriteflush:
       mode = IDBTransaction::READ_WRITE_FLUSH;
       break;
+    case IDBTransactionMode::Cleanup:
+      mode = IDBTransaction::CLEANUP;
+      mQuotaExceeded = false;
+      break;
     case IDBTransactionMode::Versionchange:
-      return NS_ERROR_DOM_INVALID_ACCESS_ERR;
+      return NS_ERROR_DOM_TYPE_ERR;
 
     default:
       MOZ_CRASH("Unknown mode!");
   }
 
   RefPtr<IDBTransaction> transaction =
-    IDBTransaction::Create(this, sortedStoreNames, mode);
+    IDBTransaction::Create(aCx, this, sortedStoreNames, mode);
   if (NS_WARN_IF(!transaction)) {
     IDB_REPORT_INTERNAL_ERR();
     return NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR;
@@ -761,6 +713,10 @@ IDBDatabase::Transaction(const StringOrStringSequence& aStoreNames,
 
   transaction->SetBackgroundActor(actor);
 
+  if (mode == IDBTransaction::CLEANUP) {
+    ExpireFileActors(/* aExpireAll */ true);
+  }
+
   transaction.forget(aTransaction);
   return NS_OK;
 }
@@ -775,7 +731,8 @@ IDBDatabase::Storage() const
 }
 
 already_AddRefed<IDBRequest>
-IDBDatabase::CreateMutableFile(const nsAString& aName,
+IDBDatabase::CreateMutableFile(JSContext* aCx,
+                               const nsAString& aName,
                                const Optional<nsAString>& aType,
                                ErrorResult& aRv)
 {
@@ -799,7 +756,7 @@ IDBDatabase::CreateMutableFile(const nsAString& aName,
 
   CreateFileParams params(nsString(aName), type);
 
-  RefPtr<IDBRequest> request = IDBRequest::Create(this, nullptr);
+  RefPtr<IDBRequest> request = IDBRequest::Create(aCx, this, nullptr);
   MOZ_ASSERT(request);
 
   BackgroundDatabaseRequestChild* actor =
@@ -906,6 +863,7 @@ IDBDatabase::AbortTransactions(bool aShouldWarn)
             // We warn for any transactions that could have written data.
             case IDBTransaction::READ_WRITE:
             case IDBTransaction::READ_WRITE_FLUSH:
+            case IDBTransaction::CLEANUP:
             case IDBTransaction::VERSION_CHANGE:
               transactionsThatNeedWarning.AppendElement(transaction);
               break;
@@ -915,7 +873,7 @@ IDBDatabase::AbortTransactions(bool aShouldWarn)
           }
         }
 
-        transaction->Abort(NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR);
+        transaction->Abort(NS_ERROR_DOM_INDEXEDDB_ABORT_ERR);
       }
 
       static const char kWarningMessage[] =
@@ -1079,9 +1037,9 @@ IDBDatabase::DelayedMaybeExpireFileActors()
   }
 
   nsCOMPtr<nsIRunnable> runnable =
-    NS_NewRunnableMethodWithArg<bool>(this,
-                                      &IDBDatabase::ExpireFileActors,
-                                      /* aExpireAll */ false);
+    NewRunnableMethod<bool>(this,
+                            &IDBDatabase::ExpireFileActors,
+                            /* aExpireAll */ false);
   MOZ_ASSERT(runnable);
 
   if (!NS_IsMainThread()) {
@@ -1090,7 +1048,7 @@ IDBDatabase::DelayedMaybeExpireFileActors()
     cancelable.swap(runnable);
   }
 
-  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(NS_DispatchToCurrentThread(runnable)));
+  MOZ_ALWAYS_SUCCEEDS(NS_DispatchToCurrentThread(runnable));
 }
 
 nsresult
@@ -1114,7 +1072,7 @@ IDBDatabase::GetQuotaInfo(nsACString& aOrigin,
       MOZ_CRASH("Is this needed?!");
 
     case PrincipalInfo::TSystemPrincipalInfo:
-      QuotaManager::GetInfoForChrome(nullptr, &aOrigin, nullptr);
+      QuotaManager::GetInfoForChrome(nullptr, nullptr, &aOrigin, nullptr);
       return NS_OK;
 
     case PrincipalInfo::TContentPrincipalInfo: {
@@ -1126,6 +1084,7 @@ IDBDatabase::GetQuotaInfo(nsACString& aOrigin,
       }
 
       rv = QuotaManager::GetInfoFromPrincipal(principal,
+                                              nullptr,
                                               nullptr,
                                               &aOrigin,
                                               nullptr);
@@ -1260,23 +1219,13 @@ IDBDatabase::LogWarning(const char* aMessageName,
   AssertIsOnOwningThread();
   MOZ_ASSERT(aMessageName);
 
-  if (NS_IsMainThread()) {
-    LogWarningRunnable::LogWarning(aMessageName,
-                                   aFilename,
-                                   aLineNumber,
-                                   aColumnNumber,
-                                   mFactory->IsChrome(),
-                                   mFactory->InnerWindowID());
-  } else {
-    RefPtr<LogWarningRunnable> runnable =
-      new LogWarningRunnable(aMessageName,
-                             aFilename,
-                             aLineNumber,
-                             aColumnNumber,
-                             mFactory->IsChrome(),
-                             mFactory->InnerWindowID());
-    MOZ_ALWAYS_TRUE(NS_SUCCEEDED(NS_DispatchToMainThread(runnable)));
-  }
+  ScriptErrorHelper::DumpLocalizedMessage(nsDependentCString(aMessageName),
+                                          aFilename,
+                                          aLineNumber,
+                                          aColumnNumber,
+                                          nsIScriptError::warningFlag,
+                                          mFactory->IsChrome(),
+                                          mFactory->InnerWindowID());
 }
 
 NS_IMPL_ADDREF_INHERITED(IDBDatabase, IDBWrapperCache)
@@ -1333,8 +1282,6 @@ IDBDatabase::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aGivenProto)
   return IDBDatabaseBinding::Wrap(aCx, this, aGivenProto);
 }
 
-NS_IMPL_ISUPPORTS(CancelableRunnableWrapper, nsIRunnable, nsICancelableRunnable)
-
 NS_IMETHODIMP
 CancelableRunnableWrapper::Run()
 {
@@ -1348,7 +1295,7 @@ CancelableRunnableWrapper::Run()
   return NS_OK;
 }
 
-NS_IMETHODIMP
+nsresult
 CancelableRunnableWrapper::Cancel()
 {
   if (mRunnable) {
@@ -1357,85 +1304,6 @@ CancelableRunnableWrapper::Cancel()
   }
 
   return NS_ERROR_UNEXPECTED;
-}
-
-// static
-void
-IDBDatabase::
-LogWarningRunnable::LogWarning(const char* aMessageName,
-                               const nsAString& aFilename,
-                               uint32_t aLineNumber,
-                               uint32_t aColumnNumber,
-                               bool aIsChrome,
-                               uint64_t aInnerWindowID)
-{
-  MOZ_ASSERT(NS_IsMainThread());
-  MOZ_ASSERT(aMessageName);
-
-  nsXPIDLString localizedMessage;
-  if (NS_WARN_IF(NS_FAILED(
-    nsContentUtils::GetLocalizedString(nsContentUtils::eDOM_PROPERTIES,
-                                       aMessageName,
-                                       localizedMessage)))) {
-    return;
-  }
-
-  nsAutoCString category;
-  if (aIsChrome) {
-    category.AssignLiteral("chrome ");
-  } else {
-    category.AssignLiteral("content ");
-  }
-  category.AppendLiteral("javascript");
-
-  nsCOMPtr<nsIConsoleService> consoleService =
-    do_GetService(NS_CONSOLESERVICE_CONTRACTID);
-  MOZ_ASSERT(consoleService);
-
-  nsCOMPtr<nsIScriptError> scriptError =
-    do_CreateInstance(NS_SCRIPTERROR_CONTRACTID);
-  MOZ_ASSERT(consoleService);
-
-  if (aInnerWindowID) {
-    MOZ_ALWAYS_TRUE(NS_SUCCEEDED(
-      scriptError->InitWithWindowID(localizedMessage,
-                                    aFilename,
-                                    /* aSourceLine */ EmptyString(),
-                                    aLineNumber,
-                                    aColumnNumber,
-                                    nsIScriptError::warningFlag,
-                                    category,
-                                    aInnerWindowID)));
-  } else {
-    MOZ_ALWAYS_TRUE(NS_SUCCEEDED(
-      scriptError->Init(localizedMessage,
-                        aFilename,
-                        /* aSourceLine */ EmptyString(),
-                        aLineNumber,
-                        aColumnNumber,
-                        nsIScriptError::warningFlag,
-                        category.get())));
-  }
-
-  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(consoleService->LogMessage(scriptError)));
-}
-
-NS_IMPL_ISUPPORTS_INHERITED0(IDBDatabase::LogWarningRunnable, nsRunnable)
-
-NS_IMETHODIMP
-IDBDatabase::
-LogWarningRunnable::Run()
-{
-  MOZ_ASSERT(NS_IsMainThread());
-
-  LogWarning(mMessageName.get(),
-             mFilename,
-             mLineNumber,
-             mColumnNumber,
-             mIsChrome,
-             mInnerWindowID);
-
-  return NS_OK;
 }
 
 NS_IMPL_ISUPPORTS(IDBDatabase::Observer, nsIObserver)
@@ -1455,7 +1323,7 @@ Observer::Observe(nsISupports* aSubject,
       MOZ_ASSERT(supportsInt);
 
       uint64_t windowId;
-      MOZ_ALWAYS_TRUE(NS_SUCCEEDED(supportsInt->GetData(&windowId)));
+      MOZ_ALWAYS_SUCCEEDS(supportsInt->GetData(&windowId));
 
       if (windowId == mWindowId) {
         RefPtr<IDBDatabase> database = mWeakDatabase;
@@ -1480,6 +1348,86 @@ Observer::Observe(nsISupports* aSubject,
   }
 
   NS_WARNING("Unknown observer topic!");
+  return NS_OK;
+}
+
+nsresult
+IDBDatabase::RenameObjectStore(int64_t aObjectStoreId, const nsAString& aName)
+{
+  MOZ_ASSERT(mSpec);
+
+  nsTArray<ObjectStoreSpec>& objectStores = mSpec->objectStores();
+
+  ObjectStoreSpec* foundObjectStoreSpec = nullptr;
+  // Find the matched object store spec and check if 'aName' is already used by
+  // another object store.
+  for (uint32_t objCount = objectStores.Length(), objIndex = 0;
+       objIndex < objCount;
+       objIndex++) {
+    const ObjectStoreSpec& objSpec = objectStores[objIndex];
+    if (objSpec.metadata().id() == aObjectStoreId) {
+      MOZ_ASSERT(!foundObjectStoreSpec);
+      foundObjectStoreSpec = &objectStores[objIndex];
+      continue;
+    }
+    if (aName == objSpec.metadata().name()) {
+      return NS_ERROR_DOM_INDEXEDDB_CONSTRAINT_ERR;
+    }
+  }
+
+  MOZ_ASSERT(foundObjectStoreSpec);
+
+  // Update the name of the matched object store.
+  foundObjectStoreSpec->metadata().name() = nsString(aName);
+
+  return NS_OK;
+}
+
+nsresult
+IDBDatabase::RenameIndex(int64_t aObjectStoreId,
+                         int64_t aIndexId,
+                         const nsAString& aName)
+{
+  MOZ_ASSERT(mSpec);
+
+  nsTArray<ObjectStoreSpec>& objectStores = mSpec->objectStores();
+
+  ObjectStoreSpec* foundObjectStoreSpec = nullptr;
+  // Find the matched index metadata and check if 'aName' is already used by
+  // another index.
+  for (uint32_t objCount = objectStores.Length(), objIndex = 0;
+       objIndex < objCount;
+       objIndex++) {
+    const ObjectStoreSpec& objSpec = objectStores[objIndex];
+    if (objSpec.metadata().id() == aObjectStoreId) {
+      foundObjectStoreSpec = &objectStores[objIndex];
+      break;
+    }
+  }
+
+  MOZ_ASSERT(foundObjectStoreSpec);
+
+  nsTArray<IndexMetadata>& indexes = foundObjectStoreSpec->indexes();
+  IndexMetadata* foundIndexMetadata = nullptr;
+  for (uint32_t idxCount = indexes.Length(), idxIndex = 0;
+       idxIndex < idxCount;
+       idxIndex++) {
+    const IndexMetadata& metadata = indexes[idxIndex];
+    if (metadata.id() == aIndexId) {
+      MOZ_ASSERT(!foundIndexMetadata);
+      foundIndexMetadata = &indexes[idxIndex];
+      continue;
+    }
+    if (aName == metadata.name()) {
+      return NS_ERROR_DOM_INDEXEDDB_CONSTRAINT_ERR;
+    }
+  }
+
+  MOZ_ASSERT(foundIndexMetadata);
+
+  // Update the name of the matched object store.
+  foundIndexMetadata->name() = nsString(aName);
+
   return NS_OK;
 }
 

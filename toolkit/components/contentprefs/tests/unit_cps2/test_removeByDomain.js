@@ -6,7 +6,7 @@ function run_test() {
   runAsyncTests(tests);
 }
 
-let tests = [
+var tests = [
 
   function* nonexistent() {
     yield set("a.com", "foo", 1);
@@ -130,8 +130,11 @@ let tests = [
 
     let context = { usePrivateBrowsing: true };
     yield set("a.com", "foo", 6, context);
-    yield setGlobal("foo", 7, context);
+    yield set("b.com", "foo", 7, context);
+    yield setGlobal("foo", 8, context);
     yield cps.removeByDomain("a.com", context, makeCallback());
+    yield getOK(["b.com", "foo", context], 7);
+    yield getGlobalOK(["foo", context], 8);
     yield cps.removeAllGlobals(context, makeCallback());
     yield dbOK([
       ["b.com", "foo", 5],

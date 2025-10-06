@@ -13,6 +13,8 @@
  * limitations under the License.
  */
 
+#include "nsWindow.h"
+
 #include "mozilla/DebugOnly.h"
 
 #include <fcntl.h>
@@ -20,6 +22,7 @@
 #include "android/log.h"
 #include "mozilla/dom/TabParent.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/RefPtr.h"
 #include "mozilla/Services.h"
 #include "mozilla/FileUtils.h"
 #include "mozilla/ClearOnShutdown.h"
@@ -28,11 +31,9 @@
 #include "GLContextProvider.h"
 #include "GLContext.h"
 #include "GLContextEGL.h"
-#include "nsAutoPtr.h"
 #include "nsAppShell.h"
 #include "nsScreenManagerGonk.h"
 #include "nsTArray.h"
-#include "nsWindow.h"
 #include "nsIWidgetListener.h"
 #include "ClientLayerManager.h"
 #include "BasicLayers.h"
@@ -42,7 +43,9 @@
 #include "mozilla/gfx/Logging.h"
 #include "mozilla/layers/APZCTreeManager.h"
 #include "mozilla/layers/APZThreadUtils.h"
-#include "mozilla/layers/CompositorParent.h"
+#include "mozilla/layers/CompositorBridgeParent.h"
+#include "mozilla/layers/CompositorThread.h"
+#include "mozilla/layers/CompositorSession.h"
 #include "mozilla/TouchEvents.h"
 #include "HwcComposer2D.h"
 
@@ -84,7 +87,7 @@ nsWindow::nsWindow()
 nsWindow::~nsWindow()
 {
     if (mScreen->IsPrimaryScreen()) {
-        mComposer2D->SetCompositorParent(nullptr);
+        mComposer2D->SetCompositorBridgeParent(nullptr);
     }
 }
 
@@ -104,7 +107,7 @@ nsWindow::DoDraw(void)
         return;
     }
 
-    nsWindow *targetWindow = (nsWindow *)windows[0];
+    RefPtr<nsWindow> targetWindow = (nsWindow *)windows[0];
     while (targetWindow->GetLastChild()) {
         targetWindow = (nsWindow *)targetWindow->GetLastChild();
     }
@@ -114,15 +117,15 @@ nsWindow::DoDraw(void)
         listener->WillPaintWindow(targetWindow);
     }
 
-    LayerManager* lm = targetWindow->GetLayerManager();
-    if (mozilla::layers::LayersBackend::LAYERS_CLIENT == lm->GetBackendType()) {
-        // No need to do anything, the compositor will handle drawing
-    } else {
-        NS_RUNTIMEABORT("Unexpected layer manager type");
-    }
-
     listener = targetWindow->GetWidgetListener();
     if (listener) {
+        LayerManager* lm = targetWindow->GetLayerManager();
+        if (mozilla::layers::LayersBackend::LAYERS_CLIENT == lm->GetBackendType()) {
+            // No need to do anything, the compositor will handle drawing
+        } else {
+            NS_RUNTIMEABORT("Unexpected layer manager type");
+        }
+
         listener->DidPaintWindow();
     }
 }
@@ -130,7 +133,7 @@ nsWindow::DoDraw(void)
 void
 nsWindow::ConfigureAPZControllerThread()
 {
-    APZThreadUtils::SetControllerThread(CompositorParent::CompositorLoop());
+    APZThreadUtils::SetControllerThread(CompositorThreadHolder::Loop());
 }
 
 /*static*/ nsEventStatus
@@ -143,7 +146,7 @@ nsWindow::DispatchKeyInput(WidgetKeyboardEvent& aEvent)
     gFocusedWindow->UserActivity();
 
     nsEventStatus status;
-    aEvent.widget = gFocusedWindow;
+    aEvent.mWidget = gFocusedWindow;
     gFocusedWindow->DispatchEvent(&aEvent, status);
     return status;
 }
@@ -160,7 +163,7 @@ nsWindow::DispatchTouchInput(MultiTouchInput& aInput)
     gFocusedWindow->DispatchTouchInputViaAPZ(aInput);
 }
 
-class DispatchTouchInputOnMainThread : public nsRunnable
+class DispatchTouchInputOnMainThread : public mozilla::Runnable
 {
 public:
     DispatchTouchInputOnMainThread(const MultiTouchInput& aInput,
@@ -173,7 +176,7 @@ public:
       , mApzResponse(aApzResponse)
     {}
 
-    NS_IMETHOD Run() {
+    NS_IMETHOD Run() override {
         if (gFocusedWindow) {
             gFocusedWindow->DispatchTouchEventForAPZ(mInput, mGuid, mInputBlockId, mApzResponse);
         }
@@ -234,18 +237,18 @@ nsWindow::DispatchTouchEventForAPZ(const MultiTouchInput& aInput,
     ProcessUntransformedAPZEvent(&event, aGuid, aInputBlockId, aApzResponse);
 }
 
-class DispatchTouchInputOnControllerThread : public Task
+class DispatchTouchInputOnControllerThread : public Runnable
 {
 public:
     DispatchTouchInputOnControllerThread(const MultiTouchInput& aInput)
-      : Task()
-      , mInput(aInput)
+      : mInput(aInput)
     {}
 
-    virtual void Run() override {
+    NS_IMETHOD Run() override {
         if (gFocusedWindow) {
             gFocusedWindow->DispatchTouchInputViaAPZ(mInput);
         }
+        return NS_OK;
     }
 
 private:
@@ -255,7 +258,7 @@ private:
 nsresult
 nsWindow::SynthesizeNativeTouchPoint(uint32_t aPointerId,
                                      TouchPointerState aPointerState,
-                                     ScreenIntPoint aPointerScreenPoint,
+                                     LayoutDeviceIntPoint aPoint,
                                      double aPointerPressure,
                                      uint32_t aPointerOrientation,
                                      nsIObserver* aObserver)
@@ -267,53 +270,17 @@ nsWindow::SynthesizeNativeTouchPoint(uint32_t aPointerId,
     }
 
     if (!mSynthesizedTouchInput) {
-        mSynthesizedTouchInput = new MultiTouchInput();
+        mSynthesizedTouchInput = MakeUnique<MultiTouchInput>();
     }
 
-    // We can't dispatch mSynthesizedTouchInput directly because (a) dispatching
-    // it might inadvertently modify it and (b) in the case of touchend or
-    // touchcancel events mSynthesizedTouchInput will hold the touches that are
-    // still down whereas the input dispatched needs to hold the removed
-    // touch(es). We use |inputToDispatch| for this purpose.
-    MultiTouchInput inputToDispatch;
-    inputToDispatch.mInputType = MULTITOUCH_INPUT;
+    // We should probably use a real timestamp here, but this is B2G and
+    // so this probably never even exercised any more.
+    uint32_t time = 0;
+    TimeStamp timestamp = TimeStamp::FromSystemTime(time);
 
-    int32_t index = mSynthesizedTouchInput->IndexOfTouch((int32_t)aPointerId);
-    if (aPointerState == TOUCH_CONTACT) {
-        if (index >= 0) {
-            // found an existing touch point, update it
-            SingleTouchData& point = mSynthesizedTouchInput->mTouches[index];
-            point.mScreenPoint = aPointerScreenPoint;
-            point.mRotationAngle = (float)aPointerOrientation;
-            point.mForce = (float)aPointerPressure;
-            inputToDispatch.mType = MultiTouchInput::MULTITOUCH_MOVE;
-        } else {
-            // new touch point, add it
-            mSynthesizedTouchInput->mTouches.AppendElement(SingleTouchData(
-                (int32_t)aPointerId,
-                aPointerScreenPoint,
-                ScreenSize(0, 0),
-                (float)aPointerOrientation,
-                (float)aPointerPressure));
-            inputToDispatch.mType = MultiTouchInput::MULTITOUCH_START;
-        }
-        inputToDispatch.mTouches = mSynthesizedTouchInput->mTouches;
-    } else {
-        MOZ_ASSERT(aPointerState == TOUCH_REMOVE || aPointerState == TOUCH_CANCEL);
-        // a touch point is being lifted, so remove it from the stored list
-        if (index >= 0) {
-            mSynthesizedTouchInput->mTouches.RemoveElementAt(index);
-        }
-        inputToDispatch.mType = (aPointerState == TOUCH_REMOVE
-            ? MultiTouchInput::MULTITOUCH_END
-            : MultiTouchInput::MULTITOUCH_CANCEL);
-        inputToDispatch.mTouches.AppendElement(SingleTouchData(
-            (int32_t)aPointerId,
-            aPointerScreenPoint,
-            ScreenSize(0, 0),
-            (float)aPointerOrientation,
-            (float)aPointerPressure));
-    }
+    MultiTouchInput inputToDispatch = UpdateSynthesizedTouchState(
+        mSynthesizedTouchInput.get(), time, timeStamp, aPointerId, aPointerState,
+        aPoint, aPointerPressure, aPointerOrientation);
 
     // Can't use NewRunnableMethod here because that will pass a const-ref
     // argument to DispatchTouchInputViaAPZ whereas that function takes a
@@ -321,12 +288,13 @@ nsWindow::SynthesizeNativeTouchPoint(uint32_t aPointerId,
     // the function performs so this is fine. Also we can't pass |this| to the
     // task because nsWindow refcounting is not threadsafe. Instead we just use
     // the gFocusedWindow static ptr instead the task.
-    APZThreadUtils::RunOnControllerThread(new DispatchTouchInputOnControllerThread(inputToDispatch));
+    APZThreadUtils::RunOnControllerThread(
+      MakeAndAddRef<DispatchTouchInputOnControllerThread>(inputToDispatch));
 
     return NS_OK;
 }
 
-NS_IMETHODIMP
+nsresult
 nsWindow::Create(nsIWidget* aParent,
                  void* aNativeParent,
                  const LayoutDeviceIntRect& aRect,
@@ -366,8 +334,8 @@ nsWindow::Create(nsIWidget* aParent,
     return NS_OK;
 }
 
-NS_IMETHODIMP
-nsWindow::Destroy(void)
+void
+nsWindow::Destroy()
 {
     mOnDestroyCalled = true;
     mScreen->UnregisterWindow(this);
@@ -375,7 +343,6 @@ nsWindow::Destroy(void)
         gFocusedWindow = nullptr;
     }
     nsBaseWidget::OnDestroy();
-    return NS_OK;
 }
 
 NS_IMETHODIMP
@@ -536,9 +503,14 @@ nsWindow::GetNativeData(uint32_t aDataType)
         return mScreen->GetNativeWindow();
     case NS_NATIVE_OPENGL_CONTEXT:
         return mScreen->GetGLContext().take();
-    case NS_RAW_NATIVE_IME_CONTEXT:
+    case NS_RAW_NATIVE_IME_CONTEXT: {
+        void* pseudoIMEContext = GetPseudoIMEContext();
+        if (pseudoIMEContext) {
+            return pseudoIMEContext;
+        }
         // There is only one IME context on Gonk.
         return NS_ONLY_ONE_NATIVE_IME_CONTEXT;
+    }
     }
 
     return nullptr;
@@ -591,13 +563,14 @@ nsWindow::ReparentNativeWidget(nsIWidget* aNewParent)
     return NS_OK;
 }
 
-NS_IMETHODIMP
+nsresult
 nsWindow::MakeFullScreen(bool aFullScreen, nsIScreen*)
 {
     if (mWindowType != eWindowType_toplevel) {
         // Ignore fullscreen request for non-toplevel windows.
         NS_WARNING("MakeFullScreen() on a dialog or child widget?");
-        return nsBaseWidget::MakeFullScreen(aFullScreen);
+        nsBaseWidget::InfallibleMakeFullScreen(aFullScreen);
+        return NS_OK;
     }
 
     if (aFullScreen) {
@@ -659,12 +632,8 @@ nsWindow::GetDefaultScaleInternal()
 LayerManager *
 nsWindow::GetLayerManager(PLayerTransactionChild* aShadowManager,
                           LayersBackend aBackendHint,
-                          LayerManagerPersistence aPersistence,
-                          bool* aAllowRetaining)
+                          LayerManagerPersistence aPersistence)
 {
-    if (aAllowRetaining) {
-        *aAllowRetaining = true;
-    }
     if (mLayerManager) {
         // This layer manager might be used for painting outside of DoDraw(), so we need
         // to set the correct rotation on it.
@@ -687,10 +656,10 @@ nsWindow::GetLayerManager(PLayerTransactionChild* aShadowManager,
     }
 
     CreateCompositor();
-    if (mCompositorParent) {
-        mScreen->SetCompositorParent(mCompositorParent);
+    if (RefPtr<CompositorBridgeParent> bridge = GetCompositorBridgeParent()) {
+        mScreen->SetCompositorBridgeParent(bridge);
         if (mScreen->IsPrimaryScreen()) {
-            mComposer2D->SetCompositorParent(mCompositorParent);
+            mComposer2D->SetCompositorBridgeParent(bridge);
         }
     }
     MOZ_ASSERT(mLayerManager);
@@ -700,20 +669,14 @@ nsWindow::GetLayerManager(PLayerTransactionChild* aShadowManager,
 void
 nsWindow::DestroyCompositor()
 {
-    if (mCompositorParent) {
-        mScreen->SetCompositorParent(nullptr);
+    if (RefPtr<CompositorBridgeParent> bridge = GetCompositorBridgeParent()) {
+        mScreen->SetCompositorBridgeParent(nullptr);
         if (mScreen->IsPrimaryScreen()) {
-            // Unset CompositorParent
-            mComposer2D->SetCompositorParent(nullptr);
+            // Unset CompositorBridgeParent
+            mComposer2D->SetCompositorBridgeParent(nullptr);
         }
     }
     nsBaseWidget::DestroyCompositor();
-}
-
-CompositorParent*
-nsWindow::NewCompositorParent(int aSurfaceWidth, int aSurfaceHeight)
-{
-    return new CompositorParent(this, true, aSurfaceWidth, aSurfaceHeight);
 }
 
 void
@@ -788,4 +751,10 @@ nsWindow::GetComposer2D()
     }
 
     return mComposer2D;
+}
+
+CompositorBridgeParent*
+nsWindow::GetCompositorBridgeParent() const
+{
+    return mCompositorSession ? mCompositorSession->GetInProcessBridge() : nullptr;
 }

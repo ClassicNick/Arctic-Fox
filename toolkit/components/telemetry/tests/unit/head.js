@@ -18,19 +18,14 @@ const gIsLinux = AppConstants.platform == "linux";
 
 const Telemetry = Cc["@mozilla.org/base/telemetry;1"].getService(Ci.nsITelemetry);
 
-const Telemetry = Cc["@mozilla.org/base/telemetry;1"].getService(Ci.nsITelemetry);
-
 const MILLISECONDS_PER_MINUTE = 60 * 1000;
 const MILLISECONDS_PER_HOUR = 60 * MILLISECONDS_PER_MINUTE;
 const MILLISECONDS_PER_DAY = 24 * MILLISECONDS_PER_HOUR;
-
-const HAS_DATAREPORTINGSERVICE = "@mozilla.org/datareporting/service;1" in Cc;
 
 const PREF_TELEMETRY_ENABLED = "toolkit.telemetry.enabled";
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-var gOldAppInfo = null;
 var gGlobalScope = this;
 
 const PingServer = {
@@ -138,7 +133,7 @@ function decodeRequestPayload(request) {
     unicodeConverter.charset = "UTF-8";
     let utf8string = unicodeConverter.ConvertToUnicode(observer.buffer);
     utf8string += unicodeConverter.Finish();
-    payload = decoder.decode(utf8string);
+    payload = JSON.parse(utf8string);
   } else {
     payload = decoder.decodeFromStream(s, s.available());
   }
@@ -162,14 +157,14 @@ function wrapWithExceptionHandler(f) {
   return wrapper;
 }
 
-function loadAddonManager(id, name, version, platformVersion) {
+function loadAddonManager(ID, name, version, platformVersion) {
   let ns = {};
   Cu.import("resource://gre/modules/Services.jsm", ns);
   let head = "../../../../mozapps/extensions/test/xpcshell/head_addons.js";
   let file = do_get_file(head);
   let uri = ns.Services.io.newFileURI(file);
   ns.Services.scriptloader.loadSubScript(uri.spec, gGlobalScope);
-  createAppInfo(id, name, version, platformVersion);
+  createAppInfo(ID, name, version, platformVersion);
   // As we're not running in application, we need to setup the features directory
   // used by system add-ons.
   const distroDir = FileUtils.getDir("ProfD", ["sysfeatures", "app0"], true);
@@ -177,110 +172,16 @@ function loadAddonManager(id, name, version, platformVersion) {
   startupManager();
 }
 
-/**
- * Decode the payload of an HTTP request into a ping.
- * @param {Object} request The data representing an HTTP request (nsIHttpRequest).
- * @return {Object} The decoded ping payload.
- */
-function decodeRequestPayload(request) {
-  let s = request.bodyInputStream;
-  let payload = null;
-  let decoder = Cc["@mozilla.org/dom/json;1"].createInstance(Ci.nsIJSON)
+var gAppInfo = null;
 
-  if (request.getHeader("content-encoding") == "gzip") {
-    let observer = {
-      buffer: "",
-      onStreamComplete: function(loader, context, status, length, result) {
-        this.buffer = String.fromCharCode.apply(this, result);
-      }
-    };
-
-    let scs = Cc["@mozilla.org/streamConverters;1"]
-              .getService(Ci.nsIStreamConverterService);
-    let listener = Cc["@mozilla.org/network/stream-loader;1"]
-                  .createInstance(Ci.nsIStreamLoader);
-    listener.init(observer);
-    let converter = scs.asyncConvertData("gzip", "uncompressed",
-                                         listener, null);
-    converter.onStartRequest(null, null);
-    converter.onDataAvailable(null, null, s, 0, s.available());
-    converter.onStopRequest(null, null, null);
-    let unicodeConverter = Cc["@mozilla.org/intl/scriptableunicodeconverter"]
-                    .createInstance(Ci.nsIScriptableUnicodeConverter);
-    unicodeConverter.charset = "UTF-8";
-    let utf8string = unicodeConverter.ConvertToUnicode(observer.buffer);
-    utf8string += unicodeConverter.Finish();
-    payload = decoder.decode(utf8string);
-  } else {
-    payload = decoder.decodeFromStream(s, s.available());
-  }
-
-  return payload;
-}
-
-function loadAddonManager(id, name, version, platformVersion) {
-  let ns = {};
-  Cu.import("resource://gre/modules/Services.jsm", ns);
-  let head = "../../../../mozapps/extensions/test/xpcshell/head_addons.js";
-  let file = do_get_file(head);
-  let uri = ns.Services.io.newFileURI(file);
-  ns.Services.scriptloader.loadSubScript(uri.spec, gGlobalScope);
-  createAppInfo(id, name, version, platformVersion);
-  startupManager();
-}
-
-function createAppInfo(id, name, version, platformVersion) {
-  const XULAPPINFO_CONTRACTID = "@mozilla.org/xre/app-info;1";
-  const XULAPPINFO_CID = Components.ID("{c763b610-9d49-455a-bbd2-ede71682a1ac}");
-  let gAppInfo;
-  if (!gOldAppInfo) {
-    gOldAppInfo = Cc[XULAPPINFO_CONTRACTID].getService(Ci.nsIXULRuntime);
-  }
-
-  gAppInfo = {
-    // nsIXULAppInfo
-    vendor: "Mozilla",
-    name: name,
-    ID: id,
-    version: version,
-    appBuildID: "2007010101",
-    platformVersion: platformVersion,
-    platformBuildID: "2007010101",
-
-    // nsIXULRuntime
-    inSafeMode: false,
-    logConsoleErrors: true,
-    OS: "XPCShell",
-    XPCOMABI: "noarch-spidermonkey",
-    invalidateCachesOnRestart: function invalidateCachesOnRestart() {
-      // Do nothing
-    },
-
-    // nsICrashReporter
-    annotations: {},
-
-    annotateCrashReport: function(key, data) {
-      this.annotations[key] = data;
-    },
-
-    QueryInterface: XPCOMUtils.generateQI([Ci.nsIXULAppInfo,
-                                           Ci.nsIXULRuntime,
-                                           Ci.nsICrashReporter,
-                                           Ci.nsISupports])
-  };
-
-  Object.setPrototypeOf(gAppInfo, gOldAppInfo);
-
-  var XULAppInfoFactory = {
-    createInstance: function (outer, iid) {
-      if (outer != null)
-        throw Cr.NS_ERROR_NO_AGGREGATION;
-      return gAppInfo.QueryInterface(iid);
-    }
-  };
-  var registrar = Components.manager.QueryInterface(Ci.nsIComponentRegistrar);
-  registrar.registerFactory(XULAPPINFO_CID, "XULAppInfo",
-                            XULAPPINFO_CONTRACTID, XULAppInfoFactory);
+function createAppInfo(ID, name, version, platformVersion) {
+  let tmp = {};
+  Cu.import("resource://testing-common/AppInfo.jsm", tmp);
+  tmp.updateAppInfo({
+    ID, name, version, platformVersion,
+    crashReporter: true,
+  });
+  gAppInfo = tmp.getAppInfo();
 }
 
 // Fake the timeout functions for the TelemetryScheduler.
@@ -344,11 +245,6 @@ function fakeCachedClientId(uuid) {
   module.Policy.getCachedClientID = () => uuid;
 }
 
-function fakeIsUnifiedOptin(isOptin) {
-  let module = Cu.import("resource://gre/modules/TelemetryController.jsm");
-  module.Policy.isUnifiedOptin = () => isOptin;
-}
-
 // Return a date that is |offset| ms in the future from |date|.
 function futureDate(date, offset) {
   return new Date(date.getTime() + offset);
@@ -362,6 +258,17 @@ function truncateToDays(aMsec) {
 // false otherwise.
 function promiseRejects(promise) {
   return promise.then(() => false, () => true);
+}
+
+// Generates a random string of at least a specific length.
+function generateRandomString(length) {
+  let string = "";
+
+  while (string.length < length) {
+    string += Math.random().toString(36);
+  }
+
+  return string.substring(0, length);
 }
 
 // Short-hand for retrieving the histogram with that id.
@@ -381,6 +288,8 @@ if (runningInParent) {
   Services.prefs.setBoolPref("toolkit.telemetry.archive.enabled", true);
   // Telemetry xpcshell tests cannot show the infobar.
   Services.prefs.setBoolPref("datareporting.policy.dataSubmissionPolicyBypassNotification", true);
+  // FHR uploads should be enabled.
+  Services.prefs.setBoolPref("datareporting.healthreport.uploadEnabled", true);
 
   fakePingSendTimer((callback, timeout) => {
     Services.tm.mainThread.dispatch(() => callback(), Ci.nsIThread.DISPATCH_NORMAL);
@@ -389,6 +298,8 @@ if (runningInParent) {
 
   do_register_cleanup(() => TelemetrySend.shutdown());
 }
+
+TelemetryController.initLogging();
 
 // Avoid timers interrupting test behavior.
 fakeSchedulerTimer(() => {}, () => {});

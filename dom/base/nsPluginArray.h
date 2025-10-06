@@ -41,6 +41,9 @@ public:
   void Invalidate();
 
   void GetMimeTypes(nsTArray<RefPtr<nsMimeType>>& aMimeTypes);
+  void GetCTPMimeTypes(nsTArray<RefPtr<nsMimeType>>& aMimeTypes);
+
+  static void NotifyHiddenPluginTouched(nsPluginElement* aElement);
 
   // PluginArray WebIDL methods
 
@@ -49,9 +52,8 @@ public:
   void Refresh(bool aReloadDocuments);
   nsPluginElement* IndexedGetter(uint32_t aIndex, bool &aFound);
   nsPluginElement* NamedGetter(const nsAString& aName, bool &aFound);
-  bool NameIsEnumerable(const nsAString& aName);
   uint32_t Length();
-  void GetSupportedNames(unsigned, nsTArray<nsString>& aRetval);
+  void GetSupportedNames(nsTArray<nsString>& aRetval);
 
 private:
   virtual ~nsPluginArray();
@@ -61,6 +63,10 @@ private:
 
   nsCOMPtr<nsPIDOMWindowInner> mWindow;
   nsTArray<RefPtr<nsPluginElement> > mPlugins;
+  /* A separate list of click-to-play plugins that we don't tell content
+   * about but keep track of so we can still prompt the user to click to play.
+   */
+  nsTArray<RefPtr<nsPluginElement> > mCTPPlugins;
 };
 
 class nsPluginElement final : public nsISupports,
@@ -91,9 +97,8 @@ public:
   nsMimeType* NamedItem(const nsAString& name);
   nsMimeType* IndexedGetter(uint32_t index, bool &found);
   nsMimeType* NamedGetter(const nsAString& name, bool &found);
-  bool NameIsEnumerable(const nsAString& aName);
   uint32_t Length();
-  void GetSupportedNames(unsigned, nsTArray<nsString>& retval);
+  void GetSupportedNames(nsTArray<nsString>& retval);
 
   nsTArray<RefPtr<nsMimeType> >& MimeTypes();
 

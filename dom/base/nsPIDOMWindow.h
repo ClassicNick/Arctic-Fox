@@ -11,7 +11,6 @@
 #include "mozIDOMWindow.h"
 
 #include "nsCOMPtr.h"
-#include "nsAutoPtr.h"
 #include "nsTArray.h"
 #include "mozilla/dom/EventTarget.h"
 #include "js/TypeDecls.h"
@@ -32,22 +31,22 @@ class nsIDocument;
 class nsIIdleObserver;
 class nsIScriptTimeoutHandler;
 class nsIURI;
-class nsPerformance;
 class nsPIDOMWindowInner;
 class nsPIDOMWindowOuter;
 class nsPIWindowRoot;
 class nsXBLPrototypeHandler;
 struct nsTimeout;
 
+typedef uint32_t SuspendTypes;
+
 namespace mozilla {
 namespace dom {
 class AudioContext;
 class Element;
-class ServiceWorkerRegistrationMainThread;
+class Performance;
+class ServiceWorkerRegistration;
+class CustomElementsRegistry;
 } // namespace dom
-namespace gfx {
-class VRDeviceProxy;
-} // namespace gfx
 } // namespace mozilla
 
 // Popup control state enum. The values in this enum must go from most
@@ -66,7 +65,8 @@ enum UIStateChangeType
 {
   UIStateChangeType_NoChange,
   UIStateChangeType_Set,
-  UIStateChangeType_Clear
+  UIStateChangeType_Clear,
+  UIStateChangeType_Invalid // used for serialization only
 };
 
 enum class FullscreenReason
@@ -95,7 +95,7 @@ public:
   const nsPIDOMWindowOuter* AsOuter() const;
 
   virtual nsPIDOMWindowOuter* GetPrivateRoot() = 0;
-
+  virtual mozilla::dom::CustomElementsRegistry* CustomElements() = 0;
   // Outer windows only.
   virtual void ActivateOrDeactivate(bool aActivate) = 0;
 
@@ -119,9 +119,17 @@ public:
   virtual nsPIDOMWindowOuter* GetScriptableParent() = 0;
   virtual already_AddRefed<nsPIWindowRoot> GetTopWindowRoot() = 0;
 
+  /**
+   * Behavies identically to GetScriptableParent extept that it returns null
+   * if GetScriptableParent would return this window.
+   */
+  virtual nsPIDOMWindowOuter* GetScriptableParentOrNull() = 0;
+
   // Inner windows only.
   virtual nsresult RegisterIdleObserver(nsIIdleObserver* aIdleObserver) = 0;
   virtual nsresult UnregisterIdleObserver(nsIIdleObserver* aIdleObserver) = 0;
+
+  virtual bool IsTopLevelWindowActive() = 0;
 
   // Outer windows only.
   virtual void SetActive(bool aActive)
@@ -216,14 +224,6 @@ public:
   virtual nsresult FireDelayedDOMEvents() = 0;
 
   virtual bool IsFrozen() const = 0;
-
-  // Add a timeout to this window.
-  virtual nsresult SetTimeoutOrInterval(nsIScriptTimeoutHandler *aHandler,
-                                        int32_t interval,
-                                        bool aIsInterval, int32_t *aReturn) = 0;
-
-  // Clear a timeout from this window.
-  virtual nsresult ClearTimeoutOrInterval(int32_t aTimerID) = 0;
 
   nsPIDOMWindowOuter* GetOuterWindow()
   {
@@ -320,7 +320,7 @@ public:
   {
     return mMayHavePaintEventListener;
   }
-  
+
   /**
    * Call this to indicate that some node (this window, its document,
    * or content in that document) has a touch event listener.
@@ -337,14 +337,10 @@ public:
    * Moves the top-level window into fullscreen mode if aIsFullScreen is true,
    * otherwise exits fullscreen.
    *
-   * If aHMD is not null, the window is made full screen on the given VR HMD
-   * device instead of its currrent display.
-   *
    * Outer windows only.
    */
   virtual nsresult SetFullscreenInternal(
-    FullscreenReason aReason, bool aIsFullscreen,
-    mozilla::gfx::VRDeviceProxy *aHMD = nullptr) = 0;
+    FullscreenReason aReason, bool aIsFullscreen) = 0;
 
   /**
    * This function should be called when the fullscreen state is flipped.
@@ -408,12 +404,6 @@ public:
    */
   virtual void SetKeyboardIndicators(UIStateChangeType aShowAccelerators,
                                      UIStateChangeType aShowFocusRings) = 0;
-
-  /**
-   * Get the keyboard indicator state for accelerators and focus rings.
-   */
-  virtual void GetKeyboardIndicators(bool* aShowAccelerators,
-                                     bool* aShowFocusRings) = 0;
 
   /**
    * Indicates that the page in the window has been hidden. This is used to
@@ -620,10 +610,10 @@ protected:
   nsIDocShell* MOZ_NON_OWNING_REF mDocShell;  // Weak Reference
 
   // mPerformance is only used on inner windows.
-  RefPtr<nsPerformance>       mPerformance;
+  RefPtr<mozilla::dom::Performance> mPerformance;
 
   typedef nsRefPtrHashtable<nsStringHashKey,
-                            mozilla::dom::ServiceWorkerRegistrationMainThread>
+                            mozilla::dom::ServiceWorkerRegistration>
           ServiceWorkerRegistrationTable;
   ServiceWorkerRegistrationTable mServiceWorkerRegistrationTable;
 
@@ -642,6 +632,12 @@ protected:
   bool                   mMayHaveMouseEnterLeaveEventListener;
   bool                   mMayHavePointerEnterLeaveEventListener;
 
+  // Used to detect whether we have called FreeInnerObjects() (e.g. to ensure
+  // that a call to ResumeTimeouts() after FreeInnerObjects() does nothing).
+  // This member is only used by inner windows.
+  bool                   mInnerObjectsFreed;
+
+
   // This variable is used on both inner and outer windows (and they
   // should match).
   bool                   mIsModalContentWindow;
@@ -654,6 +650,19 @@ protected:
   // is false.  Too bad we have so many different concepts of
   // "active".  Only used on outer windows.
   bool                   mIsBackground;
+
+  /**
+   * The suspended types can be "disposable" or "permanent". This varable only
+   * stores the value about permanent suspend.
+   * - disposable
+   * To pause all playing media in that window, but doesn't affect the media
+   * which starts after that.
+   *
+   * - permanent
+   * To pause all media in that window, and also affect the media which starts
+   * after that.
+   */
+  SuspendTypes       mMediaSuspend;
 
   bool                   mAudioMuted;
   float                  mAudioVolume;
@@ -727,11 +736,11 @@ public:
   bool GetAudioCaptured() const;
   nsresult SetAudioCapture(bool aCapture);
 
-  already_AddRefed<mozilla::dom::ServiceWorkerRegistrationMainThread>
+  already_AddRefed<mozilla::dom::ServiceWorkerRegistration>
     GetServiceWorkerRegistration(const nsAString& aScope);
   void InvalidateServiceWorkerRegistration(const nsAString& aScope);
 
-  nsPerformance* GetPerformance();
+  mozilla::dom::Performance* GetPerformance();
 
   bool HasMutationListeners(uint32_t aMutationEventType) const
   {
@@ -791,6 +800,13 @@ public:
     mMayHavePointerEnterLeaveEventListener = true;
   }
 
+  /**
+   * Check whether this has had inner objects freed.
+   */
+  bool InnerObjectsFreed() const
+  {
+    return mInnerObjectsFreed;
+  }
 
 protected:
   void CreatePerformanceObjectIfNeeded();
@@ -803,7 +819,9 @@ NS_DEFINE_STATIC_IID_ACCESSOR(nsPIDOMWindowInner, NS_PIDOMWINDOWINNER_IID)
 class nsPIDOMWindowOuter : public nsPIDOMWindow<mozIDOMWindowProxy>
 {
 protected:
-  void RefreshMediaElements();
+  void RefreshMediaElementsVolume();
+  void RefreshMediaElementsSuspend(SuspendTypes aSuspend);
+  bool IsDisposableSuspend(SuspendTypes aSuspend) const;
 
 public:
   NS_DECLARE_STATIC_IID_ACCESSOR(NS_PIDOMWINDOWOUTER_IID)
@@ -828,6 +846,12 @@ public:
     GetDoc();
     return GetCurrentInnerWindow();
   }
+
+  /**
+   * Set initial keyboard indicator state for accelerators and focus rings.
+   */
+  void SetInitialKeyboardIndicators(UIStateChangeType aShowAccelerators,
+                                    UIStateChangeType aShowFocusRings);
 
   // Internal getter/setter for the frame element, this version of the
   // getter crosses chrome boundaries whereas the public scriptable
@@ -854,21 +878,17 @@ public:
   }
 
   // Audio API
+  SuspendTypes GetMediaSuspend() const;
+  void SetMediaSuspend(SuspendTypes aSuspend);
+
   bool GetAudioMuted() const;
   void SetAudioMuted(bool aMuted);
 
   float GetAudioVolume() const;
   nsresult SetAudioVolume(float aVolume);
 
-  void SetServiceWorkersTestingEnabled(bool aEnabled)
-  {
-    mServiceWorkersTestingEnabled = aEnabled;
-  }
-
-  bool GetServiceWorkersTestingEnabled()
-  {
-    return mServiceWorkersTestingEnabled;
-  }
+  void SetServiceWorkersTestingEnabled(bool aEnabled);
+  bool GetServiceWorkersTestingEnabled();
 };
 
 NS_DEFINE_STATIC_IID_ACCESSOR(nsPIDOMWindowOuter, NS_PIDOMWINDOWOUTER_IID)

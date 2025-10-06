@@ -11,12 +11,13 @@
 #include "mozilla/layers/AsyncCanvasRenderer.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/SyncRunnable.h"
-#include "mozilla/unused.h"
+#include "mozilla/Unused.h"
 #include "gfxUtils.h"
 #include "nsIThreadPool.h"
 #include "nsNetUtil.h"
 #include "nsXPCOMCIDInternal.h"
 #include "WorkerPrivate.h"
+#include "YCbCrUtils.h"
 
 using namespace mozilla::gfx;
 
@@ -26,13 +27,13 @@ namespace dom {
 // This class should be placed inside GetBRGADataSourceSurfaceSync(). However,
 // due to B2G ICS uses old complier (C++98/03) which forbids local class as
 // template parameter, we need to move this class outside.
-class SurfaceHelper : public nsRunnable {
+class SurfaceHelper : public Runnable {
 public:
   explicit SurfaceHelper(already_AddRefed<layers::Image> aImage) : mImage(aImage) {}
 
   // It retrieves a SourceSurface reference and convert color format on main
   // thread and passes DataSourceSurface to caller thread.
-  NS_IMETHOD Run() {
+  NS_IMETHOD Run() override {
     // It guarantees the reference will be released on main thread.
     nsCountedRef<nsMainThreadSourceSurfaceRef> surface;
     surface.own(mImage->GetAsSourceSurface().take());
@@ -72,7 +73,7 @@ GetBRGADataSourceSurfaceSync(already_AddRefed<layers::Image> aImage)
   return helper->GetDataSurfaceSafe();
 }
 
-class EncodingCompleteEvent : public nsCancelableRunnable
+class EncodingCompleteEvent : public CancelableRunnable
 {
   virtual ~EncodingCompleteEvent() {}
 
@@ -135,7 +136,7 @@ private:
   bool mFailed;
 };
 
-class EncodingRunnable : public nsRunnable
+class EncodingRunnable : public Runnable
 {
   virtual ~EncodingRunnable() {}
 
@@ -236,7 +237,7 @@ private:
   bool mUsingCustomOptions;
 };
 
-NS_IMPL_ISUPPORTS_INHERITED0(EncodingRunnable, nsRunnable);
+NS_IMPL_ISUPPORTS_INHERITED0(EncodingRunnable, Runnable);
 
 StaticRefPtr<nsIThreadPool> ImageEncoder::sThreadPool;
 
@@ -399,11 +400,11 @@ ImageEncoder::ExtractDataInternal(const nsAString& aType,
       size_t length = BufferSizeFromStrideAndHeight(stride, aSize.height);
       data.SetCapacity(length);
 
-      gfxUtils::ConvertYCbCrToRGB(*ycbcrImage->GetData(),
-                                  format,
-                                  aSize,
-                                  data.Elements(),
-                                  stride);
+      ConvertYCbCrToRGB(*ycbcrImage->GetData(),
+                        format,
+                        aSize,
+                        data.Elements(),
+                        stride);
 
       rv = aEncoder->InitFromData(data.Elements(),
                                   aSize.width * aSize.height * 4,
@@ -439,6 +440,7 @@ ImageEncoder::ExtractDataInternal(const nsAString& aType,
     if (MOZ_UNLIKELY(!requiredBytes.isValid())) {
       return NS_ERROR_INVALID_ARG;
     }
+
 
     // no context, so we have to encode an empty image
     // note that if we didn't have a current context, the spec says we're
@@ -500,7 +502,7 @@ class EncoderThreadPoolTerminator final : public nsIObserver
   public:
     NS_DECL_ISUPPORTS
 
-    NS_IMETHODIMP Observe(nsISupports *, const char *topic, const char16_t *) override
+    NS_IMETHOD Observe(nsISupports *, const char *topic, const char16_t *) override
     {
       NS_ASSERTION(!strcmp(topic, "xpcom-shutdown-threads"),
                    "Unexpected topic");

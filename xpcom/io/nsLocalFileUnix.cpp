@@ -14,7 +14,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #if !defined(XP_MACOSX) && !defined(__FreeBSD__) && !defined(__OpenBSD__) && !defined(__NetBSD__)
-#include <sys/sysmacros.h> // No longer implicitly included in later glibc
+#include <sys/sysmacros.h>
 #endif
 #include <unistd.h>
 #include <fcntl.h>
@@ -64,7 +64,7 @@ static nsresult MacErrorMapper(OSErr inErr);
 #endif
 
 #ifdef MOZ_WIDGET_ANDROID
-#include "AndroidBridge.h"
+#include "GeneratedJNIWrappers.h"
 #include "nsIMIMEService.h"
 #include <linux/magic.h>
 #endif
@@ -2026,7 +2026,7 @@ nsLocalFile::Launch()
   }
 
   nsAutoCString fileUri = NS_LITERAL_CSTRING("file://") + mPath;
-  return widget::GeckoAppShell::OpenUriExternal(
+  return java::GeckoAppShell::OpenUriExternal(
     NS_ConvertUTF8toUTF16(fileUri),
     NS_ConvertUTF8toUTF16(type),
     EmptyString(),

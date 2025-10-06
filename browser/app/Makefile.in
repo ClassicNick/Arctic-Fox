@@ -7,20 +7,10 @@ dist_dest   = $(DIST)/$(MOZ_MACBUNDLE_NAME)
 # hardcode en-US for the moment
 AB_CD = en-US
 
-DEFINES += \
-  -DAB_CD=$(AB_CD) \
-  -DAPP_VERSION="$(MOZ_APP_VERSION)" \
-  -DFIREFOX_ICO=\"$(DIST)/branding/firefox.ico\" \
-  -DDOCUMENT_ICO=\"$(DIST)/branding/document.ico\" \
-  -DNEWWINDOW_ICO=\"$(DIST)/branding/newwindow.ico\" \
-  -DNEWTAB_ICO=\"$(DIST)/branding/newtab.ico\" \
-  -DPBMODE_ICO=\"$(DIST)/branding/pbmode.ico\" \
-  $(NULL)
-
 # Build a binary bootstrapping with XRE_main
 
 ifndef MOZ_WINCONSOLE
-ifdef MOZ_DEBUG
+ifneq (,$(MOZ_DEBUG)$(MOZ_ASAN))
 MOZ_WINCONSOLE = 1
 else
 MOZ_WINCONSOLE = 0
@@ -54,7 +44,7 @@ GARBAGE += $(addprefix $(FINAL_TARGET)/defaults/pref/, firefox.js)
 
 endif
 
-ifdef MOZ_WIDGET_GTK
+ifneq (,$(filter gtk%,$(MOZ_WIDGET_TOOLKIT)))
 libs::
 	$(INSTALL) $(IFLAGS1) $(DIST)/branding/mozicon128.png $(FINAL_TARGET)/icons
 	$(INSTALL) $(IFLAGS1) $(DIST)/branding/default16.png  $(FINAL_TARGET)/chrome/icons/default
@@ -103,5 +93,8 @@ tools repackage:: $(DIST)/bin/$(MOZ_APP_NAME)
 	rsync -aL $(DIST)/bin/$(MOZ_APP_NAME) $(dist_dest)/Contents/MacOS
 	cp -RL $(DIST)/branding/firefox.icns $(dist_dest)/Contents/Resources/firefox.icns
 	cp -RL $(DIST)/branding/document.icns $(dist_dest)/Contents/Resources/document.icns
+	$(MKDIR) -p $(dist_dest)/Contents/Library/LaunchServices
+#	mv -f $(dist_dest)/Contents/MacOS/updater.app/Contents/MacOS/org.mozilla.updater $(dist_dest)/Contents/Library/LaunchServices
+#	ln -s ../../../../Library/LaunchServices/org.mozilla.updater $(dist_dest)/Contents/MacOS/updater.app/Contents/MacOS/org.mozilla.updater
 	printf APPLMOZB > $(dist_dest)/Contents/PkgInfo
 endif

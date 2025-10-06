@@ -6,6 +6,7 @@
   {
     "namespace": "storage",
     "description": "Use the <code>browser.storage</code> API to store, retrieve, and track changes to user data.",
+    "permissions": ["storage"],
     "types": [
       {
         "id": "StorageChange",
@@ -31,6 +32,7 @@
             "name": "get",
             "type": "function",
             "description": "Gets one or more items from storage.",
+            "async": "callback",
             "parameters": [
               {
                 "name": "keys",
@@ -66,6 +68,7 @@
             "unsupported": true,
             "type": "function",
             "description": "Gets the amount of space (in bytes) being used by one or more items.",
+            "async": "callback",
             "parameters": [
               {
                 "name": "keys",
@@ -94,6 +97,7 @@
             "name": "set",
             "type": "function",
             "description": "Sets multiple items.",
+            "async": "callback",
             "parameters": [
               {
                 "name": "items",
@@ -114,6 +118,7 @@
             "name": "remove",
             "type": "function",
             "description": "Removes one or more items from storage.",
+            "async": "callback",
             "parameters": [
               {
                 "name": "keys",
@@ -136,6 +141,7 @@
             "name": "clear",
             "type": "function",
             "description": "Removes all items from storage.",
+            "async": "callback",
             "parameters": [
               {
                 "name": "callback",

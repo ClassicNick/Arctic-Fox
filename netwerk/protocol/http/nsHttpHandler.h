@@ -24,15 +24,18 @@ class nsIPrefBranch;
 class nsICancelable;
 class nsICookieService;
 class nsIIOService;
-class nsISchedulingContextService;
+class nsIRequestContextService;
 class nsISiteSecurityService;
 class nsIStreamConverterService;
 class nsITimer;
+class nsIUUIDGenerator;
 
-extern mozilla::Atomic<PRThread*, mozilla::Relaxed> gSocketThread;
 
 namespace mozilla {
 namespace net {
+
+extern Atomic<PRThread*, Relaxed> gSocketThread;
+
 class ATokenBucketEvent;
 class EventTokenBucket;
 class Tickler;
@@ -67,8 +70,8 @@ public:
     nsHttpHandler();
 
     nsresult Init();
-    nsresult AddStandardRequestHeaders(nsHttpHeaderArray *, bool isSecure);
-    nsresult AddConnectionHeader(nsHttpHeaderArray *,
+    nsresult AddStandardRequestHeaders(nsHttpRequestHead *, bool isSecure);
+    nsresult AddConnectionHeader(nsHttpRequestHead *,
                                  uint32_t capabilities);
     bool     IsAcceptableEncoding(const char *encoding, bool isSecure);
 
@@ -105,7 +108,6 @@ public:
     bool           AllowExperiments() { return mTelemetryEnabled && mAllowExperiments; }
 
     bool           IsSpdyEnabled() { return mEnableSpdy; }
-    bool           IsSpdyV31Enabled() { return mSpdyV31; }
     bool           IsHttp2Enabled() { return mHttp2Enabled; }
     bool           EnforceHttp2TlsProfile() { return mEnforceHttp2TlsProfile; }
     bool           CoalesceSpdy() { return mCoalesceSpdy; }
@@ -239,9 +241,11 @@ public:
     void UpdateAltServiceMapping(AltSvcMapping *map,
                                  nsProxyInfo *proxyInfo,
                                  nsIInterfaceRequestor *callbacks,
-                                 uint32_t caps)
+                                 uint32_t caps,
+                                 const NeckoOriginAttributes &originAttributes)
     {
-        mConnMgr->UpdateAltServiceMapping(map, proxyInfo, callbacks, caps);
+        mConnMgr->UpdateAltServiceMapping(map, proxyInfo, callbacks, caps,
+                                          originAttributes);
     }
 
     AltSvcMapping *GetAltServiceMapping(const nsACString &scheme,
@@ -273,6 +277,12 @@ public:
     void OnModifyRequest(nsIHttpChannel *chan)
     {
         NotifyObservers(chan, NS_HTTP_ON_MODIFY_REQUEST_TOPIC);
+    }
+
+    // Called by the channel and cached in the loadGroup
+    void OnUserAgentRequest(nsIHttpChannel *chan)
+    {
+      NotifyObservers(chan, NS_HTTP_ON_USERAGENT_REQUEST_TOPIC);
     }
 
     // Called by the channel once headers are available
@@ -330,6 +340,13 @@ public:
     SpdyInformation *SpdyInfo() { return &mSpdyInfo; }
     bool IsH2MandatorySuiteEnabled() { return mH2MandatorySuiteEnabled; }
 
+    // Returns true if content-signature test pref is set such that they are
+    // NOT enforced on remote newtabs.
+    bool NewTabContentSignaturesDisabled()
+    {
+      return mNewTabContentSignaturesDisabled;
+    }
+
     // returns true in between Init and Shutdown states
     bool Active() { return mHandlerActive; }
 
@@ -339,12 +356,17 @@ public:
     void SetCacheSkippedUntil(TimeStamp arg) { mCacheSkippedUntil = arg; }
     void ClearCacheSkippedUntil() { mCacheSkippedUntil = TimeStamp(); }
 
-    nsISchedulingContextService *GetSchedulingContextService()
+    nsIRequestContextService *GetRequestContextService()
     {
-        return mSchedulingContextService.get();
+        return mRequestContextService.get();
     }
 
     void ShutdownConnectionManager();
+
+    bool KeepEmptyResponseHeadersAsEmtpyString() const
+    {
+        return mKeepEmptyResponseHeadersAsEmtpyString;
+    }
 
 private:
     virtual ~nsHttpHandler();
@@ -378,7 +400,7 @@ private:
     nsHttpAuthCache mPrivateAuthCache;
 
     // the connection manager
-    nsHttpConnectionMgr *mConnMgr;
+    RefPtr<nsHttpConnectionMgr> mConnMgr;
 
     //
     // prefs
@@ -454,10 +476,9 @@ private:
     nsXPIDLCString mProductSub;
     nsXPIDLCString mAppName;
     nsXPIDLCString mAppVersion;
-    nsCString      mCompatGecko;
-    bool           mCompatGeckoEnabled;
     nsCString      mCompatFirefox;
     bool           mCompatFirefoxEnabled;
+    bool           mCompatFirefoxStrict;
     nsXPIDLCString mCompatDevice;
     nsCString      mDeviceModelId;
 
@@ -494,7 +515,6 @@ private:
     uint32_t           mDebugObservations : 1;
 
     uint32_t           mEnableSpdy : 1;
-    uint32_t           mSpdyV31 : 1;
     uint32_t           mHttp2Enabled : 1;
     uint32_t           mUseH2Deps : 1;
     uint32_t           mEnforceHttp2TlsProfile : 1;
@@ -556,7 +576,17 @@ private:
     // incorrect content lengths or malformed chunked encodings
     FrameCheckLevel mEnforceH1Framing;
 
-    nsCOMPtr<nsISchedulingContextService> mSchedulingContextService;
+    nsCOMPtr<nsIRequestContextService> mRequestContextService;
+
+    // True if remote newtab content-signature disabled because of the channel.
+    bool mNewTabContentSignaturesDisabled;
+
+    // If it is set to false, headers with empty value will not appear in the
+    // header array - behavior as it used to be. If it is true: empty headers
+    // coming from the network will exits in header array as empty string.
+    // Call SetHeader with an empty value will still delete the header.
+    // (Bug 6699259)
+    bool mKeepEmptyResponseHeadersAsEmtpyString;
 
 private:
     // For Rate Pacing Certain Network Events. Only assign this pointer on
@@ -600,6 +630,11 @@ private:
     nsresult SpeculativeConnectInternal(nsIURI *aURI,
                                         nsIInterfaceRequestor *aCallbacks,
                                         bool anonymous);
+
+    // UUID generator for channelIds
+    nsCOMPtr<nsIUUIDGenerator> mUUIDGen;
+
+    nsresult NewChannelId(nsID *channelId);
 };
 
 extern nsHttpHandler *gHttpHandler;

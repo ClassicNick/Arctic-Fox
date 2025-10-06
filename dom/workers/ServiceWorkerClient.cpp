@@ -13,7 +13,10 @@
 #include "mozilla/dom/ServiceWorkerMessageEvent.h"
 #include "mozilla/dom/ServiceWorkerMessageEventBinding.h"
 #include "nsGlobalWindow.h"
+#include "nsIBrowserDOMWindow.h"
 #include "nsIDocument.h"
+#include "ServiceWorker.h"
+#include "ServiceWorkerPrivate.h"
 #include "WorkerPrivate.h"
 
 using namespace mozilla;
@@ -32,6 +35,7 @@ NS_INTERFACE_MAP_END
 
 ServiceWorkerClientInfo::ServiceWorkerClientInfo(nsIDocument* aDoc)
   : mWindowId(0)
+  , mFrameType(FrameType::None)
 {
   MOZ_ASSERT(aDoc);
   nsresult rv = aDoc->GetOrCreateId(mClientId);
@@ -61,8 +65,9 @@ ServiceWorkerClientInfo::ServiceWorkerClientInfo(nsIDocument* aDoc)
   }
 
   RefPtr<nsGlobalWindow> outerWindow = nsGlobalWindow::Cast(aDoc->GetWindow());
-  MOZ_ASSERT(outerWindow);
-  if (!outerWindow->IsTopLevelWindow()) {
+  if (!outerWindow) {
+    MOZ_ASSERT(mFrameType == FrameType::None);
+  } else if (!outerWindow->IsTopLevelWindow()) {
     mFrameType = FrameType::Nested;
   } else if (outerWindow->HadOriginalOpener()) {
     mFrameType = FrameType::Auxiliary;
@@ -80,7 +85,7 @@ ServiceWorkerClient::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aGivenProt
 namespace {
 
 class ServiceWorkerClientPostMessageRunnable final
-  : public nsRunnable
+  : public Runnable
   , public StructuredCloneHolder
 {
   uint64_t mWindowId;
@@ -88,12 +93,12 @@ class ServiceWorkerClientPostMessageRunnable final
 public:
   explicit ServiceWorkerClientPostMessageRunnable(uint64_t aWindowId)
     : StructuredCloneHolder(CloningSupported, TransferringSupported,
-                            SameProcessDifferentThread)
+                            StructuredCloneScope::SameProcessDifferentThread)
     , mWindowId(aWindowId)
   {}
 
   NS_IMETHOD
-  Run()
+  Run() override
   {
     AssertIsOnMainThread();
     nsGlobalWindow* window = nsGlobalWindow::GetInnerWindowWithId(mWindowId);
@@ -123,6 +128,9 @@ private:
   {
     AssertIsOnMainThread();
 
+    MOZ_ASSERT(aTargetContainer->GetParentObject(),
+               "How come we don't have a window here?!");
+
     JS::Rooted<JS::Value> messageData(aCx);
     ErrorResult rv;
     Read(aTargetContainer->GetParentObject(), aCx, &messageData, rv);
@@ -133,8 +141,24 @@ private:
 
     RootedDictionary<ServiceWorkerMessageEventInit> init(aCx);
 
+    nsCOMPtr<nsIPrincipal> principal = aTargetContainer->GetParentObject()->PrincipalOrNull();
+    NS_WARN_IF_FALSE(principal, "Why is the principal null here?");
+
+    bool isNullPrincipal = false;
+    bool isSystemPrincipal = false;
+    if (principal) {
+      isNullPrincipal = principal->GetIsNullPrincipal();
+      MOZ_ASSERT(!isNullPrincipal);
+      isSystemPrincipal = principal->GetIsSystemPrincipal();
+      MOZ_ASSERT(!isSystemPrincipal);
+    }
+
     init.mData = messageData;
-    init.mOrigin.Construct(EmptyString());
+    nsAutoCString origin;
+    if (principal && !isNullPrincipal && !isSystemPrincipal) {
+      principal->GetOrigin(origin);
+    }
+    init.mOrigin.Construct(NS_ConvertUTF8toUTF16(origin));
     init.mLastEventId.Construct(EmptyString());
     init.mPorts.Construct();
     init.mPorts.Value().SetNull();

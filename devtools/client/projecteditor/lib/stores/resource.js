@@ -7,7 +7,7 @@
 "use strict";
 
 const { Cc, Ci, Cu } = require("chrome");
-const { TextEncoder, TextDecoder } = require('sdk/io/buffer');
+const { TextEncoder, TextDecoder } = require("sdk/io/buffer");
 const { Class } = require("sdk/core/heritage");
 const { EventTarget } = require("sdk/event/target");
 const { emit } = require("sdk/event/core");
@@ -16,7 +16,7 @@ const promise = require("promise");
 const { OS } = Cu.import("resource://gre/modules/osfile.jsm", {});
 const { FileUtils } = Cu.import("resource://gre/modules/FileUtils.jsm", {});
 const mimeService = Cc["@mozilla.org/mime;1"].getService(Ci.nsIMIMEService);
-const { Task } = Cu.import("resource://gre/modules/Task.jsm", {});
+const { Task } = require("devtools/shared/task");
 
 const gDecoder = new TextDecoder();
 const gEncoder = new TextEncoder();
@@ -36,21 +36,16 @@ const gEncoder = new TextEncoder();
 var Resource = Class({
   extends: EventTarget,
 
-  refresh: function() { return promise.resolve(this); },
-  destroy: function() { },
-  delete: function() { },
+  refresh: function () { return promise.resolve(this); },
+  destroy: function () { },
+  delete: function () { },
 
-  setURI: function(uri) {
-    if (typeof(uri) === "string") {
+  setURI: function (uri) {
+    if (typeof (uri) === "string") {
       uri = URL.URL(uri);
     }
     this.uri = uri;
   },
-
-  /**
-   * Return the trailing name component of this.uri.
-   */
-  get basename() { return this.uri.path.replace(/\/+$/, '').replace(/\\/g,'/').replace( /.*\//, '' ); },
 
   /**
    * Is there more than 1 child Resource?
@@ -61,7 +56,7 @@ var Resource = Class({
    * Is this Resource the root (top level for the store)?
    */
   get isRoot() {
-    return !this.parent
+    return !this.parent;
   },
 
   /**
@@ -85,7 +80,7 @@ var Resource = Class({
    * Set the children set of this Resource, and notify of any
    * additions / removals that happened in the change.
    */
-  setChildren: function(newChildren) {
+  setChildren: function (newChildren) {
     let oldChildren = this.children || new Set();
     let change = false;
 
@@ -116,7 +111,7 @@ var Resource = Class({
    *
    * @param Resource resource
    */
-  addChild: function(resource) {
+  addChild: function (resource) {
     this.children = this.children || new Set();
 
     resource.parent = this;
@@ -131,7 +126,7 @@ var Resource = Class({
    *
    * @param string name
    */
-  hasChild: function(name) {
+  hasChild: function (name) {
     for (let child of this.children) {
       if (child.basename === name) {
         return true;
@@ -145,7 +140,7 @@ var Resource = Class({
    *
    * @param Resource resource
    */
-  removeChild: function(resource) {
+  removeChild: function (resource) {
     resource.parent = null;
     this.children.remove(resource);
     this.store.notifyRemove(resource);
@@ -159,7 +154,7 @@ var Resource = Class({
    *
    * @returns Set<Resource>
    */
-  allDescendants: function() {
+  allDescendants: function () {
     let set = new Set();
 
     function addChildren(item) {
@@ -194,7 +189,7 @@ var FileResource = Class({
    * @param FileInfo info
    *        https://developer.mozilla.org/en-US/docs/JavaScript_OS.File/OS.File.Info
    */
-  initialize: function(store, path, info) {
+  initialize: function (store, path, info) {
     this.store = store;
     this.path = path;
 
@@ -205,11 +200,11 @@ var FileResource = Class({
     this.parent = null;
   },
 
-  toString: function() {
+  toString: function () {
     return "[FileResource:" + this.path + "]";
   },
 
-  destroy: function() {
+  destroy: function () {
     if (this._refreshDeferred) {
       this._refreshDeferred.reject();
     }
@@ -223,7 +218,7 @@ var FileResource = Class({
    * @returns Promise
    *          Resolves once the File.stat has finished.
    */
-  refresh: function() {
+  refresh: function () {
     if (this._refreshDeferred) {
       return this._refreshDeferred.promise;
     }
@@ -239,10 +234,17 @@ var FileResource = Class({
   },
 
   /**
+   * Return the trailing name component of this Resource
+   */
+  get basename() {
+    return this.path.replace(/\/+$/, "").replace(/\\/g, "/").replace(/.*\//, "");
+  },
+
+  /**
    * A string to be used when displaying this Resource in views
    */
   get displayName() {
-    return this.basename + (this.isDir ? "/" : "")
+    return this.basename + (this.isDir ? "/" : "");
   },
 
   /**
@@ -262,7 +264,7 @@ var FileResource = Class({
    * @returns Promise
    *          Resolves with the text of the file.
    */
-  load: function() {
+  load: function () {
     return OS.File.read(this.path).then(bytes => {
       return gDecoder.decode(bytes);
     });
@@ -274,7 +276,7 @@ var FileResource = Class({
    * @returns Promise
    *          Resolves when the file is deleted
    */
-  delete: function() {
+  delete: function () {
     emit(this, "deleted", this);
     if (this.isDir) {
       return OS.File.removeDir(this.path);
@@ -296,7 +298,7 @@ var FileResource = Class({
    *          been written to disk.
    *          Rejected if this is not a directory.
    */
-  createChild: function(name, initial="") {
+  createChild: function (name, initial = "") {
     if (!this.isDir) {
       return promise.reject(new Error("Cannot add child to a regular file"));
     }
@@ -323,7 +325,7 @@ var FileResource = Class({
    * @returns Promise
    *          Resolves with the renamed FileResource.
    */
-  rename: function(oldName, newName) {
+  rename: function (oldName, newName) {
     let oldPath = OS.Path.join(this.path, oldName);
     let newPath = OS.Path.join(this.path, newName);
 
@@ -346,7 +348,7 @@ var FileResource = Class({
    *          Resolves once it has been written to disk.
    *          Rejected if there is an error
    */
-  save: Task.async(function*(content) {
+  save: Task.async(function* (content) {
     // XXX: writeAtomic was losing permissions after saving on OSX
     // return OS.File.writeAtomic(this.path, buffer, { tmpPath: this.path + ".tmp" });
     let buffer = gEncoder.encode(content);
@@ -368,7 +370,7 @@ var FileResource = Class({
     }
     try {
       this._contentType = mimeService.getTypeFromFile(new FileUtils.File(this.path));
-    } catch(ex) {
+    } catch (ex) {
       if (ex.name !== "NS_ERROR_NOT_AVAILABLE" &&
           ex.name !== "NS_ERROR_FAILURE") {
         console.error(ex, this.path);

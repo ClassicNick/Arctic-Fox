@@ -8,24 +8,37 @@
 #define mozilla_dom_PresentationConnection_h
 
 #include "mozilla/DOMEventTargetHelper.h"
+#include "mozilla/WeakPtr.h"
 #include "mozilla/dom/PresentationConnectionBinding.h"
+#include "mozilla/dom/PresentationConnectionClosedEventBinding.h"
 #include "nsIPresentationListener.h"
+#include "nsIRequest.h"
+#include "nsWeakReference.h"
 
 namespace mozilla {
 namespace dom {
 
+class PresentationConnectionList;
+
 class PresentationConnection final : public DOMEventTargetHelper
                                    , public nsIPresentationSessionListener
+                                   , public nsIRequest
+                                   , public SupportsWeakPtr<PresentationConnection>
 {
 public:
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(PresentationConnection,
                                            DOMEventTargetHelper)
   NS_DECL_NSIPRESENTATIONSESSIONLISTENER
+  NS_DECL_NSIREQUEST
+  MOZ_DECLARE_WEAKREFERENCE_TYPENAME(PresentationConnection)
 
-  static already_AddRefed<PresentationConnection> Create(nsPIDOMWindowInner* aWindow,
-                                                         const nsAString& aId,
-                                                         PresentationConnectionState aState);
+  static already_AddRefed<PresentationConnection>
+  Create(nsPIDOMWindowInner* aWindow,
+         const nsAString& aId,
+         const nsAString& aUrl,
+         const uint8_t aRole,
+         PresentationConnectionList* aList = nullptr);
 
   virtual void DisconnectFromOwner() override;
 
@@ -34,6 +47,8 @@ public:
 
   // WebIDL (public APIs)
   void GetId(nsAString& aId) const;
+
+  void GetUrl(nsAString& aUrl) const;
 
   PresentationConnectionState State() const;
 
@@ -44,13 +59,20 @@ public:
 
   void Terminate(ErrorResult& aRv);
 
-  IMPL_EVENT_HANDLER(statechange);
+  bool
+  Equals(uint64_t aWindowId, const nsAString& aId);
+
+  IMPL_EVENT_HANDLER(connect);
+  IMPL_EVENT_HANDLER(close);
+  IMPL_EVENT_HANDLER(terminate);
   IMPL_EVENT_HANDLER(message);
 
 private:
   PresentationConnection(nsPIDOMWindowInner* aWindow,
                          const nsAString& aId,
-                         PresentationConnectionState aState);
+                         const nsAString& aUrl,
+                         const uint8_t aRole,
+                         PresentationConnectionList* aList);
 
   ~PresentationConnection();
 
@@ -58,12 +80,25 @@ private:
 
   void Shutdown();
 
-  nsresult DispatchStateChangeEvent();
+  nsresult ProcessStateChanged(nsresult aReason);
+
+  nsresult DispatchConnectionClosedEvent(PresentationConnectionClosedReason aReason,
+                                         const nsAString& aMessage);
 
   nsresult DispatchMessageEvent(JS::Handle<JS::Value> aData);
 
+  nsresult ProcessConnectionWentAway();
+
+  nsresult AddIntoLoadGroup();
+
+  nsresult RemoveFromLoadGroup();
+
   nsString mId;
+  nsString mUrl;
+  uint8_t mRole;
   PresentationConnectionState mState;
+  RefPtr<PresentationConnectionList> mOwningConnectionList;
+  nsWeakPtr mWeakLoadGroup;;
 };
 
 } // namespace dom

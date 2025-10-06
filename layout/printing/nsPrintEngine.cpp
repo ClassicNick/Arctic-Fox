@@ -108,7 +108,7 @@ static const char kPrintingPromptService[] = "@mozilla.org/embedcomp/printingpro
 #include "nsIBaseWindow.h"
 #include "nsILayoutHistoryState.h"
 #include "nsFrameManager.h"
-#include "nsHTMLReflowState.h"
+#include "mozilla/ReflowInput.h"
 #include "nsIDOMHTMLAnchorElement.h"
 #include "nsIDOMHTMLAreaElement.h"
 #include "nsIDOMHTMLLinkElement.h"
@@ -126,6 +126,8 @@ static const char kPrintingPromptService[] = "@mozilla.org/embedcomp/printingpro
 #include "nsIChannel.h"
 #include "xpcpublic.h"
 #include "nsVariant.h"
+#include "mozilla/StyleSetHandle.h"
+#include "mozilla/StyleSetHandleInlines.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
@@ -225,8 +227,7 @@ nsPrintEngine::nsPrintEngine() :
   mLoadCounter(0),
   mDidLoadDataForPrinting(false),
   mIsDestroying(false),
-  mDisallowSelectionPrint(false),
-  mNoMarginBoxes(false)
+  mDisallowSelectionPrint(false)
 {
 }
 
@@ -461,21 +462,6 @@ nsPrintEngine::DoCommonPrint(bool                    aIsPrintPreview,
   mPrt->mPrintSettings->SetIsCancelled(false);
   mPrt->mPrintSettings->GetShrinkToFit(&mPrt->mShrinkToFit);
 
-  // In the case the margin boxes are not printed store the print settings for
-  // the footer/header to be used as default print setting for follow up prints.
-  mPrt->mPrintSettings->SetPersistMarginBoxSettings(!mNoMarginBoxes);
-
-  if (mNoMarginBoxes) {
-    // Set the footer/header to blank.
-    const char16_t* emptyString = EmptyString().get();
-    mPrt->mPrintSettings->SetHeaderStrLeft(emptyString);
-    mPrt->mPrintSettings->SetHeaderStrCenter(emptyString);
-    mPrt->mPrintSettings->SetHeaderStrRight(emptyString);
-    mPrt->mPrintSettings->SetFooterStrLeft(emptyString);
-    mPrt->mPrintSettings->SetFooterStrCenter(emptyString);
-    mPrt->mPrintSettings->SetFooterStrRight(emptyString);
-  }
-
   if (aIsPrintPreview) {
     SetIsCreatingPrintPreview(true);
     SetIsPrintPreview(true);
@@ -489,14 +475,29 @@ nsPrintEngine::DoCommonPrint(bool                    aIsPrintPreview,
   }
 
   // Create a print session and let the print settings know about it.
+  // Don't overwrite an existing print session.
   // The print settings hold an nsWeakPtr to the session so it does not
   // need to be cleared from the settings at the end of the job.
   // XXX What lifetime does the printSession need to have?
   nsCOMPtr<nsIPrintSession> printSession;
+  bool remotePrintJobListening = false;
   if (!aIsPrintPreview) {
-    printSession = do_CreateInstance("@mozilla.org/gfx/printsession;1", &rv);
-    NS_ENSURE_SUCCESS(rv, rv);
-    mPrt->mPrintSettings->SetPrintSession(printSession);
+    rv = mPrt->mPrintSettings->GetPrintSession(getter_AddRefs(printSession));
+    if (NS_FAILED(rv) || !printSession) {
+      printSession = do_CreateInstance("@mozilla.org/gfx/printsession;1", &rv);
+      NS_ENSURE_SUCCESS(rv, rv);
+      mPrt->mPrintSettings->SetPrintSession(printSession);
+    } else {
+      RefPtr<mozilla::layout::RemotePrintJobChild> remotePrintJob;
+      printSession->GetRemotePrintJob(getter_AddRefs(remotePrintJob));
+      if (NS_SUCCEEDED(rv) && remotePrintJob) {
+        // If we have a RemotePrintJob add it to the print progress listeners,
+        // so it can forward to the parent.
+        mPrt->mPrintProgressListeners.AppendElement(remotePrintJob);
+        remotePrintJobListening = true;
+      }
+    }
+
   }
 
   if (aWebProgressListener != nullptr) {
@@ -570,8 +571,10 @@ nsPrintEngine::DoCommonPrint(bool                    aIsPrintPreview,
   mPrt->mPrintSettings->SetPrintOptions(nsIPrintSettings::kEnableSelectionRB,
                                         isSelection || mPrt->mIsIFrameSelected);
 
+  bool printingViaParent = XRE_IsContentProcess() &&
+                           Preferences::GetBool("print.print_via_parent");
   nsCOMPtr<nsIDeviceContextSpec> devspec;
-  if (XRE_IsContentProcess() && Preferences::GetBool("print.print_via_parent")) {
+  if (printingViaParent) {
     devspec = new nsDeviceContextSpecProxy();
   } else {
     devspec = do_CreateInstance("@mozilla.org/gfx/devicecontextspec;1", &rv);
@@ -595,7 +598,9 @@ nsPrintEngine::DoCommonPrint(bool                    aIsPrintPreview,
     // Ask dialog to be Print Shown via the Plugable Printing Dialog Service
     // This service is for the Print Dialog and the Print Progress Dialog
     // If printing silently or you can't get the service continue on
-    if (!printSilently) {
+    // If printing via the parent then we need to confirm that the pref is set
+    // and get a remote print job, but the parent won't display a prompt.
+    if (!printSilently || printingViaParent) {
       nsCOMPtr<nsIPrintingPromptService> printPromptService(do_GetService(kPrintingPromptService));
       if (printPromptService) {
         nsPIDOMWindowOuter* domWin = mDocument->GetWindow(); 
@@ -626,6 +631,17 @@ nsPrintEngine::DoCommonPrint(bool                    aIsPrintPreview,
           if (mPrt->mPrintSettings) {
             // The user might have changed shrink-to-fit in the print dialog, so update our copy of its state
             mPrt->mPrintSettings->GetShrinkToFit(&mPrt->mShrinkToFit);
+
+            // If we haven't already added the RemotePrintJob as a listener,
+            // add it now if there is one.
+            if (!remotePrintJobListening) {
+              RefPtr<mozilla::layout::RemotePrintJobChild> remotePrintJob;
+              printSession->GetRemotePrintJob(getter_AddRefs(remotePrintJob));
+              if (NS_SUCCEEDED(rv) && remotePrintJob) {
+                mPrt->mPrintProgressListeners.AppendElement(remotePrintJob);
+                remotePrintJobListening = true;
+              }
+            }
           }
         } else if (rv == NS_ERROR_NOT_IMPLEMENTED) {
           // This means the Dialog service was there,
@@ -1056,8 +1072,11 @@ nsPrintEngine::ShowPrintProgress(bool aIsForPrinting, bool& aDoNotify)
                                                      getter_AddRefs(mPrt->mPrintProgressParams), 
                                                      &aDoNotify);
       if (NS_SUCCEEDED(rv)) {
-        if (printProgressListener && mPrt->mPrintProgressParams) {
+        if (printProgressListener) {
           mPrt->mPrintProgressListeners.AppendObject(printProgressListener);
+        }
+
+        if (mPrt->mPrintProgressParams) {
           SetDocAndURLIntoProgress(mPrt->mPrintObject, mPrt->mPrintProgressParams);
         }
       }
@@ -1082,8 +1101,7 @@ nsPrintEngine::IsThereARangeSelection(nsPIDOMWindowOuter* aDOMWin)
 
   // check here to see if there is a range selection
   // so we know whether to turn on the "Selection" radio button
-  Selection* selection =
-    presShell->GetCurrentSelection(nsISelectionController::SELECTION_NORMAL);
+  Selection* selection = presShell->GetCurrentSelection(SelectionType::eNormal);
   if (!selection) {
     return false;
   }
@@ -1522,6 +1540,10 @@ void
 nsPrintEngine::FirePrintingErrorEvent(nsresult aPrintError)
 {
   nsCOMPtr<nsIContentViewer> cv = do_QueryInterface(mDocViewerPrint);
+  if (NS_WARN_IF(!cv)) {
+    return;
+  }
+
   nsCOMPtr<nsIDocument> doc = cv->GetDocument();
   RefPtr<CustomEvent> event =
     NS_NewDOMCustomEvent(doc, nullptr, nullptr);
@@ -1541,6 +1563,11 @@ nsPrintEngine::FirePrintingErrorEvent(nsresult aPrintError)
     new AsyncEventDispatcher(doc, event);
   asyncDispatcher->mOnlyChromeDispatch = true;
   asyncDispatcher->RunDOMEventWhenSafe();
+
+  // Inform any progress listeners of the Error.
+  if (mPrt) {
+    mPrt->DoOnStatusChange(aPrintError);
+  }
 }
 
 //-----------------------------------------------------------------
@@ -1935,9 +1962,9 @@ nsPrintEngine::UpdateSelectionAndShrinkPrintObject(nsPrintObject* aPO,
   RefPtr<Selection> selection, selectionPS;
   // It's okay if there is no display shell, just skip copying the selection
   if (displayShell) {
-    selection = displayShell->GetCurrentSelection(nsISelectionController::SELECTION_NORMAL);
+    selection = displayShell->GetCurrentSelection(SelectionType::eNormal);
   }
-  selectionPS = aPO->mPresShell->GetCurrentSelection(nsISelectionController::SELECTION_NORMAL);
+  selectionPS = aPO->mPresShell->GetCurrentSelection(SelectionType::eNormal);
 
   // Reset all existing selection ranges that might have been added by calling
   // this function before.
@@ -2119,14 +2146,12 @@ nsPrintEngine::ReflowPrintObject(nsPrintObject * aPO)
   rv = aPO->mViewManager->Init(mPrt->mPrintDC);
   NS_ENSURE_SUCCESS(rv,rv);
 
-  nsStyleSet* styleSet;
-  rv = mDocViewerPrint->CreateStyleSet(aPO->mDocument, &styleSet);
-  NS_ENSURE_SUCCESS(rv, rv);
+  StyleSetHandle styleSet = mDocViewerPrint->CreateStyleSet(aPO->mDocument);
 
   aPO->mPresShell = aPO->mDocument->CreateShell(aPO->mPresContext,
                                                 aPO->mViewManager, styleSet);
   if (!aPO->mPresShell) {
-    delete styleSet;
+    styleSet->Delete();
     return NS_ERROR_FAILURE;
   }
 
@@ -2350,9 +2375,9 @@ static nsresult CloneSelection(nsIDocument* aOrigDoc, nsIDocument* aDoc)
   NS_ENSURE_STATE(origShell && shell);
 
   RefPtr<Selection> origSelection =
-    origShell->GetCurrentSelection(nsISelectionController::SELECTION_NORMAL);
+    origShell->GetCurrentSelection(SelectionType::eNormal);
   RefPtr<Selection> selection =
-    shell->GetCurrentSelection(nsISelectionController::SELECTION_NORMAL);
+    shell->GetCurrentSelection(SelectionType::eNormal);
   NS_ENSURE_STATE(origSelection && selection);
 
   int32_t rangeCount = origSelection->RangeCount();
@@ -3511,7 +3536,7 @@ nsPrintEngine::Observe(nsISupports *aSubject, const char *aTopic, const char16_t
 //---------------------------------------------------------------
 //-- PLEvent Notification
 //---------------------------------------------------------------
-class nsPrintCompletionEvent : public nsRunnable {
+class nsPrintCompletionEvent : public Runnable {
 public:
   explicit nsPrintCompletionEvent(nsIDocumentViewerPrint *docViewerPrint)
     : mDocViewerPrint(docViewerPrint) {

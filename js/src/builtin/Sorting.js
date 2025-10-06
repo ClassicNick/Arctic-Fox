@@ -93,13 +93,16 @@ function SortByColumn(array, len, aux, col) {
 
 // Sorts integers and float32. |signed| is true for int16 and int32, |floating|
 // is true for float32.
-function RadixSort(array, len, nbytes, signed, floating, comparefn) {
+function RadixSort(array, len, buffer, nbytes, signed, floating, comparefn) {
 
     // Determined by performance testing.
     if (len < 128) {
         QuickSort(array, len, comparefn);
         return array;
     }
+
+    // Verify that the buffer is non-null
+    assert(buffer !== null, "Attached data buffer should be reified when array length is >= 128.");
 
     let aux = new List();
     for (let i = 0; i < len; i++) {
@@ -111,7 +114,7 @@ function RadixSort(array, len, nbytes, signed, floating, comparefn) {
 
     // Preprocess
     if (floating) {
-        view = new Int32Array(array.buffer);
+        view = new Int32Array(buffer);
 
         // Flip sign bit for positive numbers; flip all bits for negative
         // numbers
@@ -220,13 +223,21 @@ function Merge(list, start, mid, end, lBuffer, rBuffer, comparefn) {
 // dense array, filling remaining slots with holes.
 function MoveHoles(sparse, sparseLen, dense, denseLen) {
     for (var i = 0; i < denseLen; i++)
-        _DefineDataProperty(sparse, i, dense[i]);
+        sparse[i] = dense[i];
     for (var j = denseLen; j < sparseLen; j++)
         delete sparse[j];
 }
 
 // Iterative, bottom up, mergesort.
 function MergeSort(array, len, comparefn) {
+    // Until recently typed arrays had no sort method. To work around that
+    // many users passed them to Array.prototype.sort. Now that we have a
+    // typed array specific sorting method it makes sense to divert to it
+    // when possible.
+    if (IsPossiblyWrappedTypedArray(array)) {
+        return callFunction(TypedArraySort, array, comparefn);
+    }
+
     // To save effort we will do all of our work on a dense list,
     // then create holes at the end.
     var denseList = new List();
@@ -242,7 +253,7 @@ function MergeSort(array, len, comparefn) {
 
     // Insertion sort for small arrays, where "small" is defined by performance
     // testing.
-    if (len < 24) {
+    if (denseLen < 24) {
         InsertionSort(denseList, 0, denseLen - 1, comparefn);
         MoveHoles(array, len, denseList, denseLen);
         return array;

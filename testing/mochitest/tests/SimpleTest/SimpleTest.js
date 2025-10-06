@@ -599,7 +599,6 @@ window.setTimeout = function SimpleTest_setTimeoutShim() {
         case "browser":
         case "chrome":
         case "a11y":
-        case "webapprtContent":
             break;
         default:
             if (!SimpleTest._alreadyFinished && arguments.length > 1 && arguments[1] > 0) {
@@ -903,10 +902,16 @@ SimpleTest.waitForClipboard = function(aExpectedStringOrValidatorFn, aSetupFn,
         SimpleTest.waitForClipboard_polls = 0;
     }
 
+    var lastValue;
     function wait(validatorFn, successFn, failureFn, flavor) {
+        if (SimpleTest.waitForClipboard_polls == 0) {
+          lastValue = undefined;
+        }
+
         if (++SimpleTest.waitForClipboard_polls > maxPolls) {
             // Log the failure.
             SimpleTest.ok(aExpectFailure, "Timed out while polling clipboard for pasted data");
+            dump("Got this value: " + lastValue);
             reset();
             failureFn();
             return;
@@ -923,6 +928,7 @@ SimpleTest.waitForClipboard = function(aExpectedStringOrValidatorFn, aSetupFn,
             reset();
             successFn();
         } else {
+            lastValue = data;
             SimpleTest._originalSetTimeout.apply(window, [function() { return wait(validatorFn, successFn, failureFn, flavor); }, 100]);
         }
     }
@@ -1021,6 +1027,15 @@ SimpleTest.finish = function() {
                                + "SimpleTest.waitForExplicitFinish() if you need "
                                + "it.)");
         }
+        if (SimpleTest._expectingRegisteredServiceWorker) {
+            if (!SpecialPowers.isServiceWorkerRegistered()) {
+                SimpleTest.ok(false, "This test is expected to leave a service worker registered");
+            }
+        } else {
+            if (SpecialPowers.isServiceWorkerRegistered()) {
+                SimpleTest.ok(false, "This test left a service worker registered without cleaning it up");
+            }
+        }
 
         if (parentRunner) {
             /* We're running in an iframe, and the parent has a TestRunner */
@@ -1028,7 +1043,6 @@ SimpleTest.finish = function() {
         }
 
         if (!parentRunner || parentRunner.showTestReport) {
-            SpecialPowers.flushAllAppsLaunchable();
             SpecialPowers.flushPermissions(function () {
               SpecialPowers.flushPrefEnv(function() {
                 SimpleTest.showReport();
@@ -1242,6 +1256,14 @@ SimpleTest.isIgnoringAllUncaughtExceptions = function () {
 };
 
 /**
+ * Indicates to the test framework that this test is expected to leave a
+ * service worker registered when it finishes.
+ */
+SimpleTest.expectRegisteredServiceWorker = function () {
+    SimpleTest._expectingRegisteredServiceWorker = true;
+};
+
+/**
  * Resets any state this SimpleTest object has.  This is important for
  * browser chrome mochitests, which reuse the same SimpleTest object
  * across a run.
@@ -1249,6 +1271,7 @@ SimpleTest.isIgnoringAllUncaughtExceptions = function () {
 SimpleTest.reset = function () {
     SimpleTest._ignoringAllUncaughtExceptions = false;
     SimpleTest._expectingUncaughtException = false;
+    SimpleTest._expectingRegisteredServiceWorker = false;
     SimpleTest._bufferedMessages = [];
 };
 

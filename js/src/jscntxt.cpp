@@ -62,8 +62,10 @@ js::AutoCycleDetector::init()
     AutoCycleDetector::Set& set = cx->cycleDetectorSet;
     hashsetAddPointer = set.lookupForAdd(obj);
     if (!hashsetAddPointer) {
-        if (!set.add(hashsetAddPointer, obj))
+        if (!set.add(hashsetAddPointer, obj)) {
+            ReportOutOfMemory(cx);
             return false;
+        }
         cyclic = false;
         hashsetGenerationAtInit = set.generation();
     }
@@ -87,55 +89,27 @@ js::TraceCycleDetectionSet(JSTracer* trc, AutoCycleDetector::Set& set)
         TraceRoot(trc, &e.mutableFront(), "cycle detector table entry");
 }
 
-JSContext*
-js::NewContext(JSRuntime* rt, size_t stackChunkSize)
+bool
+JSContext::init(uint32_t maxBytes, uint32_t maxNurseryBytes)
 {
-    JS_AbortIfWrongThread(rt);
+    if (!JSRuntime::init(maxBytes, maxNurseryBytes))
+        return false;
 
-    JSContext* cx = js_new<JSContext>(rt);
+    if (!caches.init())
+        return false;
+
+    return true;
+}
+
+JSContext*
+js::NewContext(uint32_t maxBytes, uint32_t maxNurseryBytes, JSRuntime* parentRuntime)
+{
+    JSContext* cx = js_new<JSContext>(parentRuntime);
     if (!cx)
         return nullptr;
 
-    if (!cx->cycleDetectorSet.init()) {
+    if (!cx->init(maxBytes, maxNurseryBytes)) {
         js_delete(cx);
-        return nullptr;
-    }
-
-    /*
-     * Here the GC lock is still held after js_InitContextThreadAndLockGC took it and
-     * the GC is not running on another thread.
-     */
-    rt->contextList.insertBack(cx);
-
-    /*
-     * If cx is the first context on this runtime, initialize well-known atoms,
-     * keywords, numbers, strings and self-hosted scripts. If one of these
-     * steps should fail, the runtime will be left in a partially initialized
-     * state, with zeroes and nulls stored in the default-initialized remainder
-     * of the struct.
-     */
-    if (!rt->haveCreatedContext) {
-        JS_BeginRequest(cx);
-        bool ok = rt->initializeAtoms(cx);
-        if (ok)
-            ok = rt->initSelfHosting(cx);
-
-        if (ok && !rt->parentRuntime)
-            ok = rt->transformToPermanentAtoms(cx);
-
-        JS_EndRequest(cx);
-
-        if (!ok) {
-            DestroyContext(cx, DCM_NEW_FAILED);
-            return nullptr;
-        }
-
-        rt->haveCreatedContext = true;
-    }
-
-    JSContextCallback cxCallback = rt->cxCallback;
-    if (cxCallback && !cxCallback(cx, JSCONTEXT_NEW, rt->cxCallbackData)) {
-        DestroyContext(cx, DCM_NEW_FAILED);
         return nullptr;
     }
 
@@ -143,52 +117,30 @@ js::NewContext(JSRuntime* rt, size_t stackChunkSize)
 }
 
 void
-js::DestroyContext(JSContext* cx, DestroyContextMode mode)
+js::DestroyContext(JSContext* cx)
 {
-    JSRuntime* rt = cx->runtime();
-    JS_AbortIfWrongThread(rt);
+    JS_AbortIfWrongThread(cx);
 
     if (cx->outstandingRequests != 0)
         MOZ_CRASH("Attempted to destroy a context while it is in a request.");
 
     cx->roots.checkNoGCRooters();
-    cx->roots.finishPersistentRoots();
 
-    if (mode != DCM_NEW_FAILED) {
-        if (JSContextCallback cxCallback = rt->cxCallback) {
-            /*
-             * JSCONTEXT_DESTROY callback is not allowed to fail and must
-             * return true.
-             */
-            JS_ALWAYS_TRUE(cxCallback(cx, JSCONTEXT_DESTROY,
-                                      rt->cxCallbackData));
-        }
-    }
+    /*
+     * Dump remaining type inference results while we still have a context.
+     * This printing depends on atoms still existing.
+     */
+    for (CompartmentsIter c(cx, SkipAtoms); !c.done(); c.next())
+        PrintTypes(cx, c, false);
 
-    cx->remove();
-    bool last = !rt->hasContexts();
-    if (last) {
-        /*
-         * Dump remaining type inference results while we still have a context.
-         * This printing depends on atoms still existing.
-         */
-        for (CompartmentsIter c(rt, SkipAtoms); !c.done(); c.next())
-            PrintTypes(cx, c, false);
-    }
-    if (mode == DCM_FORCE_GC) {
-        MOZ_ASSERT(!rt->isHeapBusy());
-        JS::PrepareForFullGC(rt);
-        rt->gc.gc(GC_NORMAL, JS::gcreason::DESTROY_CONTEXT);
-    }
     js_delete_poison(cx);
 }
 
 void
 RootLists::checkNoGCRooters() {
 #ifdef DEBUG
-    for (auto const& stackRootPtr : stackRoots_) {
+    for (auto const& stackRootPtr : stackRoots_)
         MOZ_ASSERT(stackRootPtr == nullptr);
-    }
 #endif
 }
 
@@ -222,23 +174,12 @@ ReportError(JSContext* cx, const char* message, JSErrorReport* reportp,
         reportp->flags |= JSREPORT_EXCEPTION;
     }
 
-    if (cx->options().autoJSAPIOwnsErrorReporting() || JS_IsRunning(cx)) {
-        if (ErrorToException(cx, message, reportp, callback, userRef))
-            return;
-
-        /*
-         * The AutoJSAPI error reporter only allows warnings to be reported so
-         * just ignore this error rather than try to report it.
-         */
-        if (cx->options().autoJSAPIOwnsErrorReporting() && !JSREPORT_IS_WARNING(reportp->flags))
-            return;
+    if (JSREPORT_IS_WARNING(reportp->flags)) {
+        CallWarningReporter(cx, message, reportp);
+        return;
     }
 
-    /*
-     * Call the error reporter only if an exception wasn't raised.
-     */
-    if (message)
-        CallErrorReporter(cx, message, reportp);
+    ErrorToException(cx, message, reportp, callback, userRef);
 }
 
 /*
@@ -301,40 +242,11 @@ js::ReportOutOfMemory(ExclusiveContext* cxArg)
     if (JS::OutOfMemoryCallback oomCallback = cx->runtime()->oomCallback)
         oomCallback(cx, cx->runtime()->oomCallbackData);
 
-    if (cx->options().autoJSAPIOwnsErrorReporting() || JS_IsRunning(cx)) {
-        cx->setPendingException(StringValue(cx->names().outOfMemory));
-        return;
-    }
-
-    /* Get the message for this error, but we don't expand any arguments. */
-    const JSErrorFormatString* efs = GetErrorMessage(nullptr, JSMSG_OUT_OF_MEMORY);
-    const char* msg = efs ? efs->format : "Out of memory";
-
-    /* Fill out the report, but don't do anything that requires allocation. */
-    JSErrorReport report;
-    report.flags = JSREPORT_ERROR;
-    report.errorNumber = JSMSG_OUT_OF_MEMORY;
-    PopulateReportBlame(cx, &report);
-
-    /* Report the error. */
-    if (JSErrorReporter onError = cx->runtime()->errorReporter)
-        onError(cx, msg, &report);
-
-    /*
-     * We would like to enforce the invariant that any exception reported
-     * during an OOM situation does not require wrapping. Besides avoiding
-     * allocation when memory is low, this reduces the number of places where
-     * we might need to GC.
-     *
-     * When JS code is running, we set the pending exception to an atom, which
-     * does not need wrapping. If no JS code is running, no exception should be
-     * set at all.
-     */
-    MOZ_ASSERT(!cx->isExceptionPending());
+    cx->setPendingException(StringValue(cx->names().outOfMemory));
 }
 
-JS_FRIEND_API(void)
-js::ReportOverRecursed(JSContext* maybecx)
+void
+js::ReportOverRecursed(JSContext* maybecx, unsigned errorNumber)
 {
 #ifdef JS_MORE_DETERMINISTIC
     /*
@@ -348,9 +260,15 @@ js::ReportOverRecursed(JSContext* maybecx)
     fprintf(stderr, "ReportOverRecursed called\n");
 #endif
     if (maybecx) {
-        JS_ReportErrorNumber(maybecx, GetErrorMessage, nullptr, JSMSG_OVER_RECURSED);
+        JS_ReportErrorNumber(maybecx, GetErrorMessage, nullptr, errorNumber);
         maybecx->overRecursed_ = true;
     }
+}
+
+JS_FRIEND_API(void)
+js::ReportOverRecursed(JSContext* maybecx)
+{
+    ReportOverRecursed(maybecx, JSMSG_OVER_RECURSED);
 }
 
 void
@@ -385,28 +303,14 @@ js::ReportAllocationOverflow(ExclusiveContext* cxArg)
 static bool
 checkReportFlags(JSContext* cx, unsigned* flags)
 {
-    if (JSREPORT_IS_STRICT_MODE_ERROR(*flags)) {
-        /*
-         * Error in strict code; warning with extra warnings option; okay
-         * otherwise.  We assume that if the top frame is a native, then it is
-         * strict if the nearest scripted frame is strict, see bug 536306.
-         */
-        jsbytecode* pc;
-        JSScript* script = cx->currentScript(&pc);
-        if (script && IsCheckStrictOp(JSOp(*pc)))
-            *flags &= ~JSREPORT_WARNING;
-        else if (cx->compartment()->behaviors().extraWarnings(cx))
-            *flags |= JSREPORT_WARNING;
-        else
-            return true;
-    } else if (JSREPORT_IS_STRICT(*flags)) {
+    if (JSREPORT_IS_STRICT(*flags)) {
         /* Warning/error only when JSOPTION_STRICT is set. */
         if (!cx->compartment()->behaviors().extraWarnings(cx))
             return true;
     }
 
     /* Warnings become errors when JSOPTION_WERROR is set. */
-    if (JSREPORT_IS_WARNING(*flags) && cx->runtime()->options().werror())
+    if (JSREPORT_IS_WARNING(*flags) && cx->options().werror())
         *flags &= ~JSREPORT_WARNING;
 
     return false;
@@ -519,20 +423,28 @@ js::PrintError(JSContext* cx, FILE* file, const char* message, JSErrorReport* re
         fputs(prefix, file);
     fputs(message, file);
 
-    if (report->linebuf) {
-        /* report->linebuf usually ends with a newline. */
-        int n = strlen(report->linebuf);
-        fprintf(file, ":\n%s%s%s%s",
-                prefix,
-                report->linebuf,
-                (n > 0 && report->linebuf[n-1] == '\n') ? "" : "\n",
-                prefix);
-        n = report->tokenptr - report->linebuf;
-        for (int i = 0, j = 0; i < n; i++) {
-            if (report->linebuf[i] == '\t') {
-                for (int k = (j + 8) & ~7; j < k; j++) {
+    if (const char16_t* linebuf = report->linebuf()) {
+        size_t n = report->linebufLength();
+
+        fputs(":\n", file);
+        if (prefix)
+            fputs(prefix, file);
+
+        for (size_t i = 0; i < n; i++)
+            fputc(static_cast<char>(linebuf[i]), file);
+
+        // linebuf usually ends with a newline. If not, add one here.
+        if (n == 0 || linebuf[n-1] != '\n')
+            fputc('\n', file);
+
+        if (prefix)
+            fputs(prefix, file);
+
+        n = report->tokenOffset();
+        for (size_t i = 0, j = 0; i < n; i++) {
+            if (linebuf[i] == '\t') {
+                for (size_t k = (j + 8) & ~7; j < k; j++)
                     fputc('.', file);
-                }
                 continue;
             }
             fputc('.', file);
@@ -545,6 +457,104 @@ js::PrintError(JSContext* cx, FILE* file, const char* message, JSErrorReport* re
     JS_free(cx, prefix);
     return true;
 }
+
+class MOZ_RAII AutoMessageArgs
+{
+    const char16_t** args_;
+    size_t totalLength_;
+    /* only {0} thru {9} supported */
+    mozilla::Array<size_t, JS::MaxNumErrorArguments> lengths_;
+    uint16_t count_;
+    bool passed_ : 1;
+    bool allocatedElements_ : 1;
+
+  public:
+    AutoMessageArgs()
+      : args_(nullptr), totalLength_(0), count_(0),
+        passed_(false), allocatedElements_(false)
+    {}
+
+    ~AutoMessageArgs()
+    {
+        if (passed_)
+            return;
+
+        if (!args_)
+            return;
+
+        /* free the arguments only if we allocated them */
+        if (allocatedElements_) {
+            uint16_t i = 0;
+            while (args_[i])
+                js_free((void*)args_[i++]);
+        }
+        js_free(args_);
+    }
+
+    const char16_t* args(size_t i) const {
+        MOZ_ASSERT(i < count_);
+        return args_[i];
+    }
+
+    size_t totalLength() const {
+        return totalLength_;
+    }
+
+    size_t lengths(size_t i) const {
+        MOZ_ASSERT(i < count_);
+        return lengths_[i];
+    }
+
+    uint16_t count() const {
+        return count_;
+    }
+
+    bool passed() const {
+        return passed_;
+    }
+
+    /*
+     * Gather the arguments into an array, and accumulate their sizes. We
+     * allocate 1 more than necessary and null it out to act as the sentinel
+     * value when we free the pointers later.
+     */
+    bool init(ExclusiveContext* cx, const char16_t** argsArg, uint16_t countArg,
+              ErrorArgumentsType typeArg, va_list ap) {
+        MOZ_ASSERT(!args_);
+        MOZ_ASSERT(countArg > 0);
+
+        args_ = argsArg;
+        count_ = countArg;
+        passed_ = !!args_;
+        if (passed_) {
+            MOZ_ASSERT(!args_[count_]);
+        } else {
+            args_ = cx->pod_malloc<const char16_t*>(count_ + 1);
+            if (!args_)
+                return false;
+            args_[count_] = nullptr;
+        }
+        for (uint16_t i = 0; i < count_; i++) {
+            if (passed_) {
+                lengths_[i] = js_strlen(args_[i]);
+            } else if (typeArg == ArgumentsAreASCII || typeArg == ArgumentsAreLatin1) {
+                char* charArg = va_arg(ap, char*);
+                size_t charArgLength = strlen(charArg);
+                args_[i] = InflateString(cx, charArg, &charArgLength);
+                if (!args_[i])
+                    return false;
+                allocatedElements_ = true;
+                MOZ_ASSERT(charArgLength == js_strlen(args_[i]));
+                lengths_[i] = charArgLength;
+            } else {
+                args_[i] = va_arg(ap, char16_t*);
+                lengths_[i] = js_strlen(args_[i]);
+            }
+            totalLength_ += lengths_[i];
+        }
+        return true;
+    }
+};
 
 /*
  * The arguments from ap need to be packaged up into an array and stored
@@ -560,12 +570,11 @@ js::PrintError(JSContext* cx, FILE* file, const char* message, JSErrorReport* re
 bool
 js::ExpandErrorArgumentsVA(ExclusiveContext* cx, JSErrorCallback callback,
                            void* userRef, const unsigned errorNumber,
-                           char** messagep, JSErrorReport* reportp,
-                           ErrorArgumentsType argumentsType, va_list ap)
+                           char** messagep, const char16_t** messageArgs,
+                           ErrorArgumentsType argumentsType,
+                           JSErrorReport* reportp, va_list ap)
 {
     const JSErrorFormatString* efs;
-    uint16_t argCount;
-    bool messageArgsPassed = !!reportp->messageArgs;
 
     *messagep = nullptr;
 
@@ -580,61 +589,33 @@ js::ExpandErrorArgumentsVA(ExclusiveContext* cx, JSErrorCallback callback,
     if (efs) {
         reportp->exnType = efs->exnType;
 
-        size_t totalArgsLength = 0;
-        size_t argLengths[JS::MaxNumErrorArguments]; /* only {0} thru {9} supported */
-        argCount = efs->argCount;
+        uint16_t argCount = efs->argCount;
         MOZ_RELEASE_ASSERT(argCount <= JS::MaxNumErrorArguments);
         if (argCount > 0) {
             /*
-             * Gather the arguments into an array, and accumulate
-             * their sizes. We allocate 1 more than necessary and
-             * null it out to act as the caboose when we free the
-             * pointers later.
+             * Parse the error format, substituting the argument X
+             * for {X} in the format.
              */
-            if (messageArgsPassed) {
-                MOZ_ASSERT(!reportp->messageArgs[argCount]);
-            } else {
-                reportp->messageArgs = cx->pod_malloc<const char16_t*>(argCount + 1);
-                if (!reportp->messageArgs)
-                    return false;
-                /* nullptr-terminate for easy copying. */
-                reportp->messageArgs[argCount] = nullptr;
-            }
-            for (uint16_t i = 0; i < argCount; i++) {
-                if (messageArgsPassed) {
-                    /* Do nothing. */
-                } else if (argumentsType == ArgumentsAreASCII) {
-                    char* charArg = va_arg(ap, char*);
-                    size_t charArgLength = strlen(charArg);
-                    reportp->messageArgs[i] = InflateString(cx, charArg, &charArgLength);
-                    if (!reportp->messageArgs[i])
-                        goto error;
-                } else {
-                    reportp->messageArgs[i] = va_arg(ap, char16_t*);
-                }
-                argLengths[i] = js_strlen(reportp->messageArgs[i]);
-                totalArgsLength += argLengths[i];
-            }
-        }
-        /*
-         * Parse the error format, substituting the argument X
-         * for {X} in the format.
-         */
-        if (argCount > 0) {
             if (efs->format) {
                 char16_t* buffer;
                 char16_t* fmt;
                 char16_t* out;
+#ifdef DEBUG
                 int expandedArgs = 0;
+#endif
                 size_t expandedLength;
                 size_t len = strlen(efs->format);
+
+                AutoMessageArgs args;
+                if (!args.init(cx, messageArgs, argCount, argumentsType, ap))
+                    return false;
 
                 buffer = fmt = InflateString(cx, efs->format, &len);
                 if (!buffer)
                     goto error;
                 expandedLength = len
-                                 - (3 * argCount)       /* exclude the {n} */
-                                 + totalArgsLength;
+                                 - (3 * args.count()) /* exclude the {n} */
+                                 + args.totalLength();
 
                 /*
                 * Note - the above calculation assumes that each argument
@@ -649,18 +630,19 @@ js::ExpandErrorArgumentsVA(ExclusiveContext* cx, JSErrorCallback callback,
                     if (*fmt == '{') {
                         if (isdigit(fmt[1])) {
                             int d = JS7_UNDEC(fmt[1]);
-                            MOZ_RELEASE_ASSERT(d < argCount);
-                            js_strncpy(out, reportp->messageArgs[d],
-                                       argLengths[d]);
-                            out += argLengths[d];
+                            MOZ_RELEASE_ASSERT(d < args.count());
+                            js_strncpy(out, args.args(d), args.lengths(d));
+                            out += args.lengths(d);
                             fmt += 3;
+#ifdef DEBUG
                             expandedArgs++;
+#endif
                             continue;
                         }
                     }
                     *out++ = *fmt++;
                 }
-                MOZ_ASSERT(expandedArgs == argCount);
+                MOZ_ASSERT(expandedArgs == args.count());
                 *out = 0;
                 js_free(buffer);
                 size_t msgLen = PointerRangeSize(static_cast<const char16_t*>(reportp->ucmessage),
@@ -672,7 +654,7 @@ js::ExpandErrorArgumentsVA(ExclusiveContext* cx, JSErrorCallback callback,
             }
         } else {
             /* Non-null messageArgs should have at least one non-null arg. */
-            MOZ_ASSERT(!reportp->messageArgs);
+            MOZ_ASSERT(!messageArgs);
             /*
              * Zero arguments: the format string (if it exists) is the
              * entire message.
@@ -697,21 +679,11 @@ js::ExpandErrorArgumentsVA(ExclusiveContext* cx, JSErrorCallback callback,
         *messagep = cx->pod_malloc<char>(nbytes);
         if (!*messagep)
             goto error;
-        JS_snprintf(*messagep, nbytes, defaultErrorMessage, errorNumber);
+        snprintf(*messagep, nbytes, defaultErrorMessage, errorNumber);
     }
     return true;
 
 error:
-    if (!messageArgsPassed && reportp->messageArgs) {
-        /* free the arguments only if we allocated them */
-        if (argumentsType == ArgumentsAreASCII) {
-            uint16_t i = 0;
-            while (reportp->messageArgs[i])
-                js_free((void*)reportp->messageArgs[i++]);
-        }
-        js_free((void*)reportp->messageArgs);
-        reportp->messageArgs = nullptr;
-    }
     if (reportp->ucmessage) {
         js_free((void*)reportp->ucmessage);
         reportp->ucmessage = nullptr;
@@ -741,25 +713,13 @@ js::ReportErrorNumberVA(JSContext* cx, unsigned flags, JSErrorCallback callback,
     PopulateReportBlame(cx, &report);
 
     if (!ExpandErrorArgumentsVA(cx, callback, userRef, errorNumber,
-                                &message, &report, argumentsType, ap)) {
+                                &message, nullptr, argumentsType, &report, ap)) {
         return false;
     }
 
     ReportError(cx, message, &report, callback, userRef);
 
     js_free(message);
-    if (report.messageArgs) {
-        /*
-         * ExpandErrorArgumentsVA owns its messageArgs only if it had to
-         * inflate the arguments (from regular |char*|s).
-         */
-        if (argumentsType == ArgumentsAreASCII) {
-            int i = 0;
-            while (report.messageArgs[i])
-                js_free((void*)report.messageArgs[i++]);
-        }
-        js_free((void*)report.messageArgs);
-    }
     js_free((void*)report.ucmessage);
 
     return warning;
@@ -768,13 +728,14 @@ js::ReportErrorNumberVA(JSContext* cx, unsigned flags, JSErrorCallback callback,
 static bool
 ExpandErrorArguments(ExclusiveContext* cx, JSErrorCallback callback,
                      void* userRef, const unsigned errorNumber,
-                     char** messagep, JSErrorReport* reportp,
-                     ErrorArgumentsType argumentsType, ...)
+                     char** messagep, const char16_t** messageArgs,
+                     ErrorArgumentsType argumentsType,
+                     JSErrorReport* reportp, ...)
 {
     va_list ap;
-    va_start(ap, argumentsType);
+    va_start(ap, reportp);
     bool expanded = js::ExpandErrorArgumentsVA(cx, callback, userRef, errorNumber,
-                                               messagep, reportp, argumentsType, ap);
+                                               messagep, messageArgs, argumentsType, reportp, ap);
     va_end(ap);
     return expanded;
 }
@@ -792,11 +753,11 @@ js::ReportErrorNumberUCArray(JSContext* cx, unsigned flags, JSErrorCallback call
     report.flags = flags;
     report.errorNumber = errorNumber;
     PopulateReportBlame(cx, &report);
-    report.messageArgs = args;
 
     char* message;
     if (!ExpandErrorArguments(cx, callback, userRef, errorNumber,
-                              &message, &report, ArgumentsAreUnicode)) {
+                              &message, args, ArgumentsAreUnicode, &report))
+    {
         return false;
     }
 
@@ -809,13 +770,14 @@ js::ReportErrorNumberUCArray(JSContext* cx, unsigned flags, JSErrorCallback call
 }
 
 void
-js::CallErrorReporter(JSContext* cx, const char* message, JSErrorReport* reportp)
+js::CallWarningReporter(JSContext* cx, const char* message, JSErrorReport* reportp)
 {
     MOZ_ASSERT(message);
     MOZ_ASSERT(reportp);
+    MOZ_ASSERT(JSREPORT_IS_WARNING(reportp->flags));
 
-    if (JSErrorReporter onError = cx->runtime()->errorReporter)
-        onError(cx, message, reportp);
+    if (JS::WarningReporter warningReporter = cx->runtime()->warningReporter)
+        warningReporter(cx, message, reportp);
 }
 
 bool
@@ -871,12 +833,11 @@ js::ReportMissingArg(JSContext* cx, HandleValue v, unsigned arg)
 {
     char argbuf[11];
     UniqueChars bytes;
-    RootedAtom atom(cx);
 
-    JS_snprintf(argbuf, sizeof argbuf, "%u", arg);
+    snprintf(argbuf, sizeof argbuf, "%u", arg);
     if (IsFunctionObject(v)) {
-        atom = v.toObject().as<JSFunction>().atom();
-        bytes = DecompileValueGenerator(cx, JSDVG_SEARCH_STACK, v, atom);
+        RootedAtom name(cx, v.toObject().as<JSFunction>().name());
+        bytes = DecompileValueGenerator(cx, JSDVG_SEARCH_STACK, v, name);
         if (!bytes)
             return;
     }
@@ -906,7 +867,7 @@ js::ReportValueErrorFlags(JSContext* cx, unsigned flags, const unsigned errorNum
 
 const JSErrorFormatString js_ErrorFormatString[JSErr_Limit] = {
 #define MSG_DEF(name, count, exception, format) \
-    { format, count, exception } ,
+    { #name, format, count, exception } ,
 #include "js.msg"
 #undef MSG_DEF
 };
@@ -919,10 +880,13 @@ js::GetErrorMessage(void* userRef, const unsigned errorNumber)
     return nullptr;
 }
 
-ExclusiveContext::ExclusiveContext(JSRuntime* rt, PerThreadData* pt, ContextKind kind)
-  : ContextFriendFields(rt),
+ExclusiveContext::ExclusiveContext(JSRuntime* rt, PerThreadData* pt, ContextKind kind,
+                                   const JS::ContextOptions& options)
+  : ContextFriendFields(kind == Context_JS),
+    runtime_(rt),
     helperThread_(nullptr),
     contextKind_(kind),
+    options_(options),
     perThreadData(pt),
     arenas_(nullptr),
     enterCompartmentDepth_(0)
@@ -944,23 +908,23 @@ ExclusiveContext::recoverFromOutOfMemory()
         task->outOfMemory = false;
 }
 
-JSContext::JSContext(JSRuntime* rt)
-  : ExclusiveContext(rt, &rt->mainThread, Context_JS),
+JSContext::JSContext(JSRuntime* parentRuntime)
+  : ExclusiveContext(this, &this->JSRuntime::mainThread, Context_JS, JS::ContextOptions()),
+    JSRuntime(parentRuntime),
     throwing(false),
     unwrappedException_(this),
-    options_(),
     overRecursed_(false),
     propagatingForcedReturn_(false),
     liveVolatileJitFrameIterators_(nullptr),
     reportGranularity(JS_DEFAULT_JITREPORT_GRANULARITY),
     resolvingList(nullptr),
     generatingError(false),
-    savedFrameChains_(),
-    cycleDetectorSet(this),
     data(nullptr),
-    data2(nullptr),
     outstandingRequests(0),
-    jitIsBroken(false)
+    jitIsBroken(false),
+    asyncStackForNewActivations(this),
+    asyncCauseForNewActivations(nullptr),
+    asyncCallIsExplicit(false)
 {
     MOZ_ASSERT(static_cast<ContextFriendFields*>(this) ==
                ContextFriendFields::get(this));
@@ -968,6 +932,8 @@ JSContext::JSContext(JSRuntime* rt)
 
 JSContext::~JSContext()
 {
+    destroyRuntime();
+
     /* Free the stuff hanging off of cx. */
     MOZ_ASSERT(!resolvingList);
 }
@@ -1011,51 +977,15 @@ JSContext::isThrowingDebuggeeWouldRun()
 }
 
 bool
-JSContext::saveFrameChain()
-{
-    if (!savedFrameChains_.append(SavedFrameChain(compartment(), enterCompartmentDepth_)))
-        return false;
-
-    if (Activation* act = runtime()->activation())
-        act->saveFrameChain();
-
-    setCompartment(nullptr);
-    enterCompartmentDepth_ = 0;
-
-    return true;
-}
-
-void
-JSContext::restoreFrameChain()
-{
-    MOZ_ASSERT(enterCompartmentDepth_ == 0); // We're about to clobber it, and it
-                                            // will be wrong forevermore.
-    SavedFrameChain sfc = savedFrameChains_.popCopy();
-    setCompartment(sfc.compartment);
-    enterCompartmentDepth_ = sfc.enterCompartmentCount;
-
-    if (Activation* act = runtime()->activation())
-        act->restoreFrameChain();
-}
-
-bool
 JSContext::currentlyRunning() const
 {
-    for (ActivationIterator iter(runtime()); !iter.done(); ++iter) {
-        if (iter->cx() == this) {
-            if (iter->hasSavedFrameChain())
-                return false;
-            return true;
-        }
-    }
-
-    return false;
+    return !!activation();
 }
 
 static bool
 ComputeIsJITBroken()
 {
-#if !defined(ANDROID) || defined(GONK)
+#if !defined(ANDROID)
     return false;
 #else  // ANDROID
     if (getenv("JS_IGNORE_JIT_BROKENNESS")) {
@@ -1130,22 +1060,21 @@ JSContext::updateJITEnabled()
 }
 
 size_t
-JSContext::sizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf) const
+JSContext::sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) const
 {
     /*
      * There are other JSContext members that could be measured; the following
      * ones have been found by DMD to be worth measuring.  More stuff may be
      * added later.
      */
-    return mallocSizeOf(this) + cycleDetectorSet.sizeOfExcludingThis(mallocSizeOf);
+    return cycleDetectorSet.sizeOfExcludingThis(mallocSizeOf);
 }
 
 void
 JSContext::mark(JSTracer* trc)
 {
-    /* Stack frames and slots are traced by StackSpace::mark. */
-
-    TraceCycleDetectionSet(trc, cycleDetectorSet);
+    if (cycleDetectorSet.initialized())
+        TraceCycleDetectionSet(trc, cycleDetectorSet);
 
     if (compartment_)
         compartment_->mark();
@@ -1161,6 +1090,36 @@ ExclusiveContext::stackLimitAddressForJitCode(StackKind kind)
 #endif
 }
 
+uintptr_t
+ExclusiveContext::stackLimitForJitCode(StackKind kind)
+{
+#ifdef JS_SIMULATOR
+    return runtime_->simulator()->stackLimit();
+#else
+    return stackLimit(kind);
+#endif
+}
+
+void
+JSContext::resetJitStackLimit()
+{
+    // Note that, for now, we use the untrusted limit for ion. This is fine,
+    // because it's the most conservative limit, and if we hit it, we'll bail
+    // out of ion into the interpreter, which will do a proper recursion check.
+#ifdef JS_SIMULATOR
+    jitStackLimit_ = jit::Simulator::StackLimit();
+#else
+    jitStackLimit_ = nativeStackLimit[StackForUntrustedScript];
+#endif
+    jitStackLimitNoInterrupt_ = jitStackLimit_;
+}
+
+void
+JSContext::initJitStackLimit()
+{
+    resetJitStackLimit();
+}
+
 JSVersion
 JSContext::findVersion() const
 {
@@ -1170,7 +1129,7 @@ JSContext::findVersion() const
     if (compartment() && compartment()->behaviors().version() != JSVERSION_UNKNOWN)
         return compartment()->behaviors().version();
 
-    return runtime()->defaultVersion();
+    return defaultVersion();
 }
 
 #ifdef DEBUG
@@ -1208,14 +1167,14 @@ void
 CompartmentChecker::check(InterpreterFrame* fp)
 {
     if (fp)
-        check(fp->scopeChain());
+        check(fp->environmentChain());
 }
 
 void
 CompartmentChecker::check(AbstractFramePtr frame)
 {
     if (frame)
-        check(frame.scopeChain());
+        check(frame.environmentChain());
 }
 #endif
 
@@ -1223,7 +1182,21 @@ void
 AutoEnterOOMUnsafeRegion::crash(const char* reason)
 {
     char msgbuf[1024];
-    JS_snprintf(msgbuf, sizeof(msgbuf), "[unhandlable oom] %s", reason);
+    snprintf(msgbuf, sizeof(msgbuf), "[unhandlable oom] %s", reason);
     MOZ_ReportAssertionFailure(msgbuf, __FILE__, __LINE__);
     MOZ_CRASH();
+}
+
+AutoEnterOOMUnsafeRegion::AnnotateOOMAllocationSizeCallback
+AutoEnterOOMUnsafeRegion::annotateOOMSizeCallback = nullptr;
+
+void
+AutoEnterOOMUnsafeRegion::crash(size_t size, const char* reason)
+{
+    {
+        JS::AutoSuppressGCAnalysis suppress;
+        if (annotateOOMSizeCallback)
+            annotateOOMSizeCallback(size);
+    }
+    crash(reason);
 }

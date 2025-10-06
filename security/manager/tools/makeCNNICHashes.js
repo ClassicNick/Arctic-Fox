@@ -1,19 +1,23 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+"use strict";
 
 // How to run this file:
 // 1. [obtain CNNIC-issued certificates to be whitelisted]
 // 2. [obtain firefox source code]
 // 3. [build/obtain firefox binaries]
 // 4. run `[path to]/run-mozilla.sh [path to]/xpcshell makeCNNICHashes.js \
+//                                  [path to]/intermediatesFile
 //                                  [path to]/certlist'
+//    Where |intermediatesFile| is a file containing PEM encoded intermediate
+//    certificates that the certificates in |certlist| may be issued by.
 //    where certlist is a file containing a list of paths to certificates to
 //    be included in the whitelist
 
-const Cc = Components.classes;
-const Ci = Components.interfaces;
-const Cu = Components.utils;
+var Cc = Components.classes;
+var Ci = Components.interfaces;
+var Cu = Components.utils;
 
 var gCertDB = Cc["@mozilla.org/security/x509certdb;1"]
                 .getService(Ci.nsIX509CertDB);
@@ -232,7 +236,8 @@ function loadIntermediates(intermediatesFile) {
 ///////////////////////////////////////////////////////////////////////////////
 
 if (arguments.length != 2) {
-  throw "Usage: makeCNNICHashes.js <intermediates file> <path to list of certificates>";
+  throw new Error("Usage: makeCNNICHashes.js <PEM intermediates file> " +
+                  "<path to list of certificates>");
 }
 
 Services.prefs.setIntPref("security.OCSP.enabled", 0);

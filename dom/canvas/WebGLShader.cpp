@@ -101,7 +101,7 @@ TranslateWithoutValidation(const nsACString& sourceNS, bool isWebGL2,
         reversionedSource.insert(versionStrStart, "#version 330\n");
         break;
     default:
-        MOZ_CRASH("Bad `glesslVersion`.");
+        MOZ_CRASH("GFX: Bad `glesslVersion`.");
     }
 
     out_translatedSource->Assign(reversionedSource.c_str(),
@@ -394,6 +394,17 @@ WebGLShader::FindUniformBlockByMappedName(const nsACString& mappedName,
 
     *out_userName = userNameStr.c_str();
     return true;
+}
+
+void
+WebGLShader::EnumerateFragOutputs(std::map<nsCString, const nsCString> &out_FragOutputs) const
+{
+    out_FragOutputs.clear();
+
+    if (!mValidator) {
+        return;
+    }
+    mValidator->EnumerateFragOutputs(out_FragOutputs);
 }
 
 void

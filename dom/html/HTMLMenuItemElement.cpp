@@ -386,7 +386,7 @@ HTMLMenuItemElement::AfterSetAttr(int32_t aNameSpaceID, nsIAtom* aName,
     if ((aName == nsGkAtoms::radiogroup || aName == nsGkAtoms::type) &&
         mType == CMD_TYPE_RADIO &&
         !mParserCreating) {
-      if (IsInDoc() && GetParent()) {
+      if (IsInUncomposedDoc() && GetParent()) {
         AddedToRadioGroup();
       }
     }
@@ -416,7 +416,7 @@ HTMLMenuItemElement::WalkRadioGroup(Visitor* aVisitor)
     return;
   }
 
-  nsAttrInfo info1(GetAttrInfo(kNameSpaceID_None,
+  BorrowedAttrInfo info1(GetAttrInfo(kNameSpaceID_None,
                                nsGkAtoms::radiogroup));
   bool info1Empty = !info1.mValue || info1.mValue->IsEmptyString();
 
@@ -429,7 +429,7 @@ HTMLMenuItemElement::WalkRadioGroup(Visitor* aVisitor)
       continue;
     }
 
-    nsAttrInfo info2(menuitem->GetAttrInfo(kNameSpaceID_None,
+    BorrowedAttrInfo info2(menuitem->GetAttrInfo(kNameSpaceID_None,
                                            nsGkAtoms::radiogroup));
     bool info2Empty = !info2.mValue || info2.mValue->IsEmptyString();
 

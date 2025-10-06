@@ -41,8 +41,10 @@ using namespace js::irregexp;
 RegExpBuilder::RegExpBuilder(LifoAlloc* alloc)
   : alloc(alloc),
     pending_empty_(false),
-    characters_(nullptr),
-    last_added_(ADD_NONE)
+    characters_(nullptr)
+#ifdef DEBUG
+  , last_added_(ADD_NONE)
+#endif
 {}
 
 void
@@ -53,7 +55,9 @@ RegExpBuilder::FlushCharacters()
         RegExpTree* atom = alloc->newInfallible<RegExpAtom>(characters_);
         characters_ = nullptr;
         text_.Add(alloc, atom);
+#ifdef DEBUG
         last_added_ = ADD_ATOM;
+#endif
     }
 }
 
@@ -82,7 +86,9 @@ RegExpBuilder::AddCharacter(char16_t c)
     if (characters_ == nullptr)
         characters_ = alloc->newInfallible<CharacterVector>(*alloc);
     characters_->append(c);
+#ifdef DEBUG
     last_added_ = ADD_CHAR;
+#endif
 }
 
 void
@@ -105,7 +111,9 @@ RegExpBuilder::AddAtom(RegExpTree* term)
         FlushText();
         terms_.Add(alloc, term);
     }
+#ifdef DEBUG
     last_added_ = ADD_ATOM;
+#endif
 }
 
 void
@@ -113,7 +121,9 @@ RegExpBuilder::AddAssertion(RegExpTree* assert)
 {
     FlushText();
     terms_.Add(alloc, assert);
+#ifdef DEBUG
     last_added_ = ADD_ASSERT;
+#endif
 }
 
 void
@@ -136,7 +146,9 @@ RegExpBuilder::FlushTerms()
         alternative = alloc->newInfallible<RegExpAlternative>(terms_.GetList(alloc));
     alternatives_.Add(alloc, alternative);
     terms_.Clear();
+#ifdef DEBUG
     last_added_ = ADD_NONE;
+#endif
 }
 
 RegExpTree*
@@ -186,7 +198,9 @@ RegExpBuilder::AddQuantifierToAtom(int min, int max,
         atom = terms_.RemoveLast();
         if (atom->max_match() == 0) {
             // Guaranteed to only match an empty string.
+#ifdef DEBUG
             last_added_ = ADD_TERM;
+#endif
             if (min == 0)
                 return;
             terms_.Add(alloc, atom);
@@ -197,7 +211,9 @@ RegExpBuilder::AddQuantifierToAtom(int min, int max,
         MOZ_CRASH("Bad call");
     }
     terms_.Add(alloc, alloc->newInfallible<RegExpQuantifier>(min, max, quantifier_type, atom));
+#ifdef DEBUG
     last_added_ = ADD_TERM;
+#endif
 }
 
 // ----------------------------------------------------------------------------
@@ -510,6 +526,7 @@ RegExpParser<CharT>::ParseClassCharacterEscape(widechar* code)
       case '6': case '7':
         if (unicode_) {
             if (current() == '0') {
+                Advance();
                 *code = 0;
                 return true;
             }
@@ -856,6 +873,7 @@ UnicodeRangesAtom(LifoAlloc* alloc,
 #define CALL_CALC(FROM, TO, LEAD, TRAIL_FROM, TRAIL_TO, DIFF) \
         CalculateCaseInsensitiveRanges(alloc, FROM, TO, DIFF, wide_ranges, &tmp_wide_ranges);
         FOR_EACH_NON_BMP_CASE_FOLDING(CALL_CALC)
+        FOR_EACH_NON_BMP_REV_CASE_FOLDING(CALL_CALC)
 #undef CALL_CALC
 
         if (tmp_wide_ranges) {
@@ -1297,6 +1315,7 @@ SurrogatePairAtom(LifoAlloc* alloc, char16_t lead, char16_t trail, bool ignore_c
         if (lead == LEAD &&trail >= TRAIL_FROM && trail <= TRAIL_TO) \
             return CaseFoldingSurrogatePairAtom(alloc, lead, trail, DIFF);
         FOR_EACH_NON_BMP_CASE_FOLDING(CALL_ATOM)
+        FOR_EACH_NON_BMP_REV_CASE_FOLDING(CALL_ATOM)
 #undef CALL_ATOM
     }
 

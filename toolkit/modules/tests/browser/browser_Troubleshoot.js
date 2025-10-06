@@ -27,7 +27,7 @@ registerCleanupFunction(function () {
   delete window.Troubleshoot;
 });
 
-let tests = [
+var tests = [
 
   function snapshotSchema(done) {
     Troubleshoot.snapshot(function (snapshot) {
@@ -36,7 +36,7 @@ let tests = [
         ok(true, "The snapshot should conform to the schema.");
       }
       catch (err) {
-        ok(false, err);
+        ok(false, "Schema mismatch, " + err);
       }
       done();
     });
@@ -225,6 +225,9 @@ const SNAPSHOT_SCHEMA = {
         supportsHardwareH264: {
           type: "string",
         },
+        currentAudioBackend: {
+          type: "string",
+        },
         numAcceleratedWindowsMessage: {
           type: "array",
         },
@@ -294,6 +297,9 @@ const SNAPSHOT_SCHEMA = {
         webglRenderer: {
           type: "string",
         },
+        webgl2Renderer: {
+          type: "string",
+        },
         info: {
           type: "object",
         },
@@ -303,10 +309,13 @@ const SNAPSHOT_SCHEMA = {
             type: "string",
           },
         },
-        direct2DEnabledMessage: {
+        featureLog: {
+          type: "object",
+        },
+        crashGuards: {
           type: "array",
         },
-        webglRendererMessage: {
+        direct2DEnabledMessage: {
           type: "array",
         },
       },

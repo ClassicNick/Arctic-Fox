@@ -12,19 +12,22 @@
 #include "mozilla/Atomics.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/PodOperations.h"
+#include "mozilla/Variant.h"
 
 #include "jsatom.h"
-#include "jslock.h"
 #include "jsopcode.h"
 #include "jstypes.h"
 
+#include "frontend/NameAnalysisTypes.h"
 #include "gc/Barrier.h"
 #include "gc/Rooting.h"
 #include "jit/IonCode.h"
 #include "js/UbiNode.h"
 #include "js/UniquePtr.h"
 #include "vm/NativeObject.h"
+#include "vm/Scope.h"
 #include "vm/Shape.h"
+#include "vm/SharedImmutableStringsCache.h"
 
 namespace JS {
 struct ScriptSourceInfo;
@@ -44,21 +47,17 @@ namespace jit {
 # define BASELINE_DISABLED_SCRIPT ((js::jit::BaselineScript*)0x1)
 
 class BreakpointSite;
-class BindingIter;
 class Debugger;
 class LazyScript;
 class ModuleObject;
-class NestedStaticScope;
-class StaticScope;
 class RegExpObject;
 struct SourceCompressionTask;
 class Shape;
 
 namespace frontend {
     struct BytecodeEmitter;
-    class UpvarCookie;
     class FunctionBox;
-    class ModuleBox;
+    class ModuleSharedContext;
 } // namespace frontend
 
 namespace detail {
@@ -66,7 +65,8 @@ namespace detail {
 // Do not call this directly! It is exposed for the friend declarations in
 // this file.
 bool
-CopyScript(JSContext* cx, HandleObject scriptStaticScope, HandleScript src, HandleScript dst);
+CopyScript(JSContext* cx, HandleScript src, HandleScript dst,
+           MutableHandle<GCVector<Scope*>> scopes);
 
 } // namespace detail
 
@@ -101,7 +101,7 @@ namespace js {
 
 // A block scope has a range in bytecode: it is entered at some offset, and left
 // at some later offset.  Scopes can be nested.  Given an offset, the
-// BlockScopeNote containing that offset whose with the highest start value
+// ScopeNote containing that offset whose with the highest start value
 // indicates the block scope.  The block scope list is sorted by increasing
 // start value.
 //
@@ -110,46 +110,55 @@ namespace js {
 // are popping the block chain in preparation for a goto.  These exits are also
 // nested with respect to outer scopes.  The scopes in these exits are indicated
 // by the "index" field, just like any other block.  If a nonlocal exit pops the
-// last block scope, the index will be NoBlockScopeIndex.
+// last block scope, the index will be NoScopeIndex.
 //
-struct BlockScopeNote {
-    static const uint32_t NoBlockScopeIndex = UINT32_MAX;
+struct ScopeNote {
+    // Sentinel index for no Scope.
+    static const uint32_t NoScopeIndex = UINT32_MAX;
 
-    uint32_t        index;      // Index of NestedStaticScope in the object
-                                // array, or NoBlockScopeIndex if there is no
-                                // block scope in this range.
+    // Sentinel index for no ScopeNote.
+    static const uint32_t NoScopeNoteIndex = UINT32_MAX;
+
+    uint32_t        index;      // Index of Scope in the scopes array, or
+                                // NoScopeIndex if there is no block scope in
+                                // this range.
     uint32_t        start;      // Bytecode offset at which this scope starts,
                                 // from script->main().
     uint32_t        length;     // Bytecode length of scope.
-    uint32_t        parent;     // Index of parent block scope in notes, or UINT32_MAX.
+    uint32_t        parent;     // Index of parent block scope in notes, or NoScopeNote.
 };
 
 struct ConstArray {
-    js::HeapValue*  vector;    /* array of indexed constant values */
-    uint32_t        length;
+    js::GCPtrValue* vector;     // array of indexed constant values
+    uint32_t length;
 };
 
 struct ObjectArray {
-    js::HeapPtrObject* vector;  // Array of indexed objects.
-    uint32_t        length;     // Count of indexed objects.
+    js::GCPtrObject* vector;    // Array of indexed objects.
+    uint32_t length;            // Count of indexed objects.
+};
+
+struct ScopeArray {
+    js::GCPtrScope* vector;     // Array of indexed scopes.
+    uint32_t        length;     // Count of indexed scopes.
 };
 
 struct TryNoteArray {
-    JSTryNote*      vector;    // Array of indexed try notes.
+    JSTryNote*      vector;     // Array of indexed try notes.
     uint32_t        length;     // Count of indexed try notes.
 };
 
-struct BlockScopeArray {
-    BlockScopeNote* vector;     // Array of indexed BlockScopeNote records.
-    uint32_t        length;     // Count of indexed try notes.
+struct ScopeNoteArray {
+    ScopeNote* vector;          // Array of indexed ScopeNote records.
+    uint32_t   length;          // Count of indexed try notes.
 };
 
 class YieldOffsetArray {
     friend bool
-    detail::CopyScript(JSContext* cx, HandleObject scriptStaticScope, HandleScript src,
-                       HandleScript dst);
+    detail::CopyScript(JSContext* cx, HandleScript src, HandleScript dst,
+                       MutableHandle<GCVector<Scope*>> scopes);
 
-    uint32_t*       vector_;   // Array of bytecode offsets.
+    uint32_t*       vector_;    // Array of bytecode offsets.
     uint32_t        length_;    // Count of bytecode offsets.
 
   public:
@@ -165,301 +174,6 @@ class YieldOffsetArray {
         return length_;
     }
 };
-
-class Binding
-{
-    // One JSScript stores one Binding per formal/variable so we use a
-    // packed-word representation.
-    uintptr_t bits_;
-
-    static const uintptr_t KIND_MASK = 0x3;
-    static const uintptr_t ALIASED_BIT = 0x4;
-    static const uintptr_t NAME_MASK = ~(KIND_MASK | ALIASED_BIT);
-
-  public:
-    // A "binding" is a formal parameter, 'var' (also a stand in for
-    // body-level 'let' declarations), or 'const' declaration. A function's
-    // lexical scope is composed of these three kinds of bindings.
-    enum Kind { ARGUMENT, VARIABLE, CONSTANT };
-
-    explicit Binding() : bits_(0) {}
-
-    Binding(PropertyName* name, Kind kind, bool aliased) {
-        JS_STATIC_ASSERT(CONSTANT <= KIND_MASK);
-        MOZ_ASSERT((uintptr_t(name) & ~NAME_MASK) == 0);
-        MOZ_ASSERT((uintptr_t(kind) & ~KIND_MASK) == 0);
-        bits_ = uintptr_t(name) | uintptr_t(kind) | (aliased ? ALIASED_BIT : 0);
-    }
-
-    PropertyName* name() const {
-        return (PropertyName*)(bits_ & NAME_MASK);
-    }
-
-    Kind kind() const {
-        return Kind(bits_ & KIND_MASK);
-    }
-
-    bool aliased() const {
-        return bool(bits_ & ALIASED_BIT);
-    }
-
-    static void trace(Binding* self, JSTracer* trc) { self->trace(trc); }
-    void trace(JSTracer* trc);
-};
-
-JS_STATIC_ASSERT(sizeof(Binding) == sizeof(uintptr_t));
-
-/*
- * Formal parameters and local variables are stored in a shape tree
- * path encapsulated within this class.  This class represents bindings for
- * both function and top-level scripts (the latter is needed to track names in
- * strict mode eval code, to give such code its own lexical environment).
- */
-class Bindings
-{
-    friend class BindingIter;
-    friend class AliasedFormalIter;
-    template <typename Outer> friend class BindingsOperations;
-    template <typename Outer> friend class MutableBindingsOperations;
-
-    RelocatablePtrShape callObjShape_;
-    uintptr_t bindingArrayAndFlag_;
-    uint16_t numArgs_;
-    uint16_t numBlockScoped_;
-    uint16_t numBodyLevelLexicals_;
-    uint16_t numUnaliasedBodyLevelLexicals_;
-    uint32_t aliasedBodyLevelLexicalBegin_;
-    uint32_t numVars_;
-    uint32_t numUnaliasedVars_;
-
-#if JS_BITS_PER_WORD == 32
-    // Bindings is allocated inline inside JSScript, which needs to be
-    // gc::Cell aligned.
-    uint32_t padding_;
-#endif
-
-    /*
-     * During parsing, bindings are allocated out of a temporary LifoAlloc.
-     * After parsing, a JSScript object is created and the bindings are
-     * permanently transferred to it. On error paths, the JSScript object may
-     * end up with bindings that still point to the (new released) LifoAlloc
-     * memory. To avoid tracing these bindings during GC, we keep track of
-     * whether the bindings are temporary or permanent in the low bit of
-     * bindingArrayAndFlag_.
-     */
-    static const uintptr_t TEMPORARY_STORAGE_BIT = 0x1;
-    bool bindingArrayUsingTemporaryStorage() const {
-        return bindingArrayAndFlag_ & TEMPORARY_STORAGE_BIT;
-    }
-
-  public:
-
-    static const uint32_t BLOCK_SCOPED_LIMIT = UINT16_LIMIT;
-
-    Binding* bindingArray() const {
-        return reinterpret_cast<Binding*>(bindingArrayAndFlag_ & ~TEMPORARY_STORAGE_BIT);
-    }
-
-    Bindings()
-      : callObjShape_(nullptr), bindingArrayAndFlag_(TEMPORARY_STORAGE_BIT),
-        numArgs_(0), numBlockScoped_(0),
-        numBodyLevelLexicals_(0), numUnaliasedBodyLevelLexicals_(0),
-        numVars_(0), numUnaliasedVars_(0)
-    {}
-
-    /*
-     * Initialize a Bindings with a pointer into temporary storage.
-     * bindingArray must have length numArgs + numVars +
-     * numBodyLevelLexicals. Before the temporary storage is release,
-     * switchToScriptStorage must be called, providing a pointer into the
-     * Binding array stored in script->data.
-     */
-    static bool initWithTemporaryStorage(ExclusiveContext* cx, MutableHandle<Bindings> self,
-                                         uint32_t numArgs,
-                                         uint32_t numVars,
-                                         uint32_t numBodyLevelLexicals,
-                                         uint32_t numBlockScoped,
-                                         uint32_t numUnaliasedVars,
-                                         uint32_t numUnaliasedBodyLevelLexicals,
-                                         const Binding* bindingArray,
-                                         bool isModule = false);
-
-    // Initialize a trivial Bindings with no slots and an empty callObjShape.
-    bool initTrivial(ExclusiveContext* cx);
-
-    // CompileScript parses and compiles one statement at a time, but the result
-    // is one Script object.  There will be no vars or bindings, because those
-    // go on the global, but there may be block-scoped locals, and the number of
-    // block-scoped locals may increase as we parse more expressions.  This
-    // helper updates the number of block scoped variables in a script as it is
-    // being parsed.
-    void updateNumBlockScoped(unsigned numBlockScoped) {
-        MOZ_ASSERT(!callObjShape_);
-        MOZ_ASSERT(numVars_ == 0);
-        MOZ_ASSERT(numBlockScoped < LOCALNO_LIMIT);
-        MOZ_ASSERT(numBlockScoped >= numBlockScoped_);
-        numBlockScoped_ = numBlockScoped;
-    }
-
-    void setAllLocalsAliased() {
-        numBlockScoped_ = 0;
-    }
-
-    uint8_t* switchToScriptStorage(Binding* newStorage);
-
-    /*
-     * Clone srcScript's bindings (as part of js::CloneScript). dstScriptData
-     * is the pointer to what will eventually be dstScript->data.
-     */
-    static bool clone(JSContext* cx, MutableHandle<Bindings> self, uint8_t* dstScriptData,
-                      HandleScript srcScript);
-
-    uint32_t numArgs() const { return numArgs_; }
-    uint32_t numVars() const { return numVars_; }
-    uint32_t numBodyLevelLexicals() const { return numBodyLevelLexicals_; }
-    uint32_t numBlockScoped() const { return numBlockScoped_; }
-    uint32_t numBodyLevelLocals() const { return numVars_ + numBodyLevelLexicals_; }
-    uint32_t numUnaliasedBodyLevelLocals() const { return numUnaliasedVars_ + numUnaliasedBodyLevelLexicals_; }
-    uint32_t numAliasedBodyLevelLocals() const { return numBodyLevelLocals() - numUnaliasedBodyLevelLocals(); }
-    uint32_t numLocals() const { return numVars() + numBodyLevelLexicals() + numBlockScoped(); }
-    uint32_t numFixedLocals() const { return numUnaliasedVars() + numUnaliasedBodyLevelLexicals() + numBlockScoped(); }
-    uint32_t lexicalBegin() const { return numArgs() + numVars(); }
-    uint32_t aliasedBodyLevelLexicalBegin() const { return aliasedBodyLevelLexicalBegin_; }
-
-    uint32_t numUnaliasedVars() const { return numUnaliasedVars_; }
-    uint32_t numUnaliasedBodyLevelLexicals() const { return numUnaliasedBodyLevelLexicals_; }
-
-    // Return the size of the bindingArray.
-    uint32_t count() const { return numArgs() + numVars() + numBodyLevelLexicals(); }
-
-    /* Return the initial shape of call objects created for this scope. */
-    Shape* callObjShape() const { return callObjShape_; }
-
-    /* Convenience method to get the var index of 'arguments' or 'this'. */
-    static BindingIter argumentsBinding(ExclusiveContext* cx, HandleScript script);
-    static BindingIter thisBinding(ExclusiveContext* cx, HandleScript script);
-
-    /* Return whether the binding at bindingIndex is aliased. */
-    bool bindingIsAliased(uint32_t bindingIndex);
-
-    /* Return whether this scope has any aliased bindings. */
-    bool hasAnyAliasedBindings() const {
-        if (!callObjShape_)
-            return false;
-
-        return !callObjShape_->isEmptyShape();
-    }
-
-    Binding* begin() const { return bindingArray(); }
-    Binding* end() const { return bindingArray() + count(); }
-
-    static void trace(Bindings* self, JSTracer* trc) { self->trace(trc); }
-    void trace(JSTracer* trc);
-};
-
-// If this fails, add/remove padding within Bindings.
-static_assert(sizeof(Bindings) % js::gc::CellSize == 0,
-              "Size of Bindings must be an integral multiple of js::gc::CellSize");
-
-
-template <class Outer>
-class BindingsOperations
-{
-    const Bindings& bindings() const { return static_cast<const Outer*>(this)->get(); }
-
-  public:
-    // Direct data access to the underlying bindings.
-    const RelocatablePtrShape& callObjShape() const {
-        return bindings().callObjShape_;
-    }
-    uint16_t numArgs() const {
-        return bindings().numArgs_;
-    }
-    uint16_t numBlockScoped() const {
-        return bindings().numBlockScoped_;
-    }
-    uint16_t numBodyLevelLexicals() const {
-        return bindings().numBodyLevelLexicals_;
-    }
-    uint16_t aliasedBodyLevelLexicalBegin() const {
-        return bindings().aliasedBodyLevelLexicalBegin_;
-    }
-    uint16_t numUnaliasedBodyLevelLexicals() const {
-        return bindings().numUnaliasedBodyLevelLexicals_;
-    }
-    uint32_t numVars() const {
-        return bindings().numVars_;
-    }
-    uint32_t numUnaliasedVars() const {
-        return bindings().numUnaliasedVars_;
-    }
-
-    // Binding array access.
-    bool bindingArrayUsingTemporaryStorage() const {
-        return bindings().bindingArrayUsingTemporaryStorage();
-    }
-    const Binding* bindingArray() const {
-        return bindings().bindingArray();
-    }
-    uint32_t count() const {
-        return bindings().count();
-    }
-
-    // Helpers.
-    uint32_t numBodyLevelLocals() const {
-        return numVars() + numBodyLevelLexicals();
-    }
-    uint32_t numUnaliasedBodyLevelLocals() const {
-        return numUnaliasedVars() + numUnaliasedBodyLevelLexicals();
-    }
-    uint32_t numAliasedBodyLevelLocals() const {
-        return numBodyLevelLocals() - numUnaliasedBodyLevelLocals();
-    }
-    uint32_t numLocals() const {
-        return numVars() + numBodyLevelLexicals() + numBlockScoped();
-    }
-    uint32_t numFixedLocals() const {
-        return numUnaliasedVars() + numUnaliasedBodyLevelLexicals() + numBlockScoped();
-    }
-    uint32_t lexicalBegin() const {
-        return numArgs() + numVars();
-    }
-};
-
-template <class Outer>
-class MutableBindingsOperations : public BindingsOperations<Outer>
-{
-    Bindings& bindings() { return static_cast<Outer*>(this)->get(); }
-
-  public:
-    void setCallObjShape(HandleShape shape) { bindings().callObjShape_ = shape; }
-    void setBindingArray(const Binding* bindingArray, uintptr_t temporaryBit) {
-        bindings().bindingArrayAndFlag_ = uintptr_t(bindingArray) | temporaryBit;
-    }
-    void setNumArgs(uint16_t num) { bindings().numArgs_ = num; }
-    void setNumVars(uint32_t num) { bindings().numVars_ = num; }
-    void setNumBodyLevelLexicals(uint16_t num) { bindings().numBodyLevelLexicals_ = num; }
-    void setNumBlockScoped(uint16_t num) { bindings().numBlockScoped_ = num; }
-    void setNumUnaliasedVars(uint32_t num) { bindings().numUnaliasedVars_ = num; }
-    void setNumUnaliasedBodyLevelLexicals(uint16_t num) {
-        bindings().numUnaliasedBodyLevelLexicals_ = num;
-    }
-    void setAliasedBodyLevelLexicalBegin(uint32_t offset) {
-        bindings().aliasedBodyLevelLexicalBegin_ = offset;
-    }
-    uint8_t* switchToScriptStorage(Binding* permanentStorage) {
-        return bindings().switchToScriptStorage(permanentStorage);
-    }
-};
-
-template <>
-class HandleBase<Bindings> : public BindingsOperations<JS::Handle<Bindings>>
-{};
-
-template <>
-class MutableHandleBase<Bindings>
-  : public MutableBindingsOperations<JS::MutableHandle<Bindings>>
-{};
 
 class ScriptCounts
 {
@@ -527,6 +241,7 @@ typedef HashMap<JSScript*,
 class DebugScript
 {
     friend class ::JSScript;
+    friend struct ::JSCompartment;
 
     /*
      * When non-zero, compile script in single-step mode. The top bit is set and
@@ -562,7 +277,7 @@ class ScriptSource;
 class UncompressedSourceCache
 {
     typedef HashMap<ScriptSource*,
-                    const char16_t*,
+                    UniqueTwoByteChars,
                     DefaultHasher<ScriptSource*>,
                     SystemAllocPolicy> Map;
 
@@ -572,26 +287,26 @@ class UncompressedSourceCache
     {
         UncompressedSourceCache* cache_;
         ScriptSource* source_;
-        const char16_t* charsToFree_;
+        UniqueTwoByteChars charsToFree_;
       public:
         explicit AutoHoldEntry();
         ~AutoHoldEntry();
       private:
         void holdEntry(UncompressedSourceCache* cache, ScriptSource* source);
-        void deferDelete(const char16_t* chars);
+        void deferDelete(UniqueTwoByteChars chars);
         ScriptSource* source() const { return source_; }
         friend class UncompressedSourceCache;
     };
 
   private:
-    Map* map_;
+    UniquePtr<Map> map_;
     AutoHoldEntry* holder_;
 
   public:
-    UncompressedSourceCache() : map_(nullptr), holder_(nullptr) {}
+    UncompressedSourceCache() : holder_(nullptr) {}
 
     const char16_t* lookup(ScriptSource* ss, AutoHoldEntry& asp);
-    bool put(ScriptSource* ss, const char16_t* chars, AutoHoldEntry& asp);
+    bool put(ScriptSource* ss, UniqueTwoByteChars chars, AutoHoldEntry& asp);
 
     void purge();
 
@@ -613,29 +328,31 @@ class ScriptSource
     // on the main thread.
 
     // Indicate which field in the |data| union is active.
-    enum {
-        DataMissing,
-        DataUncompressed,
-        DataCompressed,
-        DataParent
-    } dataType;
 
-    union {
-        struct {
-            const char16_t* chars;
-            bool ownsChars;
-        } uncompressed;
+    struct Missing { };
 
-        struct {
-            void* raw;
-            size_t nbytes;
-            HashNumber hash;
-        } compressed;
+    struct Uncompressed
+    {
+        SharedImmutableTwoByteString string;
 
-        ScriptSource* parent;
-    } data;
+        explicit Uncompressed(SharedImmutableTwoByteString&& str)
+          : string(mozilla::Move(str))
+        { }
+    };
 
-    uint32_t length_;
+    struct Compressed
+    {
+        SharedImmutableString raw;
+        size_t uncompressedLength;
+
+        Compressed(SharedImmutableString&& raw, size_t uncompressedLength)
+          : raw(mozilla::Move(raw))
+          , uncompressedLength(uncompressedLength)
+        { }
+    };
+
+    using SourceType = mozilla::Variant<Missing, Uncompressed, Compressed>;
+    SourceType data;
 
     // The filename of this script.
     UniqueChars filename_;
@@ -681,14 +398,10 @@ class ScriptSource
     bool argumentsNotIncluded_:1;
     bool hasIntroductionOffset_:1;
 
-    // Whether this is in the runtime's set of compressed ScriptSources.
-    bool inCompressedSourceSet:1;
-
   public:
     explicit ScriptSource()
       : refs(0),
-        dataType(DataMissing),
-        length_(0),
+        data(SourceType(Missing())),
         filename_(nullptr),
         displayURL_(nullptr),
         sourceMapURL_(nullptr),
@@ -698,11 +411,14 @@ class ScriptSource
         introductionType_(nullptr),
         sourceRetrievable_(false),
         argumentsNotIncluded_(false),
-        hasIntroductionOffset_(false),
-        inCompressedSourceSet(false)
+        hasIntroductionOffset_(false)
     {
     }
-    ~ScriptSource();
+
+    ~ScriptSource() {
+        MOZ_ASSERT(refs == 0);
+    }
+
     void incref() { refs++; }
     void decref() {
         MOZ_ASSERT(refs != 0);
@@ -716,12 +432,30 @@ class ScriptSource
                        SourceCompressionTask* tok);
     void setSourceRetrievable() { sourceRetrievable_ = true; }
     bool sourceRetrievable() const { return sourceRetrievable_; }
-    bool hasSourceData() const { return dataType != DataMissing; }
-    bool hasCompressedSource() const { return dataType == DataCompressed; }
+    bool hasSourceData() const { return !data.is<Missing>(); }
+    bool hasCompressedSource() const { return data.is<Compressed>(); }
+
     size_t length() const {
+        struct LengthMatcher
+        {
+            size_t match(const Uncompressed& u) {
+                return u.string.length();
+            }
+
+            size_t match(const Compressed& c) {
+                return c.uncompressedLength;
+            }
+
+            size_t match(const Missing& m) {
+                MOZ_CRASH("ScriptSource::length on a missing source");
+                return 0;
+            }
+        };
+
         MOZ_ASSERT(hasSourceData());
-        return length_;
+        return data.match(LengthMatcher());
     }
+
     bool argumentsNotIncluded() const {
         MOZ_ASSERT(hasSourceData());
         return argumentsNotIncluded_;
@@ -732,40 +466,17 @@ class ScriptSource
     void addSizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf,
                                 JS::ScriptSourceInfo* info) const;
 
-    const char16_t* uncompressedChars() const {
-        MOZ_ASSERT(dataType == DataUncompressed);
-        return data.uncompressed.chars;
-    }
+    MOZ_MUST_USE bool setSource(ExclusiveContext* cx,
+                                mozilla::UniquePtr<char16_t[], JS::FreePolicy>&& source,
+                                size_t length);
+    void setSource(SharedImmutableTwoByteString&& string);
 
-    bool ownsUncompressedChars() const {
-        MOZ_ASSERT(dataType == DataUncompressed);
-        return data.uncompressed.ownsChars;
-    }
-
-    void* compressedData() const {
-        MOZ_ASSERT(dataType == DataCompressed);
-        return data.compressed.raw;
-    }
-
-    size_t compressedBytes() const {
-        MOZ_ASSERT(dataType == DataCompressed);
-        return data.compressed.nbytes;
-    }
-
-    HashNumber compressedHash() const {
-        MOZ_ASSERT(dataType == DataCompressed);
-        return data.compressed.hash;
-    }
-
-    ScriptSource* parent() const {
-        MOZ_ASSERT(dataType == DataParent);
-        return data.parent;
-    }
-
-    void setSource(const char16_t* chars, size_t length, bool ownsChars = true);
-    void setCompressedSource(JSRuntime* maybert, void* raw, size_t nbytes, HashNumber hash);
-    void updateCompressedSourceSet(JSRuntime* rt);
-    bool ensureOwnsSource(ExclusiveContext* cx);
+    MOZ_MUST_USE bool setCompressedSource(
+        ExclusiveContext* cx,
+        mozilla::UniquePtr<char[], JS::FreePolicy>&& raw,
+        size_t rawLength,
+        size_t sourceLength);
+    void setCompressedSource(SharedImmutableString&& raw, size_t sourceLength);
 
     // XDR handling
     template <XDRMode mode>
@@ -815,9 +526,6 @@ class ScriptSource
         introductionOffset_ = offset;
         hasIntroductionOffset_ = true;
     }
-
-  private:
-    size_t computedSizeOfData() const;
 };
 
 class ScriptSourceHolder
@@ -848,29 +556,10 @@ class ScriptSourceHolder
     }
 };
 
-struct CompressedSourceHasher
-{
-    typedef ScriptSource* Lookup;
-
-    static HashNumber computeHash(const void* data, size_t nbytes) {
-        return mozilla::HashBytes(data, nbytes);
-    }
-
-    static HashNumber hash(const ScriptSource* ss) {
-        return ss->compressedHash();
-    }
-
-    static bool match(const ScriptSource* a, const ScriptSource* b) {
-        return a->compressedBytes() == b->compressedBytes() &&
-               a->compressedHash() == b->compressedHash() &&
-               !memcmp(a->compressedData(), b->compressedData(), a->compressedBytes());
-    }
-};
-
-typedef HashSet<ScriptSource*, CompressedSourceHasher, SystemAllocPolicy> CompressedSourceSet;
-
 class ScriptSourceObject : public NativeObject
 {
+    static const ClassOps classOps_;
+
   public:
     static const Class class_;
 
@@ -929,12 +618,12 @@ GeneratorKindFromBits(unsigned val) {
  */
 template<XDRMode mode>
 bool
-XDRScript(XDRState<mode>* xdr, HandleObject enclosingScope, HandleScript enclosingScript,
+XDRScript(XDRState<mode>* xdr, HandleScope enclosingScope, HandleScript enclosingScript,
           HandleFunction fun, MutableHandleScript scriptp);
 
 template<XDRMode mode>
 bool
-XDRLazyScript(XDRState<mode>* xdr, HandleObject enclosingScope, HandleScript enclosingScript,
+XDRLazyScript(XDRState<mode>* xdr, HandleScope enclosingScope, HandleScript enclosingScript,
               HandleFunction fun, MutableHandle<LazyScript*> lazy);
 
 /*
@@ -944,6 +633,96 @@ template<XDRMode mode>
 bool
 XDRScriptConst(XDRState<mode>* xdr, MutableHandleValue vp);
 
+/*
+ * Common data that can be shared between many scripts in a single runtime.
+ */
+class SharedScriptData
+{
+    // This class is reference counted as follows: each pointer from a JSScript
+    // counts as one reference plus there may be one reference from the shared
+    // script data table.
+    mozilla::Atomic<uint32_t> refCount_;
+
+    uint32_t dataLength_;
+    uint32_t natoms_;
+    uint32_t codeLength_;
+    uintptr_t data_[1];
+
+  public:
+    static SharedScriptData* new_(ExclusiveContext* cx, uint32_t codeLength,
+                                  uint32_t srcnotesLength, uint32_t natoms);
+
+    uint32_t refCount() const {
+        return refCount_;
+    }
+    void incRefCount() {
+        refCount_++;
+    }
+    void decRefCount() {
+        MOZ_ASSERT(refCount_ != 0);
+        refCount_--;
+        if (refCount_ == 0)
+            js_free(this);
+    }
+
+    uint32_t dataLength() const {
+        return dataLength_;
+    }
+    uint8_t* data() {
+        return reinterpret_cast<uint8_t*>(data_);
+    }
+
+    uint32_t natoms() const {
+        return natoms_;
+    }
+    GCPtrAtom* atoms() {
+        if (!natoms_)
+            return nullptr;
+        return reinterpret_cast<GCPtrAtom*>(data());
+    }
+
+    uint32_t codeLength() const {
+        return codeLength_;
+    }
+    jsbytecode* code() {
+        return reinterpret_cast<jsbytecode*>(data() + natoms_ * sizeof(GCPtrAtom));
+    }
+
+    void traceChildren(JSTracer* trc);
+
+  private:
+    SharedScriptData() = delete;
+    SharedScriptData(const SharedScriptData&) = delete;
+    SharedScriptData& operator=(const SharedScriptData&) = delete;
+};
+
+struct ScriptBytecodeHasher
+{
+    struct Lookup
+    {
+        const uint8_t* data;
+        uint32_t length;
+
+        explicit Lookup(SharedScriptData* ssd) : data(ssd->data()), length(ssd->dataLength()) {}
+    };
+    static HashNumber hash(const Lookup& l) { return mozilla::HashBytes(l.data, l.length); }
+    static bool match(SharedScriptData* entry, const Lookup& lookup) {
+        if (entry->dataLength() != lookup.length)
+            return false;
+        return mozilla::PodEqual<uint8_t>(entry->data(), lookup.data, lookup.length);
+    }
+};
+
+typedef HashSet<SharedScriptData*,
+                ScriptBytecodeHasher,
+                SystemAllocPolicy> ScriptDataTable;
+
+extern void
+SweepScriptData(JSRuntime* rt, AutoLockForExclusiveAccess& lock);
+
+extern void
+FreeScriptData(JSRuntime* rt, AutoLockForExclusiveAccess& lock);
+
 } /* namespace js */
 
 class JSScript : public js::gc::TenuredCell
@@ -951,51 +730,19 @@ class JSScript : public js::gc::TenuredCell
     template <js::XDRMode mode>
     friend
     bool
-    js::XDRScript(js::XDRState<mode>* xdr, js::HandleObject enclosingScope,
-                  js::HandleScript enclosingScript,
-                  js::HandleFunction fun, js::MutableHandleScript scriptp);
+    js::XDRScript(js::XDRState<mode>* xdr, js::HandleScope enclosingScope,
+                  js::HandleScript enclosingScript, js::HandleFunction fun,
+                  js::MutableHandleScript scriptp);
 
     friend bool
-    js::detail::CopyScript(JSContext* cx, js::HandleObject scriptStaticScope, js::HandleScript src,
-                           js::HandleScript dst);
-
-  public:
-    //
-    // We order fields according to their size in order to avoid wasting space
-    // for alignment.
-    //
-
-    // Larger-than-word-sized fields.
-
-  public:
-    js::Bindings    bindings;   /* names of top-level variables in this script
-                                   (and arguments if this is a function script) */
-
-    bool hasAnyAliasedBindings() const {
-        return bindings.hasAnyAliasedBindings();
-    }
-
-    js::Binding* bindingArray() const {
-        return bindings.bindingArray();
-    }
-
-    unsigned numArgs() const {
-        return bindings.numArgs();
-    }
-
-    js::Shape* callObjShape() const {
-        return bindings.callObjShape();
-    }
-
-    // Word-sized fields.
+    js::detail::CopyScript(JSContext* cx, js::HandleScript src, js::HandleScript dst,
+                           js::MutableHandle<JS::GCVector<js::Scope*>> scopes);
 
   private:
-    jsbytecode*     code_;     /* bytecodes and their immediate operands */
+    js::SharedScriptData* scriptData_;
   public:
     uint8_t*        data;      /* pointer to variable-length data array (see
                                    comment above Create() for details) */
-
-    js::HeapPtrAtom* atoms;     /* maps immediate index to literal struct */
 
     JSCompartment*  compartment_;
 
@@ -1007,11 +754,7 @@ class JSScript : public js::gc::TenuredCell
     //
     // (When we clone a JSScript into a new compartment, we don't clone its
     // source object. Instead, the clone refers to a wrapper.)
-    js::HeapPtrObject sourceObject_;
-
-    js::HeapPtrFunction function_;
-    js::HeapPtr<js::ModuleObject*> module_;
-    js::HeapPtrObject   enclosingStaticScope_;
+    js::GCPtrObject sourceObject_;
 
     /*
      * Information attached by Ion. Nexto a valid IonScript this could be
@@ -1036,7 +779,6 @@ class JSScript : public js::gc::TenuredCell
 
     // 32-bit fields.
 
-    uint32_t        length_;    /* length of code vector */
     uint32_t        dataSize_;  /* size of the used part of the data array */
 
     uint32_t        lineno_;    /* base line number of script */
@@ -1045,8 +787,10 @@ class JSScript : public js::gc::TenuredCell
     uint32_t        mainOffset_;/* offset of main entry point from code, after
                                    predef'ing prologue */
 
-    uint32_t        natoms_;    /* length of atoms array */
-    uint32_t        nslots_;    /* vars plus maximum stack depth */
+    uint32_t        nfixed_;    /* fixed frame slots */
+    uint32_t        nslots_;    /* slots plus maximum stack depth */
+
+    uint32_t        bodyScopeIndex_; /* index into the scopes array of the body scope */
 
     /* Range of characters in scriptSource which contains this script's source. */
     uint32_t        sourceStart_;
@@ -1060,8 +804,8 @@ class JSScript : public js::gc::TenuredCell
     // 16-bit fields.
 
     uint16_t        warmUpResetCount; /* Number of times the |warmUpCount| was
-                                 * forcibly discarded. The counter is reset when
-                                 * a script is successfully jit-compiled. */
+                                       * forcibly discarded. The counter is reset when
+                                       * a script is successfully jit-compiled. */
 
     uint16_t        version;    /* JS version under which script was compiled */
 
@@ -1078,7 +822,7 @@ class JSScript : public js::gc::TenuredCell
         CONSTS,
         OBJECTS,
         TRYNOTES,
-        BLOCK_SCOPES,
+        SCOPENOTES,
         ARRAY_KIND_BITS
     };
 
@@ -1094,9 +838,6 @@ class JSScript : public js::gc::TenuredCell
 
     // No need for result value of last expression statement.
     bool noScriptRval_:1;
-
-    // Can call getCallerFunction().
-    bool savedCallerFun_:1;
 
     // Code is in strict mode.
     bool strict_:1;
@@ -1115,7 +856,6 @@ class JSScript : public js::gc::TenuredCell
     // See FunctionContextFlags.
     bool bindingsAccessedDynamically_:1;
     bool funHasExtensibleScope_:1;
-    bool funNeedsDeclEnvObject_:1;
 
     // True if any formalIsAliased(i).
     bool funHasAnyAliasedFormal_:1;
@@ -1128,7 +868,7 @@ class JSScript : public js::gc::TenuredCell
 
     // Script is a lambda to treat as running once or a global or eval script
     // that will only run once.  Which one it is can be disambiguated by
-    // checking whether function_ is null.
+    // checking whether function() is null.
     bool treatAsRunOnce_:1;
 
     // If treatAsRunOnce, whether script has executed.
@@ -1144,7 +884,7 @@ class JSScript : public js::gc::TenuredCell
     bool isCachedEval_:1;
 
     // 'this', 'arguments' and f.apply() are used. This is likely to be a wrapper.
-    bool usesArgumentsApplyAndThis_:1;
+    bool isLikelyConstructorWrapper_:1;
 
     // IonMonkey compilation hints.
     bool failedBoundsCheck_:1; /* script has had hoisted bounds checks fail */
@@ -1177,6 +917,7 @@ class JSScript : public js::gc::TenuredCell
     bool needsArgsAnalysis_:1;
     bool needsArgsObj_:1;
     bool functionHasThisBinding_:1;
+    bool functionHasExtraBodyVarScope_:1;
 
     // Whether the arguments object for this script, if it needs one, should be
     // mapped (alias formal parameters).
@@ -1210,7 +951,7 @@ class JSScript : public js::gc::TenuredCell
     // instead of private to suppress -Wunused-private-field compiler warnings.
   protected:
 #if JS_BITS_PER_WORD == 32
-    // No padding currently required.
+    // Currently no padding is needed.
 #endif
 
     //
@@ -1219,7 +960,6 @@ class JSScript : public js::gc::TenuredCell
 
   public:
     static JSScript* Create(js::ExclusiveContext* cx,
-                            js::HandleObject enclosingScope, bool savedCallerFun,
                             const JS::ReadOnlyCompileOptions& options,
                             js::HandleObject sourceObject, uint32_t sourceStart,
                             uint32_t sourceEnd);
@@ -1227,21 +967,35 @@ class JSScript : public js::gc::TenuredCell
     void initCompartment(js::ExclusiveContext* cx);
 
     // Three ways ways to initialize a JSScript. Callers of partiallyInit()
-    // and fullyInitTrivial() are responsible for notifying the debugger after
-    // successfully creating any kind (function or other) of new JSScript.
-    // However, callers of fullyInitFromEmitter() do not need to do this.
+    // are responsible for notifying the debugger after successfully creating
+    // any kind (function or other) of new JSScript.  However, callers of
+    // fullyInitFromEmitter() do not need to do this.
     static bool partiallyInit(js::ExclusiveContext* cx, JS::Handle<JSScript*> script,
-                              uint32_t nconsts, uint32_t nobjects, uint32_t ntrynotes,
-                              uint32_t nblockscopes, uint32_t nyieldoffsets, uint32_t nTypeSets);
-    static bool fullyInitFromEmitter(js::ExclusiveContext* cx, JS::Handle<JSScript*> script,
-                                     js::frontend::BytecodeEmitter* bce);
-    static void linkToFunctionFromEmitter(js::ExclusiveContext* cx, JS::Handle<JSScript*> script,
-                                          js::frontend::FunctionBox* funbox);
-    static void linkToModuleFromEmitter(js::ExclusiveContext* cx, JS::Handle<JSScript*> script,
-                                        js::frontend::ModuleBox* funbox);
-    // Initialize a no-op script.
-    static bool fullyInitTrivial(js::ExclusiveContext* cx, JS::Handle<JSScript*> script);
+                              uint32_t nscopes, uint32_t nconsts, uint32_t nobjects,
+                              uint32_t ntrynotes, uint32_t nscopenotes, uint32_t nyieldoffsets,
+                              uint32_t nTypeSets);
 
+  private:
+    static void initFromFunctionBox(js::ExclusiveContext* cx, js::HandleScript script,
+                                    js::frontend::FunctionBox* funbox);
+    static void initFromModuleContext(js::ExclusiveContext* cx, js::HandleScript script,
+                                      js::frontend::ModuleSharedContext* modulesc);
+
+  public:
+    static bool fullyInitFromEmitter(js::ExclusiveContext* cx, js::HandleScript script,
+                                     js::frontend::BytecodeEmitter* bce);
+
+    // Initialize the Function.prototype script.
+    static bool initFunctionPrototype(js::ExclusiveContext* cx, js::HandleScript script,
+                                      JS::HandleFunction functionProto);
+
+#ifdef DEBUG
+  private:
+    // Assert that jump targets are within the code array of the script.
+    void assertValidJumpTargets() const;
+#endif
+
+  public:
     inline JSPrincipals* principals();
 
     JSCompartment* compartment() const { return compartment_; }
@@ -1249,16 +1003,20 @@ class JSScript : public js::gc::TenuredCell
 
     void setVersion(JSVersion v) { version = v; }
 
-    // Script bytecode is immutable after creation.
-    jsbytecode* code() const {
-        return code_;
-    }
-    size_t length() const {
-        return length_;
+    js::SharedScriptData* scriptData() {
+        return scriptData_;
     }
 
-    void setCode(jsbytecode* code) { code_ = code; }
-    void setLength(size_t length) { length_ = length; }
+    // Script bytecode is immutable after creation.
+    jsbytecode* code() const {
+        if (!scriptData_)
+            return nullptr;
+        return scriptData_->code();
+    }
+    size_t length() const {
+        MOZ_ASSERT(scriptData_);
+        return scriptData_->codeLength();
+    }
 
     jsbytecode* codeEnd() const { return code() + length(); }
 
@@ -1299,36 +1057,40 @@ class JSScript : public js::gc::TenuredCell
     // The fixed part of a stack frame is comprised of vars (in function and
     // module code) and block-scoped locals (in all kinds of code).
     size_t nfixed() const {
-        return isGlobalOrEvalCode() ? bindings.numBlockScoped() : bindings.numFixedLocals();
+        return nfixed_;
     }
 
-    // Number of fixed slots reserved for vars.  Only nonzero for function
-    // or module code.
-    size_t nfixedvars() const {
-        return isGlobalOrEvalCode() ? 0 : bindings.numUnaliasedVars();
-    }
-
-    // Number of fixed slots reserved for body-level lexicals and vars. This
-    // value minus nfixedvars() is the number of body-level lexicals. Only
+    // Number of fixed slots reserved for slots that are always live. Only
     // nonzero for function or module code.
-    size_t nbodyfixed() const {
-        return isGlobalOrEvalCode() ? 0 : bindings.numUnaliasedBodyLevelLocals();
+    size_t numAlwaysLiveFixedSlots() const {
+        if (bodyScope()->is<js::FunctionScope>())
+            return bodyScope()->as<js::FunctionScope>().nextFrameSlot();
+        if (bodyScope()->is<js::ModuleScope>())
+            return bodyScope()->as<js::ModuleScope>().nextFrameSlot();
+        return 0;
     }
 
     // Calculate the number of fixed slots that are live at a particular bytecode.
     size_t calculateLiveFixed(jsbytecode* pc);
 
-    // Aliases for clarity when dealing with lexical slots.
-    size_t fixedLexicalBegin() const {
-        return nfixedvars();
-    }
-
-    size_t fixedLexicalEnd() const {
-        return nfixed();
-    }
-
     size_t nslots() const {
         return nslots_;
+    }
+
+    unsigned numArgs() const {
+        if (bodyScope()->is<js::FunctionScope>())
+            return bodyScope()->as<js::FunctionScope>().numPositionalFormalParameters();
+        return 0;
+    }
+
+    inline js::Shape* initialEnvironmentShape() const;
+
+    bool functionHasParameterExprs() const {
+        // Only functions have parameters.
+        js::Scope* scope = bodyScope();
+        if (!scope->is<js::FunctionScope>())
+            return false;
+        return scope->as<js::FunctionScope>().hasParameterExprs();
     }
 
     size_t nTypeSets() const {
@@ -1351,8 +1113,6 @@ class JSScript : public js::gc::TenuredCell
         return noScriptRval_;
     }
 
-    bool savedCallerFun() const { return savedCallerFun_; }
-
     bool strict() const {
         return strict_;
     }
@@ -1367,9 +1127,6 @@ class JSScript : public js::gc::TenuredCell
     bool bindingsAccessedDynamically() const { return bindingsAccessedDynamically_; }
     bool funHasExtensibleScope() const {
         return funHasExtensibleScope_;
-    }
-    bool funNeedsDeclEnvObject() const {
-        return funNeedsDeclEnvObject_;
     }
     bool funHasAnyAliasedFormal() const {
         return funHasAnyAliasedFormal_;
@@ -1407,10 +1164,10 @@ class JSScript : public js::gc::TenuredCell
 
     void setActiveEval() { isActiveEval_ = true; }
 
-    bool usesArgumentsApplyAndThis() const {
-        return usesArgumentsApplyAndThis_;
+    bool isLikelyConstructorWrapper() const {
+        return isLikelyConstructorWrapper_;
     }
-    void setUsesArgumentsApplyAndThis() { usesArgumentsApplyAndThis_ = true; }
+    void setLikelyConstructorWrapper() { isLikelyConstructorWrapper_ = true; }
 
     bool isGeneratorExp() const { return isGeneratorExp_; }
 
@@ -1460,7 +1217,6 @@ class JSScript : public js::gc::TenuredCell
     bool argumentsHasVarBinding() const {
         return argsHasVarBinding_;
     }
-    jsbytecode* argumentsBytecode() const { MOZ_ASSERT(code()[0] == JSOP_ARGUMENTS); return code(); }
     void setArgumentsHasVarBinding();
     bool argumentsAliasesFormals() const {
         return argumentsHasVarBinding() && hasMappedArgsObj();
@@ -1577,7 +1333,7 @@ class JSScript : public js::gc::TenuredCell
     js::jit::IonScript* const* addressOfIonScript() const {
         return &ion;
     }
-    void setIonScript(JSContext* maybecx, js::jit::IonScript* ionScript);
+    void setIonScript(JSRuntime* maybeRuntime, js::jit::IonScript* ionScript);
 
     bool hasBaselineScript() const {
         bool res = baseline && baseline != BASELINE_DISABLED_SCRIPT;
@@ -1591,9 +1347,9 @@ class JSScript : public js::gc::TenuredCell
         MOZ_ASSERT(hasBaselineScript());
         return baseline;
     }
-    inline void setBaselineScript(JSContext* maybecx, js::jit::BaselineScript* baselineScript);
+    inline void setBaselineScript(JSRuntime* maybeRuntime, js::jit::BaselineScript* baselineScript);
 
-    void updateBaselineOrIonRaw(JSContext* maybecx);
+    void updateBaselineOrIonRaw(JSRuntime* maybeRuntime);
 
     static size_t offsetOfBaselineScript() {
         return offsetof(JSScript, baseline);
@@ -1614,7 +1370,7 @@ class JSScript : public js::gc::TenuredCell
     bool isRelazifiable() const {
         return (selfHosted() || lazyScript) && !hasInnerFunctions_ && !types_ &&
                !isGenerator() && !hasBaselineScript() && !hasAnyIonScript() &&
-               !hasScriptCounts() && !doNotRelazify_;
+               !doNotRelazify_;
     }
     void setLazyScript(js::LazyScript* lazy) {
         lazyScript = lazy;
@@ -1633,9 +1389,10 @@ class JSScript : public js::gc::TenuredCell
      */
     inline JSFunction* functionDelazifying() const;
     JSFunction* functionNonDelazifying() const {
-        return function_;
+        if (bodyScope()->is<js::FunctionScope>())
+            return bodyScope()->as<js::FunctionScope>().canonicalFunction();
+        return nullptr;
     }
-    inline void setFunction(JSFunction* fun);
     /*
      * De-lazifies the canonical function. Must be called before entering code
      * that expects the function to be non-lazy.
@@ -1643,15 +1400,16 @@ class JSScript : public js::gc::TenuredCell
     inline void ensureNonLazyCanonicalFunction(JSContext* cx);
 
     js::ModuleObject* module() const {
-        return module_;
+        if (bodyScope()->is<js::ModuleScope>())
+            return bodyScope()->as<js::ModuleScope>().module();
+        return nullptr;
     }
-    inline void setModule(js::ModuleObject* module);
 
     bool isGlobalOrEvalCode() const {
-        return !function_ && !module_;
+        return bodyScope()->is<js::GlobalScope>() || bodyScope()->is<js::EvalScope>();
     }
     bool isGlobalCode() const {
-        return isGlobalOrEvalCode() && !isForEval();
+        return bodyScope()->is<js::GlobalScope>();
     }
 
     // Returns true if the script may read formal arguments on the stack
@@ -1676,10 +1434,17 @@ class JSScript : public js::gc::TenuredCell
   public:
 
     /* Return whether this script was compiled for 'eval' */
-    bool isForEval() const { return isCachedEval() || isActiveEval(); }
+    bool isForEval() const {
+        MOZ_ASSERT_IF(isCachedEval() || isActiveEval(), bodyScope()->is<js::EvalScope>());
+        return isCachedEval() || isActiveEval();
+    }
 
     /* Return whether this is a 'direct eval' script in a function scope. */
-    bool isDirectEvalInFunction() const { return isForEval() && savedCallerFun(); }
+    bool isDirectEvalInFunction() const {
+        if (!isForEval())
+            return false;
+        return bodyScope()->hasOnChain(js::ScopeKind::Function);
+    }
 
     /*
      * Return whether this script is a top-level script.
@@ -1703,17 +1468,50 @@ class JSScript : public js::gc::TenuredCell
     inline js::GlobalObject& global() const;
     js::GlobalObject& uninlinedGlobal() const;
 
-    /* See StaticScopeIter comment. */
-    JSObject* enclosingStaticScope() const {
-        return enclosingStaticScope_;
+    uint32_t bodyScopeIndex() const {
+        return bodyScopeIndex_;
     }
 
-    // Switch the script over from the off-thread compartment's static
-    // global lexical scope to the main thread compartment's.
-    void fixEnclosingStaticGlobalLexicalScope();
+    js::Scope* bodyScope() const {
+        return getScope(bodyScopeIndex_);
+    }
+
+    js::Scope* outermostScope() const {
+        // The body scope may not be the outermost scope in the script when
+        // the decl env scope is present.
+        size_t index = 0;
+        return getScope(index);
+    }
+
+    bool functionHasExtraBodyVarScope() const {
+        MOZ_ASSERT_IF(functionHasExtraBodyVarScope_, functionHasParameterExprs());
+        return functionHasExtraBodyVarScope_;
+    }
+
+    js::VarScope* functionExtraBodyVarScope() const {
+        MOZ_ASSERT(functionHasExtraBodyVarScope());
+        for (uint32_t i = 0; i < scopes()->length; i++) {
+            js::Scope* scope = getScope(i);
+            if (scope->kind() == js::ScopeKind::FunctionBodyVar)
+                return &scope->as<js::VarScope>();
+        }
+        MOZ_CRASH("Function extra body var scope not found");
+    }
+
+    inline js::LexicalScope* maybeNamedLambdaScope() const;
+
+    js::Scope* enclosingScope() const {
+        return outermostScope()->enclosing();
+    }
 
   private:
     bool makeTypes(JSContext* cx);
+
+    bool createScriptData(js::ExclusiveContext* cx, uint32_t codeLength, uint32_t srcnotesLength,
+                          uint32_t natoms);
+    bool shareScriptData(js::ExclusiveContext* cx);
+    void freeScriptData();
+    void setScriptData(js::SharedScriptData* data);
 
   public:
     uint32_t getWarmUpCount() const { return warmUpCount; }
@@ -1741,7 +1539,7 @@ class JSScript : public js::gc::TenuredCell
     // The entry should be removed after using this function.
     void takeOverScriptCountsMapEntry(js::ScriptCounts* entryValue);
 
-    jsbytecode* main() {
+    jsbytecode* main() const {
         return code() + mainOffset();
     }
 
@@ -1759,25 +1557,28 @@ class JSScript : public js::gc::TenuredCell
     /* Script notes are allocated right after the code. */
     jssrcnote* notes() { return (jssrcnote*)(code() + length()); }
 
-    bool hasArray(ArrayKind kind) {
+    bool hasArray(ArrayKind kind) const {
         return hasArrayBits & (1 << kind);
     }
     void setHasArray(ArrayKind kind) { hasArrayBits |= (1 << kind); }
     void cloneHasArray(JSScript* script) { hasArrayBits = script->hasArrayBits; }
 
-    bool hasConsts()        { return hasArray(CONSTS);      }
-    bool hasObjects()       { return hasArray(OBJECTS);     }
-    bool hasTrynotes()      { return hasArray(TRYNOTES);    }
-    bool hasBlockScopes()   { return hasArray(BLOCK_SCOPES); }
-    bool hasYieldOffsets()  { return isGenerator(); }
+    bool hasConsts() const       { return hasArray(CONSTS); }
+    bool hasObjects() const      { return hasArray(OBJECTS); }
+    bool hasTrynotes() const     { return hasArray(TRYNOTES); }
+    bool hasScopeNotes() const   { return hasArray(SCOPENOTES); }
+    bool hasYieldOffsets() const { return isGenerator(); }
 
-    #define OFF(fooOff, hasFoo, t)   (fooOff() + (hasFoo() ? sizeof(t) : 0))
+#define OFF(fooOff, hasFoo, t)   (fooOff() + (hasFoo() ? sizeof(t) : 0))
 
-    size_t constsOffset()       { return 0; }
-    size_t objectsOffset()      { return OFF(constsOffset,      hasConsts,      js::ConstArray);      }
-    size_t trynotesOffset()     { return OFF(objectsOffset,     hasObjects,     js::ObjectArray);     }
-    size_t blockScopesOffset()  { return OFF(trynotesOffset,    hasTrynotes,    js::TryNoteArray);    }
-    size_t yieldOffsetsOffset() { return OFF(blockScopesOffset, hasBlockScopes, js::BlockScopeArray); }
+    size_t scopesOffset() const       { return 0; }
+    size_t constsOffset() const       { return scopesOffset() + sizeof(js::ScopeArray); }
+    size_t objectsOffset() const      { return OFF(constsOffset,     hasConsts,     js::ConstArray); }
+    size_t trynotesOffset() const     { return OFF(objectsOffset,    hasObjects,    js::ObjectArray); }
+    size_t scopeNotesOffset() const   { return OFF(trynotesOffset,   hasTrynotes,   js::TryNoteArray); }
+    size_t yieldOffsetsOffset() const { return OFF(scopeNotesOffset, hasScopeNotes, js::ScopeNoteArray); }
+
+#undef OFF
 
     size_t dataSize() const { return dataSize_; }
 
@@ -1791,14 +1592,18 @@ class JSScript : public js::gc::TenuredCell
         return reinterpret_cast<js::ObjectArray*>(data + objectsOffset());
     }
 
-    js::TryNoteArray* trynotes() {
+    js::ScopeArray* scopes() const {
+        return reinterpret_cast<js::ScopeArray*>(data + scopesOffset());
+    }
+
+    js::TryNoteArray* trynotes() const {
         MOZ_ASSERT(hasTrynotes());
         return reinterpret_cast<js::TryNoteArray*>(data + trynotesOffset());
     }
 
-    js::BlockScopeArray* blockScopes() {
-        MOZ_ASSERT(hasBlockScopes());
-        return reinterpret_cast<js::BlockScopeArray*>(data + blockScopesOffset());
+    js::ScopeNoteArray* scopeNotes() {
+        MOZ_ASSERT(hasScopeNotes());
+        return reinterpret_cast<js::ScopeNoteArray*>(data + scopeNotesOffset());
     }
 
     js::YieldOffsetArray& yieldOffsets() {
@@ -1808,14 +1613,21 @@ class JSScript : public js::gc::TenuredCell
 
     bool hasLoops();
 
-    size_t natoms() const { return natoms_; }
-
-    js::HeapPtrAtom& getAtom(size_t index) const {
-        MOZ_ASSERT(index < natoms());
-        return atoms[index];
+    size_t natoms() const {
+        MOZ_ASSERT(scriptData_);
+        return scriptData_->natoms();
+    }
+    js::GCPtrAtom* atoms() const {
+        MOZ_ASSERT(scriptData_);
+        return scriptData_->atoms();
     }
 
-    js::HeapPtrAtom& getAtom(jsbytecode* pc) const {
+    js::GCPtrAtom& getAtom(size_t index) const {
+        MOZ_ASSERT(index < natoms());
+        return atoms()[index];
+    }
+
+    js::GCPtrAtom& getAtom(jsbytecode* pc) const {
         MOZ_ASSERT(containsPC(pc) && containsPC(pc + sizeof(uint32_t)));
         return getAtom(GET_UINT32_INDEX(pc));
     }
@@ -1836,14 +1648,25 @@ class JSScript : public js::gc::TenuredCell
         return arr->vector[index];
     }
 
-    size_t innerObjectsStart() {
-        // The first object contains the caller if savedCallerFun is used.
-        return savedCallerFun() ? 1 : 0;
-    }
-
     JSObject* getObject(jsbytecode* pc) {
         MOZ_ASSERT(containsPC(pc) && containsPC(pc + sizeof(uint32_t)));
         return getObject(GET_UINT32_INDEX(pc));
+    }
+
+    js::Scope* getScope(size_t index) const {
+        js::ScopeArray* array = scopes();
+        MOZ_ASSERT(index < array->length);
+        return array->vector[index];
+    }
+
+    js::Scope* getScope(jsbytecode* pc) const {
+        // This method is used to get a scope directly using a JSOp with an
+        // index. To search through ScopeNotes to look for a Scope using pc,
+        // use lookupScope.
+        MOZ_ASSERT(containsPC(pc) && containsPC(pc + sizeof(uint32_t)));
+        MOZ_ASSERT(js::JOF_OPTYPE(JSOp(*pc)) == JOF_SCOPE,
+                   "Did you mean to use lookupScope(pc)?");
+        return getScope(GET_UINT32_INDEX(pc));
     }
 
     JSVersion getVersion() const {
@@ -1851,8 +1674,11 @@ class JSScript : public js::gc::TenuredCell
     }
 
     inline JSFunction* getFunction(size_t index);
-    inline JSFunction* getCallerFunction();
-    inline JSFunction* functionOrCallerFunction();
+    JSFunction* function() const {
+        if (functionNonDelazifying())
+            return functionNonDelazifying();
+        return nullptr;
+    }
 
     inline js::RegExpObject* getRegExp(size_t index);
     inline js::RegExpObject* getRegExp(jsbytecode* pc);
@@ -1863,20 +1689,13 @@ class JSScript : public js::gc::TenuredCell
         return arr->vector[index];
     }
 
-    // The following 4 functions find the static scope just before the
+    // The following 3 functions find the static scope just before the
     // execution of the instruction pointed to by pc.
 
-    js::NestedStaticScope* getStaticBlockScope(jsbytecode* pc);
+    js::Scope* lookupScope(jsbytecode* pc);
 
-    // Returns the innermost static scope at pc if it falls within the extent
-    // of the script. Returns nullptr otherwise.
-    JSObject* innermostStaticScopeInScript(jsbytecode* pc);
-
-    // As innermostStaticScopeInScript, but returns the enclosing static scope
-    // if the innermost static scope falls without the extent of the script.
-    JSObject* innermostStaticScope(jsbytecode* pc);
-
-    JSObject* innermostStaticScope() { return innermostStaticScope(main()); }
+    js::Scope* innermostScope(jsbytecode* pc);
+    js::Scope* innermostScope() { return innermostScope(main()); }
 
     /*
      * The isEmpty method tells whether this script has code that computes any
@@ -1893,10 +1712,8 @@ class JSScript : public js::gc::TenuredCell
         return JSOp(*pc) == JSOP_RETRVAL;
     }
 
-    bool bindingIsAliased(const js::BindingIter& bi);
     bool formalIsAliased(unsigned argSlot);
     bool formalLivesInArgumentsObject(unsigned argSlot);
-    bool localIsAliased(unsigned localSlot);
 
   private:
     /* Change this->stepMode to |newValue|. */
@@ -1942,7 +1759,6 @@ class JSScript : public js::gc::TenuredCell
 #endif
 
     void finalize(js::FreeOp* fop);
-    void fixupAfterMovingGC() {}
 
     static const JS::TraceKind TraceKind = JS::TraceKind::Script;
 
@@ -1992,144 +1808,10 @@ static_assert(sizeof(JSScript) % js::gc::CellSize == 0,
 
 namespace js {
 
-/*
- * Iterator over a script's bindings (formals and variables).
- * The order of iteration is:
- *  - first, formal arguments, from index 0 to numArgs
- *  - next, variables, from index 0 to numLocals
- */
-class BindingIter
-{
-    Handle<Bindings> bindings_;
-    uint32_t i_;
-    uint32_t unaliasedLocal_;
-
-    friend class ::JSScript;
-    friend class Bindings;
-
-  public:
-    explicit BindingIter(Handle<Bindings> bindings)
-      : bindings_(bindings), i_(0), unaliasedLocal_(0)
-    {}
-
-    explicit BindingIter(const HandleScript& script)
-      : bindings_(Handle<Bindings>::fromMarkedLocation(&script->bindings)),
-        i_(0), unaliasedLocal_(0)
-    {}
-
-    bool done() const { return i_ == bindings_.count(); }
-    explicit operator bool() const { return !done(); }
-    BindingIter& operator++() { (*this)++; return *this; }
-
-    void operator++(int) {
-        MOZ_ASSERT(!done());
-        const Binding& binding = **this;
-        if (binding.kind() != Binding::ARGUMENT && !binding.aliased())
-            unaliasedLocal_++;
-        i_++;
-    }
-
-    // Stack slots are assigned to arguments (aliased and unaliased) and
-    // unaliased locals. frameIndex() returns the slot index. It's invalid to
-    // call this method when the iterator is stopped on an aliased local, as it
-    // has no stack slot.
-    uint32_t frameIndex() const {
-        MOZ_ASSERT(!done());
-        if (i_ < bindings_.numArgs())
-            return i_;
-        MOZ_ASSERT(!(*this)->aliased());
-        return unaliasedLocal_;
-    }
-
-    // If the current binding is an argument, argIndex() returns its index.
-    // It returns the same value as frameIndex(), as slots are allocated for
-    // both unaliased and aliased arguments.
-    uint32_t argIndex() const {
-        MOZ_ASSERT(!done());
-        MOZ_ASSERT(i_ < bindings_.numArgs());
-        return i_;
-    }
-    uint32_t argOrLocalIndex() const {
-        MOZ_ASSERT(!done());
-        return i_ < bindings_.numArgs() ? i_ : i_ - bindings_.numArgs();
-    }
-    uint32_t localIndex() const {
-        MOZ_ASSERT(!done());
-        MOZ_ASSERT(i_ >= bindings_.numArgs());
-        return i_ - bindings_.numArgs();
-    }
-    bool isBodyLevelLexical() const {
-        MOZ_ASSERT(!done());
-        const Binding& binding = **this;
-        return binding.kind() != Binding::ARGUMENT;
-    }
-
-    const Binding& operator*() const { MOZ_ASSERT(!done()); return bindings_.bindingArray()[i_]; }
-    const Binding* operator->() const { MOZ_ASSERT(!done()); return &bindings_.bindingArray()[i_]; }
-};
-
-/*
- * Iterator over the aliased formal bindings in ascending index order. This can
- * be veiwed as a filtering of BindingIter with predicate
- *   bi->aliased() && bi->kind() == Binding::ARGUMENT
- */
-class AliasedFormalIter
-{
-    const Binding* begin_;
-    const Binding* p_;
-    const Binding* end_;
-    unsigned slot_;
-
-    void settle() {
-        while (p_ != end_ && !p_->aliased())
-            p_++;
-    }
-
-  public:
-    explicit inline AliasedFormalIter(JSScript* script);
-
-    bool done() const { return p_ == end_; }
-    explicit operator bool() const { return !done(); }
-    void operator++(int) { MOZ_ASSERT(!done()); p_++; slot_++; settle(); }
-
-    const Binding& operator*() const { MOZ_ASSERT(!done()); return *p_; }
-    const Binding* operator->() const { MOZ_ASSERT(!done()); return p_; }
-    unsigned frameIndex() const { MOZ_ASSERT(!done()); return p_ - begin_; }
-    unsigned scopeSlot() const { MOZ_ASSERT(!done()); return slot_; }
-};
-
 // Information about a script which may be (or has been) lazily compiled to
 // bytecode from its source.
 class LazyScript : public gc::TenuredCell
 {
-  public:
-    class FreeVariable
-    {
-        // Variable name is stored as a tagged JSAtom pointer.
-        uintptr_t bits_;
-
-        static const uintptr_t HOISTED_USE_BIT = 0x1;
-        static const uintptr_t MASK = ~HOISTED_USE_BIT;
-
-      public:
-        explicit FreeVariable()
-          : bits_(0)
-        { }
-
-        explicit FreeVariable(JSAtom* name)
-          : bits_(uintptr_t(name))
-        {
-            // We rely on not requiring any write barriers so we can tag the
-            // pointer. This code needs to change if we start allocating
-            // JSAtoms inside the nursery.
-            MOZ_ASSERT(!IsInsideNursery(name));
-        }
-
-        JSAtom* atom() const { return (JSAtom*)(bits_ & MASK); }
-        void setIsHoistedUse() { bits_ |= HOISTED_USE_BIT; }
-        bool isHoistedUse() const { return bool(bits_ & HOISTED_USE_BIT); }
-    };
-
   private:
     // If non-nullptr, the script has been compiled and this is a forwarding
     // pointer to the result. This is a weak pointer: after relazification, we
@@ -2137,15 +1819,15 @@ class LazyScript : public gc::TenuredCell
     WeakRef<JSScript*> script_;
 
     // Original function with which the lazy script is associated.
-    HeapPtrFunction function_;
+    GCPtrFunction function_;
 
-    // Function or block chain in which the script is nested, or nullptr.
-    HeapPtrObject enclosingScope_;
+    // Scope in which the script is nested.
+    GCPtrScope enclosingScope_;
 
     // ScriptSourceObject. We leave this set to nullptr until we generate
     // bytecode for our immediate parent. This is never a CCW; we don't clone
     // LazyScripts into other compartments.
-    HeapPtrObject sourceObject_;
+    GCPtrObject sourceObject_;
 
     // Heap allocated table with any free variables or inner functions.
     void* table_;
@@ -2156,13 +1838,15 @@ class LazyScript : public gc::TenuredCell
 #if JS_BITS_PER_WORD == 32
     uint32_t padding;
 #endif
-  private:
 
+  private:
     struct PackedView {
         // Assorted bits that should really be in ScriptSourceObject.
         uint32_t version : 8;
 
-        uint32_t numFreeVariables : 24;
+        uint32_t shouldDeclareArguments : 1;
+        uint32_t hasThisBinding : 1;
+        uint32_t numClosedOverBindings : 22;
         uint32_t numInnerFunctions : 20;
 
         uint32_t generatorKindBits : 2;
@@ -2174,7 +1858,7 @@ class LazyScript : public gc::TenuredCell
         uint32_t bindingsAccessedDynamically : 1;
         uint32_t hasDebuggerStatement : 1;
         uint32_t hasDirectEval : 1;
-        uint32_t usesArgumentsApplyAndThis : 1;
+        uint32_t isLikelyConstructorWrapper : 1;
         uint32_t hasBeenCloned : 1;
         uint32_t treatAsRunOnce : 1;
         uint32_t isDerivedClassConstructor : 1;
@@ -2195,7 +1879,7 @@ class LazyScript : public gc::TenuredCell
     LazyScript(JSFunction* fun, void* table, uint64_t packedFields,
                uint32_t begin, uint32_t end, uint32_t lineno, uint32_t column);
 
-    // Create a LazyScript without initializing the freeVariables and the
+    // Create a LazyScript without initializing the closedOverBindings and the
     // innerFunctions. To be GC-safe, the caller must initialize both vectors
     // with valid atoms and functions.
     static LazyScript* CreateRaw(ExclusiveContext* cx, HandleFunction fun,
@@ -2203,15 +1887,18 @@ class LazyScript : public gc::TenuredCell
                                  uint32_t lineno, uint32_t column);
 
   public:
-    // Create a LazyScript without initializing the freeVariables and the
-    // innerFunctions. To be GC-safe, the caller must initialize both vectors
-    // with valid atoms and functions.
-    static LazyScript* CreateRaw(ExclusiveContext* cx, HandleFunction fun,
-                                 uint32_t numFreeVariables, uint32_t numInnerFunctions,
-                                 JSVersion version, uint32_t begin, uint32_t end,
-                                 uint32_t lineno, uint32_t column);
+    static const uint32_t NumClosedOverBindingsLimit = 1 << 22;
+    static const uint32_t NumInnerFunctionsLimit = 1 << 20;
 
-    // Create a LazyScript and initialize the freeVariables and the
+    // Create a LazyScript and initialize closedOverBindings and innerFunctions
+    // with the provided vectors.
+    static LazyScript* Create(ExclusiveContext* cx, HandleFunction fun,
+                              const frontend::AtomVector& closedOverBindings,
+                              Handle<GCVector<JSFunction*, 8>> innerFunctions,
+                              JSVersion version, uint32_t begin, uint32_t end,
+                              uint32_t lineno, uint32_t column);
+
+    // Create a LazyScript and initialize the closedOverBindings and the
     // innerFunctions with dummy values to be replaced in a later initialization
     // phase.
     //
@@ -2221,7 +1908,7 @@ class LazyScript : public gc::TenuredCell
     // The sourceObjectScript argument must be non-null and is the script that
     // should be used to get the sourceObject_ of this lazyScript.
     static LazyScript* Create(ExclusiveContext* cx, HandleFunction fun,
-                              HandleScript script, HandleObject enclosingScope,
+                              HandleScript script, HandleScope enclosingScope,
                               HandleScript sourceObjectScript,
                               uint64_t packedData, uint32_t begin, uint32_t end,
                               uint32_t lineno, uint32_t column);
@@ -2246,13 +1933,9 @@ class LazyScript : public gc::TenuredCell
         return bool(script_);
     }
 
-    JSObject* enclosingScope() const {
+    Scope* enclosingScope() const {
         return enclosingScope_;
     }
-
-    // Switch the script over from the off-thread compartment's static
-    // global lexical scope to the main thread compartment's.
-    void fixEnclosingStaticGlobalLexicalScope();
 
     ScriptSourceObject* sourceObject() const;
     ScriptSource* scriptSource() const {
@@ -2267,20 +1950,20 @@ class LazyScript : public gc::TenuredCell
         return (p_.version == JS_BIT(8) - 1) ? JSVERSION_UNKNOWN : JSVersion(p_.version);
     }
 
-    void setParent(JSObject* enclosingScope, ScriptSourceObject* sourceObject);
+    void setEnclosingScopeAndSource(Scope* enclosingScope, ScriptSourceObject* sourceObject);
 
-    uint32_t numFreeVariables() const {
-        return p_.numFreeVariables;
+    uint32_t numClosedOverBindings() const {
+        return p_.numClosedOverBindings;
     }
-    FreeVariable* freeVariables() {
-        return (FreeVariable*)table_;
+    JSAtom** closedOverBindings() {
+        return (JSAtom**)table_;
     }
 
     uint32_t numInnerFunctions() const {
         return p_.numInnerFunctions;
     }
-    HeapPtrFunction* innerFunctions() {
-        return (HeapPtrFunction*)&freeVariables()[numFreeVariables()];
+    GCPtrFunction* innerFunctions() {
+        return (GCPtrFunction*)&closedOverBindings()[numClosedOverBindings()];
     }
 
     GeneratorKind generatorKind() const { return GeneratorKindFromBits(p_.generatorKindBits); }
@@ -2328,11 +2011,11 @@ class LazyScript : public gc::TenuredCell
         p_.hasDirectEval = true;
     }
 
-    bool usesArgumentsApplyAndThis() const {
-        return p_.usesArgumentsApplyAndThis;
+    bool isLikelyConstructorWrapper() const {
+        return p_.isLikelyConstructorWrapper;
     }
-    void setUsesArgumentsApplyAndThis() {
-        p_.usesArgumentsApplyAndThis = true;
+    void setLikelyConstructorWrapper() {
+        p_.isLikelyConstructorWrapper = true;
     }
 
     bool hasBeenCloned() const {
@@ -2363,6 +2046,20 @@ class LazyScript : public gc::TenuredCell
         p_.needsHomeObject = true;
     }
 
+    bool shouldDeclareArguments() const {
+        return p_.shouldDeclareArguments;
+    }
+    void setShouldDeclareArguments() {
+        p_.shouldDeclareArguments = true;
+    }
+
+    bool hasThisBinding() const {
+        return p_.hasThisBinding;
+    }
+    void setHasThisBinding() {
+        p_.hasThisBinding = true;
+    }
+
     const char* filename() const {
         return scriptSource()->filename();
     }
@@ -2384,7 +2081,6 @@ class LazyScript : public gc::TenuredCell
     friend class GCMarker;
     void traceChildren(JSTracer* trc);
     void finalize(js::FreeOp* fop);
-    void fixupAfterMovingGC() {}
 
     static const JS::TraceKind TraceKind = JS::TraceKind::LazyScript;
 
@@ -2400,61 +2096,6 @@ class LazyScript : public gc::TenuredCell
 
 /* If this fails, add/remove padding within LazyScript. */
 JS_STATIC_ASSERT(sizeof(LazyScript) % js::gc::CellSize == 0);
-
-struct SharedScriptData
-{
-    uint32_t length;
-    uint32_t natoms;
-    mozilla::Atomic<bool, mozilla::ReleaseAcquire> marked;
-    jsbytecode data[1];
-
-    static SharedScriptData* new_(ExclusiveContext* cx, uint32_t codeLength,
-                                  uint32_t srcnotesLength, uint32_t natoms);
-
-    HeapPtrAtom* atoms() {
-        if (!natoms)
-            return nullptr;
-        return reinterpret_cast<HeapPtrAtom*>(data + length - sizeof(JSAtom*) * natoms);
-    }
-
-    static SharedScriptData* fromBytecode(const jsbytecode* bytecode) {
-        return (SharedScriptData*)(bytecode - offsetof(SharedScriptData, data));
-    }
-
-  private:
-    SharedScriptData() = delete;
-    SharedScriptData(const SharedScriptData&) = delete;
-};
-
-struct ScriptBytecodeHasher
-{
-    struct Lookup
-    {
-        jsbytecode*         code;
-        uint32_t            length;
-
-        explicit Lookup(SharedScriptData* ssd) : code(ssd->data), length(ssd->length) {}
-    };
-    static HashNumber hash(const Lookup& l) { return mozilla::HashBytes(l.code, l.length); }
-    static bool match(SharedScriptData* entry, const Lookup& lookup) {
-        if (entry->length != lookup.length)
-            return false;
-        return mozilla::PodEqual<jsbytecode>(entry->data, lookup.code, lookup.length);
-    }
-};
-
-typedef HashSet<SharedScriptData*,
-                ScriptBytecodeHasher,
-                SystemAllocPolicy> ScriptDataTable;
-
-extern void
-UnmarkScriptData(JSRuntime* rt);
-
-extern void
-SweepScriptData(JSRuntime* rt);
-
-extern void
-FreeScriptData(JSRuntime* rt);
 
 struct ScriptAndCounts
 {
@@ -2527,11 +2168,11 @@ DescribeScriptedCallerForCompilation(JSContext* cx, MutableHandleScript maybeScr
                                      LineOption opt = NOT_CALLED_FROM_JSOP_EVAL);
 
 JSScript*
-CloneScriptIntoFunction(JSContext* cx, HandleObject enclosingScope, HandleFunction fun,
+CloneScriptIntoFunction(JSContext* cx, HandleScope enclosingScope, HandleFunction fun,
                         HandleScript src);
 
 JSScript*
-CloneGlobalScript(JSContext* cx, Handle<StaticScope*> enclosingScope, HandleScript src);
+CloneGlobalScript(JSContext* cx, ScopeKind scopeKind, HandleScript src);
 
 } /* namespace js */
 
@@ -2540,16 +2181,19 @@ CloneGlobalScript(JSContext* cx, Handle<StaticScope*> enclosingScope, HandleScri
 namespace JS {
 namespace ubi {
 template<>
-struct Concrete<js::LazyScript> : TracerConcrete<js::LazyScript> {
-    CoarseType coarseType() const final { return CoarseType::Script; }
-    Size size(mozilla::MallocSizeOf mallocSizeOf) const override;
-    const char* scriptFilename() const final;
-
+class Concrete<js::LazyScript> : TracerConcrete<js::LazyScript> {
   protected:
     explicit Concrete(js::LazyScript *ptr) : TracerConcrete<js::LazyScript>(ptr) { }
 
   public:
     static void construct(void *storage, js::LazyScript *ptr) { new (storage) Concrete(ptr); }
+
+    CoarseType coarseType() const final { return CoarseType::Script; }
+    Size size(mozilla::MallocSizeOf mallocSizeOf) const override;
+    const char* scriptFilename() const final;
+
+    const char16_t* typeName() const override { return concreteTypeName; }
+    static const char16_t concreteTypeName[];
 };
 } // namespace ubi
 } // namespace JS

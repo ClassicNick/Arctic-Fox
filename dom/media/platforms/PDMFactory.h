@@ -8,10 +8,15 @@
 #define PDMFactory_h_
 
 #include "PlatformDecoderModule.h"
+#include "mozilla/StaticMutex.h"
 
 class CDMProxy;
 
 namespace mozilla {
+
+class DecoderDoctorDiagnostics;
+class PDMFactoryImpl;
+template<class T> class StaticAutoPtr;
 
 class PDMFactory final {
 public:
@@ -19,23 +24,16 @@ public:
 
   PDMFactory();
 
-  // Call on the main thread to initialize the static state
-  // needed by Create().
-  static void Init();
-
   // Factory method that creates the appropriate PlatformDecoderModule for
   // the platform we're running on. Caller is responsible for deleting this
   // instance. It's expected that there will be multiple
   // PlatformDecoderModules alive at the same time.
   // This is called on the decode task queue.
   already_AddRefed<MediaDataDecoder>
-  CreateDecoder(const TrackInfo& aConfig,
-                FlushableTaskQueue* aTaskQueue,
-                MediaDataDecoderCallback* aCallback,
-                layers::LayersBackend aLayersBackend = layers::LayersBackend::LAYERS_NONE,
-                layers::ImageContainer* aImageContainer = nullptr);
+  CreateDecoder(const CreateDecoderParams& aParams);
 
-  bool SupportsMimeType(const nsACString& aMimeType) const;
+  bool SupportsMimeType(const nsACString& aMimeType,
+                        DecoderDoctorDiagnostics* aDiagnostics) const;
 
 #ifdef MOZ_EME
   // Creates a PlatformDecoderModule that uses a CDMProxy to decrypt or
@@ -49,45 +47,30 @@ public:
 private:
   virtual ~PDMFactory();
   void CreatePDMs();
+  void CreateBlankPDM();
   // Startup the provided PDM and add it to our list if successful.
   bool StartupPDM(PlatformDecoderModule* aPDM);
   // Returns the first PDM in our list supporting the mimetype.
   already_AddRefed<PlatformDecoderModule>
-  GetDecoder(const nsACString& aMimeType) const;
+  GetDecoder(const nsACString& aMimeType,
+             DecoderDoctorDiagnostics* aDiagnostics) const;
 
   already_AddRefed<MediaDataDecoder>
   CreateDecoderWithPDM(PlatformDecoderModule* aPDM,
-                       const TrackInfo& aConfig,
-                       FlushableTaskQueue* aTaskQueue,
-                       MediaDataDecoderCallback* aCallback,
-                       layers::LayersBackend aLayersBackend,
-                       layers::ImageContainer* aImageContainer);
-
-  // PDM pref caches...
-  static bool sUseBlankDecoder;
-#ifdef MOZ_GONK_MEDIACODEC
-  static bool sGonkDecoderEnabled;
-#endif
-#ifdef MOZ_WIDGET_ANDROID
-  static bool sAndroidMCDecoderPreferred;
-  static bool sAndroidMCDecoderEnabled;
-#endif
-  static bool sGMPDecoderEnabled;
-#ifdef MOZ_FFVPX
-  static bool sFFVPXDecoderEnabled;
-#endif
-#ifdef MOZ_FFMPEG
-  static bool sFFmpegDecoderEnabled;
-#endif
-#ifdef XP_WIN
-  static bool sWMFDecoderEnabled;
-#endif
-  static bool sEnableFuzzingWrapper;
-  static uint32_t sVideoOutputMinimumInterval_ms;
-  static bool sDontDelayInputExhausted;
+                       const CreateDecoderParams& aParams);
 
   nsTArray<RefPtr<PlatformDecoderModule>> mCurrentPDMs;
   RefPtr<PlatformDecoderModule> mEMEPDM;
+  RefPtr<PlatformDecoderModule> mBlankPDM;
+
+  bool mWMFFailedToLoad = false;
+  bool mFFmpegFailedToLoad = false;
+  bool mGMPPDMFailedToStartup = false;
+
+  void EnsureInit() const;
+  template<class T> friend class StaticAutoPtr;
+  static StaticAutoPtr<PDMFactoryImpl> sInstance;
+  static StaticMutex sMonitor;
 };
 
 } // namespace mozilla

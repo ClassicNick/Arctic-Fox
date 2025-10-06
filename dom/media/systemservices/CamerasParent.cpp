@@ -5,12 +5,11 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "CamerasParent.h"
-#include "CamerasUtils.h"
 #include "MediaEngine.h"
 #include "MediaUtils.h"
 
 #include "mozilla/Assertions.h"
-#include "mozilla/unused.h"
+#include "mozilla/Unused.h"
 #include "mozilla/Services.h"
 #include "mozilla/Logging.h"
 #include "mozilla/ipc/BackgroundParent.h"
@@ -40,14 +39,32 @@ namespace camera {
 //   called "VideoCapture". On Windows this is a thread with an event loop
 //   suitable for UI access.
 
-class FrameSizeChangeRunnable : public nsRunnable {
+void InputObserver::DeviceChange() {
+  LOG((__PRETTY_FUNCTION__));
+  MOZ_ASSERT(mParent);
+
+  RefPtr<nsIRunnable> ipc_runnable =
+    media::NewRunnableFrom([this]() -> nsresult {
+      if (mParent->IsShuttingDown()) {
+        return NS_ERROR_FAILURE;
+      }
+      Unused << mParent->SendDeviceChange();
+      return NS_OK;
+    });
+
+  nsIThread* thread = mParent->GetBackgroundThread();
+  MOZ_ASSERT(thread != nullptr);
+  thread->Dispatch(ipc_runnable, NS_DISPATCH_NORMAL);
+};
+
+class FrameSizeChangeRunnable : public Runnable {
 public:
   FrameSizeChangeRunnable(CamerasParent *aParent, CaptureEngine capEngine,
                           int cap_id, unsigned int aWidth, unsigned int aHeight)
     : mParent(aParent), mCapEngine(capEngine), mCapId(cap_id),
       mWidth(aWidth), mHeight(aHeight) {}
 
-  NS_IMETHOD Run() {
+  NS_IMETHOD Run() override {
     if (mParent->IsShuttingDown()) {
       // Communication channel is being torn down
       LOG(("FrameSizeChangeRunnable is active without active Child"));
@@ -89,7 +106,7 @@ CallbackHelper::FrameSizeChange(unsigned int w, unsigned int h,
   return 0;
 }
 
-class DeliverFrameRunnable : public nsRunnable {
+class DeliverFrameRunnable : public Runnable {
 public:
   DeliverFrameRunnable(CamerasParent *aParent,
                        CaptureEngine engine,
@@ -115,7 +132,7 @@ public:
     }
   };
 
-  NS_IMETHOD Run() {
+  NS_IMETHOD Run() override {
     if (mParent->IsShuttingDown()) {
       // Communication channel is being torn down
       mResult = 0;
@@ -165,7 +182,7 @@ CamerasParent::Observe(nsISupports *aSubject,
 }
 
 nsresult
-CamerasParent::DispatchToVideoCaptureThread(nsRunnable *event)
+CamerasParent::DispatchToVideoCaptureThread(Runnable* event)
 {
   // Don't try to dispatch if we're already on the right thread.
   // There's a potential deadlock because the mThreadMonitor is likely
@@ -182,8 +199,8 @@ CamerasParent::DispatchToVideoCaptureThread(nsRunnable *event)
   if (!mVideoCaptureThread || !mVideoCaptureThread->IsRunning()) {
     return NS_ERROR_FAILURE;
   }
-  mVideoCaptureThread->message_loop()->PostTask(FROM_HERE,
-                                                new RunnableTask(event));
+  RefPtr<Runnable> addrefedEvent = event;
+  mVideoCaptureThread->message_loop()->PostTask(addrefedEvent.forget());
   return NS_OK;
 }
 
@@ -195,7 +212,7 @@ CamerasParent::StopVideoCapture()
   // from PBackground (when the Actor shuts down).
   // Shut down the WebRTC stack (on the capture thread)
   RefPtr<CamerasParent> self(this);
-  RefPtr<nsRunnable> webrtc_runnable =
+  RefPtr<Runnable> webrtc_runnable =
     media::NewRunnableFrom([self]() -> nsresult {
       MonitorAutoLock lock(self->mThreadMonitor);
       self->CloseEngines();
@@ -220,7 +237,7 @@ CamerasParent::StopVideoCapture()
   if (self->mVideoCaptureThread) {
     base::Thread *thread = self->mVideoCaptureThread;
     self->mVideoCaptureThread = nullptr;
-    RefPtr<nsRunnable> threadShutdown =
+    RefPtr<Runnable> threadShutdown =
       media::NewRunnableFrom([thread]() -> nsresult {
         if (thread->IsRunning()) {
           thread->Stop();
@@ -253,7 +270,7 @@ CamerasParent::DeliverFrameOverIPC(CaptureEngine cap_engine,
     ShmemBuffer shMemBuff = mShmemPool.Get(this, size);
 
     if (!shMemBuff.Valid()) {
-      LOG(("Video shmem is not writeable in DeliverFrame"));
+      LOG(("No usable Video shmem in DeliverFrame (out of buffers?)"));
       // We can skip this frame if we run out of buffers, it's not a real error.
       return 0;
     }
@@ -267,6 +284,7 @@ CamerasParent::DeliverFrameOverIPC(CaptureEngine cap_engine,
       return -1;
     }
   } else {
+    MOZ_ASSERT(buffer.Valid());
     // ShmemBuffer was available, we're all good. A single copy happened
     // in the original webrtc callback.
     if (!SendDeliverFrame(cap_engine, cap_id,
@@ -297,7 +315,7 @@ CallbackHelper::DeliverFrame(unsigned char* buffer,
   ShmemBuffer shMemBuffer = mParent->GetBuffer(size);
   if (!shMemBuffer.Valid()) {
     // Either we ran out of buffers or they're not the right size yet
-    LOG(("Video shmem is not available in DeliverFrame"));
+    LOG(("Correctly sized Video shmem not available in DeliverFrame"));
     // We will do the copy into a(n extra) temporary buffer inside
     // the DeliverFrameRunnable constructor.
   } else {
@@ -399,6 +417,15 @@ CamerasParent::SetupEngine(CaptureEngine aCapEngine)
     return false;
   }
 
+  InputObserver** observer = mObservers.AppendElement(
+          new InputObserver(this));
+
+#ifdef DEBUG
+  MOZ_ASSERT(0 == helper->mPtrViECapture->RegisterInputObserver(*observer));
+#else
+  helper->mPtrViECapture->RegisterInputObserver(*observer);
+#endif
+
   helper->mPtrViERender = webrtc::ViERender::GetInterface(helper->mEngine);
   if (!helper->mPtrViERender) {
     LOG(("ViERender::GetInterface failed"));
@@ -435,6 +462,12 @@ CamerasParent::CloseEngines()
       mEngines[i].mPtrViERender = nullptr;
     }
     if (mEngines[i].mPtrViECapture) {
+#ifdef DEBUG
+      MOZ_ASSERT(0 == mEngines[i].mPtrViECapture->DeregisterInputObserver());
+#else
+      mEngines[i].mPtrViECapture->DeregisterInputObserver();
+#endif
+
       mEngines[i].mPtrViECapture->Release();
         mEngines[i].mPtrViECapture = nullptr;
     }
@@ -448,6 +481,11 @@ CamerasParent::CloseEngines()
       mEngines[i].mEngine = nullptr;
     }
   }
+
+  for (InputObserver* observer : mObservers) {
+    delete observer;
+  }
+  mObservers.Clear();
 
   mWebRTCAlive = false;
 }
@@ -480,7 +518,7 @@ CamerasParent::RecvNumberOfCaptureDevices(const int& aCapEngine)
   LOG((__PRETTY_FUNCTION__));
 
   RefPtr<CamerasParent> self(this);
-  RefPtr<nsRunnable> webrtc_runnable =
+  RefPtr<Runnable> webrtc_runnable =
     media::NewRunnableFrom([self, aCapEngine]() -> nsresult {
       int num = -1;
       if (self->EnsureInitialized(aCapEngine)) {
@@ -516,7 +554,7 @@ CamerasParent::RecvNumberOfCapabilities(const int& aCapEngine,
   LOG(("Getting caps for %s", unique_id.get()));
 
   RefPtr<CamerasParent> self(this);
-  RefPtr<nsRunnable> webrtc_runnable =
+  RefPtr<Runnable> webrtc_runnable =
     media::NewRunnableFrom([self, unique_id, aCapEngine]() -> nsresult {
       int num = -1;
       if (self->EnsureInitialized(aCapEngine)) {
@@ -556,7 +594,7 @@ CamerasParent::RecvGetCaptureCapability(const int &aCapEngine,
   LOG(("RecvGetCaptureCapability: %s %d", unique_id.get(), num));
 
   RefPtr<CamerasParent> self(this);
-  RefPtr<nsRunnable> webrtc_runnable =
+  RefPtr<Runnable> webrtc_runnable =
     media::NewRunnableFrom([self, unique_id, aCapEngine, num]() -> nsresult {
       webrtc::CaptureCapability webrtcCaps;
       int error = -1;
@@ -604,7 +642,7 @@ CamerasParent::RecvGetCaptureDevice(const int& aCapEngine,
   LOG((__PRETTY_FUNCTION__));
 
   RefPtr<CamerasParent> self(this);
-  RefPtr<nsRunnable> webrtc_runnable =
+  RefPtr<Runnable> webrtc_runnable =
     media::NewRunnableFrom([self, aCapEngine, aListNumber]() -> nsresult {
       char deviceName[MediaEngineSource::kMaxDeviceNameLength];
       char deviceUniqueId[MediaEngineSource::kMaxUniqueIdLength];
@@ -718,7 +756,7 @@ CamerasParent::RecvAllocateCaptureDevice(const int& aCapEngine,
 {
   LOG(("%s: Verifying permissions for %s", __PRETTY_FUNCTION__, aOrigin.get()));
   RefPtr<CamerasParent> self(this);
-  RefPtr<nsRunnable> mainthread_runnable =
+  RefPtr<Runnable> mainthread_runnable =
     media::NewRunnableFrom([self, aCapEngine, unique_id, aOrigin]() -> nsresult {
       // Verify whether the claimed origin has received permission
       // to use the camera, either persistently or this session (one shot).
@@ -736,7 +774,7 @@ CamerasParent::RecvAllocateCaptureDevice(const int& aCapEngine,
       // After retrieving the permission (or not) on the main thread,
       // bounce to the WebRTC thread to allocate the device (or not),
       // then bounce back to the IPC thread for the reply to content.
-      RefPtr<nsRunnable> webrtc_runnable =
+      RefPtr<Runnable> webrtc_runnable =
       media::NewRunnableFrom([self, allowed, aCapEngine, unique_id]() -> nsresult {
         int numdev = -1;
         int error = -1;
@@ -787,7 +825,7 @@ CamerasParent::RecvReleaseCaptureDevice(const int& aCapEngine,
   LOG(("RecvReleaseCamera device nr %d", numdev));
 
   RefPtr<CamerasParent> self(this);
-  RefPtr<nsRunnable> webrtc_runnable =
+  RefPtr<Runnable> webrtc_runnable =
     media::NewRunnableFrom([self, aCapEngine, numdev]() -> nsresult {
       int error = self->ReleaseCaptureDevice(aCapEngine, numdev);
       RefPtr<nsIRunnable> ipc_runnable =
@@ -821,7 +859,7 @@ CamerasParent::RecvStartCapture(const int& aCapEngine,
   LOG((__PRETTY_FUNCTION__));
 
   RefPtr<CamerasParent> self(this);
-  RefPtr<nsRunnable> webrtc_runnable =
+  RefPtr<Runnable> webrtc_runnable =
     media::NewRunnableFrom([self, aCapEngine, capnum, ipcCaps]() -> nsresult {
       CallbackHelper** cbh;
       webrtc::ExternalRenderer* render;
@@ -903,7 +941,7 @@ CamerasParent::RecvStopCapture(const int& aCapEngine,
   LOG((__PRETTY_FUNCTION__));
 
   RefPtr<CamerasParent> self(this);
-  RefPtr<nsRunnable> webrtc_runnable =
+  RefPtr<Runnable> webrtc_runnable =
     media::NewRunnableFrom([self, aCapEngine, capnum]() -> nsresult {
       self->StopCapture(aCapEngine, capnum);
       return NS_OK;
@@ -968,7 +1006,7 @@ CamerasParent::CamerasParent()
   LOG(("Spinning up WebRTC Cameras Thread"));
 
   RefPtr<CamerasParent> self(this);
-  RefPtr<nsRunnable> threadStart =
+  RefPtr<Runnable> threadStart =
     media::NewRunnableFrom([self]() -> nsresult {
       // Register thread shutdown observer
       nsCOMPtr<nsIObserverService> obs = services::GetObserverService();

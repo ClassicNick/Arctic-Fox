@@ -44,14 +44,12 @@ DOMStorage::DOMStorage(nsPIDOMWindowInner* aWindow,
                        DOMStorageManager* aManager,
                        DOMStorageCache* aCache,
                        const nsAString& aDocumentURI,
-                       nsIPrincipal* aPrincipal,
-                       bool aIsPrivate)
+                       nsIPrincipal* aPrincipal)
 : mWindow(aWindow)
 , mManager(aManager)
 , mCache(aCache)
 , mDocumentURI(aDocumentURI)
 , mPrincipal(aPrincipal)
-, mIsPrivate(aIsPrivate)
 , mIsSessionOnly(false)
 {
   mCache->Preload();
@@ -112,13 +110,6 @@ DOMStorage::SetItem(const nsAString& aKey, const nsAString& aData,
     return;
   }
 
-  Telemetry::Accumulate(GetType() == LocalStorage
-      ? Telemetry::LOCALDOMSTORAGE_KEY_SIZE_BYTES
-      : Telemetry::SESSIONDOMSTORAGE_KEY_SIZE_BYTES, aKey.Length());
-  Telemetry::Accumulate(GetType() == LocalStorage
-      ? Telemetry::LOCALDOMSTORAGE_VALUE_SIZE_BYTES
-      : Telemetry::SESSIONDOMSTORAGE_VALUE_SIZE_BYTES, aData.Length());
-
   nsString data;
   bool ok = data.Assign(aData, fallible);
   if (!ok) {
@@ -176,7 +167,7 @@ DOMStorage::Clear(ErrorResult& aRv)
 
 namespace {
 
-class StorageNotifierRunnable : public nsRunnable
+class StorageNotifierRunnable : public Runnable
 {
 public:
   StorageNotifierRunnable(nsISupports* aSubject, const char16_t* aType)
@@ -225,8 +216,8 @@ DOMStorage::BroadcastChangeNotification(const nsSubstring& aKey,
   RefPtr<StorageNotifierRunnable> r =
     new StorageNotifierRunnable(event,
                                 GetType() == LocalStorage
-                                  ? MOZ_UTF16("localStorage")
-                                  : MOZ_UTF16("sessionStorage"));
+                                  ? u"localStorage"
+                                  : u"sessionStorage");
   NS_DispatchToMainThread(r);
 }
 
@@ -238,8 +229,6 @@ bool
 DOMStorage::CanUseStorage(nsPIDOMWindowInner* aWindow, DOMStorage* aStorage)
 {
   // This method is responsible for correct setting of mIsSessionOnly.
-  // It doesn't work with mIsPrivate flag at all, since it is checked
-  // regardless mIsSessionOnly flag in DOMStorageCache code.
 
   if (!mozilla::Preferences::GetBool(kStorageEnabled)) {
     return false;
@@ -290,13 +279,24 @@ DOMStorage::PrincipalEquals(nsIPrincipal* aPrincipal)
 }
 
 bool
+DOMStorage::IsPrivate() const
+{
+  uint32_t privateBrowsingId = 0;
+  nsresult rv = mPrincipal->GetPrivateBrowsingId(&privateBrowsingId);
+  if (NS_FAILED(rv)) {
+    return false;
+  }
+  return privateBrowsingId > 0;
+}
+
+bool
 DOMStorage::CanAccess(nsIPrincipal* aPrincipal)
 {
   return !aPrincipal || aPrincipal->Subsumes(mPrincipal);
 }
 
 void
-DOMStorage::GetSupportedNames(unsigned, nsTArray<nsString>& aKeys)
+DOMStorage::GetSupportedNames(nsTArray<nsString>& aKeys)
 {
   if (!CanUseStorage(nullptr, this)) {
     // return just an empty array

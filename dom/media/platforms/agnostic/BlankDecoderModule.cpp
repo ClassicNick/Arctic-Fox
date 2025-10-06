@@ -11,10 +11,12 @@
 #include "mozilla/mozalloc.h" // for operator new, and new (fallible)
 #include "mozilla/RefPtr.h"
 #include "mozilla/TaskQueue.h"
-#include "mozilla/UniquePtr.h"
-#include "mozilla/UniquePtrExtensions.h"
+#include "mp4_demuxer/H264.h"
+#include "MP4Decoder.h"
+#include "nsAutoPtr.h"
 #include "nsRect.h"
 #include "PlatformDecoderModule.h"
+#include "ReorderQueue.h"
 #include "TimeUnits.h"
 #include "VideoUtils.h"
 
@@ -27,13 +29,14 @@ class BlankMediaDataDecoder : public MediaDataDecoder {
 public:
 
   BlankMediaDataDecoder(BlankMediaDataCreator* aCreator,
-                        FlushableTaskQueue* aTaskQueue,
-                        MediaDataDecoderCallback* aCallback,
-                        TrackInfo::TrackType aType)
+                        const CreateDecoderParams& aParams)
     : mCreator(aCreator)
-    , mTaskQueue(aTaskQueue)
-    , mCallback(aCallback)
-    , mType(aType)
+    , mCallback(aParams.mCallback)
+    , mMaxRefFrames(aParams.mConfig.GetType() == TrackInfo::kVideoTrack &&
+                    MP4Decoder::IsH264(aParams.mConfig.mMimeType)
+                    ? mp4_demuxer::H264::ComputeMaxRefFrames(aParams.VideoConfig().mExtraData)
+                    : 0)
+    , mType(aParams.mConfig.GetType())
   {
   }
 
@@ -45,50 +48,31 @@ public:
     return NS_OK;
   }
 
-  class OutputEvent : public nsRunnable {
-  public:
-    OutputEvent(MediaRawData* aSample,
-                MediaDataDecoderCallback* aCallback,
-                BlankMediaDataCreator* aCreator)
-      : mSample(aSample)
-      , mCreator(aCreator)
-      , mCallback(aCallback)
-    {
-    }
-    NS_IMETHOD Run() override
-    {
-      RefPtr<MediaData> data =
-        mCreator->Create(media::TimeUnit::FromMicroseconds(mSample->mTime),
-                         media::TimeUnit::FromMicroseconds(mSample->mDuration),
-                         mSample->mOffset);
-      if (!data) {
-        return NS_ERROR_OUT_OF_MEMORY;
-      }
-      mCallback->Output(data);
-      return NS_OK;
-    }
-  private:
-    RefPtr<MediaRawData> mSample;
-    BlankMediaDataCreator* mCreator;
-    MediaDataDecoderCallback* mCallback;
-  };
-
   nsresult Input(MediaRawData* aSample) override
   {
-    // The MediaDataDecoder must delete the sample when we're finished
-    // with it, so the OutputEvent stores it in an nsAutoPtr and deletes
-    // it once it's run.
-    RefPtr<nsIRunnable> r(new OutputEvent(aSample, mCallback, mCreator));
-    mTaskQueue->Dispatch(r.forget());
+    RefPtr<MediaData> data =
+      mCreator->Create(media::TimeUnit::FromMicroseconds(aSample->mTime),
+                       media::TimeUnit::FromMicroseconds(aSample->mDuration),
+                       aSample->mOffset);
+
+    OutputFrame(data);
+
     return NS_OK;
   }
 
-  nsresult Flush() override {
-    mTaskQueue->Flush();
+  nsresult Flush() override
+  {
+    mReorderQueue.Clear();
+
     return NS_OK;
   }
 
-  nsresult Drain() override {
+  nsresult Drain() override
+  {
+    while (!mReorderQueue.IsEmpty()) {
+      mCallback->Output(mReorderQueue.Pop().get());
+    }
+
     mCallback->DrainComplete();
     return NS_OK;
   }
@@ -99,9 +83,31 @@ public:
   }
 
 private:
+  void OutputFrame(MediaData* aData)
+  {
+    if (!aData) {
+      mCallback->Error(MediaDataDecoderError::FATAL_ERROR);
+      return;
+    }
+
+    // Frames come out in DTS order but we need to output them in PTS order.
+    mReorderQueue.Push(aData);
+
+    while (mReorderQueue.Length() > mMaxRefFrames) {
+      mCallback->Output(mReorderQueue.Pop().get());
+    }
+
+    if (mReorderQueue.Length() <= mMaxRefFrames) {
+      mCallback->InputExhausted();
+    }
+
+  }
+
+private:
   nsAutoPtr<BlankMediaDataCreator> mCreator;
-  RefPtr<FlushableTaskQueue> mTaskQueue;
   MediaDataDecoderCallback* mCallback;
+  const uint32_t mMaxRefFrames;
+  ReorderQueue mReorderQueue;
   TrackInfo::TrackType mType;
 };
 
@@ -123,10 +129,10 @@ public:
   {
     // Create a fake YUV buffer in a 420 format. That is, an 8bpp Y plane,
     // with a U and V plane that are half the size of the Y plane, i.e 8 bit,
-    // 2x2 subsampled. Have the data pointers of each frame point to the
-    // first plane, they'll always be zero'd memory anyway.
-    auto frame = MakeUnique<uint8_t[]>(mFrameWidth * mFrameHeight);
-    memset(frame.get(), 0, mFrameWidth * mFrameHeight);
+    // 2x2 subsampled.
+    const int sizeY = mFrameWidth * mFrameHeight;
+    const int sizeCbCr = ((mFrameWidth + 1) / 2) * ((mFrameHeight + 1) / 2);
+    auto frame = MakeUnique<uint8_t[]>(sizeY + sizeCbCr);
     VideoData::YCbCrBuffer buffer;
 
     // Y plane.
@@ -138,7 +144,7 @@ public:
     buffer.mPlanes[0].mSkip = 0;
 
     // Cb plane.
-    buffer.mPlanes[1].mData = frame.get();
+    buffer.mPlanes[1].mData = frame.get() + sizeY;
     buffer.mPlanes[1].mStride = mFrameWidth / 2;
     buffer.mPlanes[1].mHeight = mFrameHeight / 2;
     buffer.mPlanes[1].mWidth = mFrameWidth / 2;
@@ -146,24 +152,28 @@ public:
     buffer.mPlanes[1].mSkip = 0;
 
     // Cr plane.
-    buffer.mPlanes[2].mData = frame.get();
+    buffer.mPlanes[2].mData = frame.get() + sizeY;
     buffer.mPlanes[2].mStride = mFrameWidth / 2;
     buffer.mPlanes[2].mHeight = mFrameHeight / 2;
     buffer.mPlanes[2].mWidth = mFrameWidth / 2;
     buffer.mPlanes[2].mOffset = 0;
     buffer.mPlanes[2].mSkip = 0;
 
-    return VideoData::Create(mInfo,
-                             mImageContainer,
-                             nullptr,
-                             aOffsetInStream,
-                             aDTS.ToMicroseconds(),
-                             aDuration.ToMicroseconds(),
-                             buffer,
-                             true,
-                             aDTS.ToMicroseconds(),
-                             mPicture);
+    // Set to color white.
+    memset(buffer.mPlanes[0].mData, 255, sizeY);
+    memset(buffer.mPlanes[1].mData, 128, sizeCbCr);
+
+    return VideoData::CreateAndCopyData(mInfo,
+                                        mImageContainer,
+                                        aOffsetInStream,
+                                        aDTS.ToMicroseconds(),
+                                        aDuration.ToMicroseconds(),
+                                        buffer,
+                                        true,
+                                        aDTS.ToMicroseconds(),
+                                        mPicture);
   }
+
 private:
   VideoInfo mInfo;
   gfx::IntRect mPicture;
@@ -171,7 +181,6 @@ private:
   uint32_t mFrameHeight;
   RefPtr<layers::ImageContainer> mImageContainer;
 };
-
 
 class BlankAudioDataCreator {
 public:
@@ -194,8 +203,7 @@ public:
         frames.value() > (UINT32_MAX / mChannelCount)) {
       return nullptr;
     }
-    auto samples =
-      MakeUniqueFallible<AudioDataValue[]>(frames.value() * mChannelCount);
+    AlignedAudioBuffer samples(frames.value() * mChannelCount);
     if (!samples) {
       return nullptr;
     }
@@ -229,39 +237,30 @@ public:
 
   // Decode thread.
   already_AddRefed<MediaDataDecoder>
-  CreateVideoDecoder(const VideoInfo& aConfig,
-                     layers::LayersBackend aLayersBackend,
-                     layers::ImageContainer* aImageContainer,
-                     FlushableTaskQueue* aVideoTaskQueue,
-                     MediaDataDecoderCallback* aCallback) override {
+  CreateVideoDecoder(const CreateDecoderParams& aParams) override {
+    const VideoInfo& config = aParams.VideoConfig();
     BlankVideoDataCreator* creator = new BlankVideoDataCreator(
-      aConfig.mDisplay.width, aConfig.mDisplay.height, aImageContainer);
+      config.mDisplay.width, config.mDisplay.height, aParams.mImageContainer);
     RefPtr<MediaDataDecoder> decoder =
-      new BlankMediaDataDecoder<BlankVideoDataCreator>(creator,
-                                                       aVideoTaskQueue,
-                                                       aCallback,
-                                                       TrackInfo::kVideoTrack);
+      new BlankMediaDataDecoder<BlankVideoDataCreator>(creator, aParams);
     return decoder.forget();
   }
 
   // Decode thread.
   already_AddRefed<MediaDataDecoder>
-  CreateAudioDecoder(const AudioInfo& aConfig,
-                     FlushableTaskQueue* aAudioTaskQueue,
-                     MediaDataDecoderCallback* aCallback) override {
+  CreateAudioDecoder(const CreateDecoderParams& aParams) override {
+    const AudioInfo& config = aParams.AudioConfig();
     BlankAudioDataCreator* creator = new BlankAudioDataCreator(
-      aConfig.mChannels, aConfig.mRate);
+      config.mChannels, config.mRate);
 
     RefPtr<MediaDataDecoder> decoder =
-      new BlankMediaDataDecoder<BlankAudioDataCreator>(creator,
-                                                       aAudioTaskQueue,
-                                                       aCallback,
-                                                       TrackInfo::kAudioTrack);
+      new BlankMediaDataDecoder<BlankAudioDataCreator>(creator, aParams);
     return decoder.forget();
   }
 
   bool
-  SupportsMimeType(const nsACString& aMimeType) const override
+  SupportsMimeType(const nsACString& aMimeType,
+                   DecoderDoctorDiagnostics* aDiagnostics) const override
   {
     return true;
   }
@@ -269,7 +268,11 @@ public:
   ConversionRequired
   DecoderNeedsConversion(const TrackInfo& aConfig) const override
   {
-    return kNeedNone;
+    if (aConfig.IsVideo() && MP4Decoder::IsH264(aConfig.mMimeType)) {
+      return ConversionRequired::kNeedAVCC;
+    } else {
+      return ConversionRequired::kNeedNone;
+    }
   }
 
 };

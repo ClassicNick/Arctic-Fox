@@ -58,6 +58,7 @@
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/dom/ShadowRoot.h"
+#include "mozilla/ServoStyleSet.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
@@ -86,15 +87,21 @@ XBLEnumerate(JSContext *cx, JS::Handle<JSObject*> obj)
   return protoBinding->ResolveAllFields(cx, obj);
 }
 
-static const JSClass gPrototypeJSClass = {
-    "XBL prototype JSClass",
-    JSCLASS_HAS_PRIVATE | JSCLASS_PRIVATE_IS_NSISUPPORTS |
-    // Our one reserved slot holds the relevant nsXBLPrototypeBinding
-    JSCLASS_HAS_RESERVED_SLOTS(1),
+static const JSClassOps gPrototypeJSClassOps = {
     nullptr, nullptr, nullptr, nullptr,
     XBLEnumerate, nullptr,
     nullptr, XBLFinalize,
     nullptr, nullptr, nullptr, nullptr
+};
+
+static const JSClass gPrototypeJSClass = {
+    "XBL prototype JSClass",
+    JSCLASS_HAS_PRIVATE |
+    JSCLASS_PRIVATE_IS_NSISUPPORTS |
+    JSCLASS_FOREGROUND_FINALIZE |
+    // Our one reserved slot holds the relevant nsXBLPrototypeBinding
+    JSCLASS_HAS_RESERVED_SLOTS(1),
+    &gPrototypeJSClassOps
 };
 
 // Implementation /////////////////////////////////////////////////////////////////
@@ -198,7 +205,11 @@ nsXBLBinding::InstallAnonymousContent(nsIContent* aAnonParent, nsIContent* aElem
   // aElement.
   // (2) The children's parent back pointer should not be to this synthetic root
   // but should instead point to the enclosing parent element.
-  nsIDocument* doc = aElement->GetCurrentDoc();
+  nsIDocument* doc = aElement->GetUncomposedDoc();
+  ServoStyleSet* servoStyleSet = nullptr;
+  if (nsIPresShell* presShell = aElement->OwnerDoc()->GetShell()) {
+    servoStyleSet = presShell->StyleSet()->GetAsServo();
+  }
   bool allowScripts = AllowScripts();
 
   nsAutoScriptBlocker scriptBlocker;
@@ -229,6 +240,10 @@ nsXBLBinding::InstallAnonymousContent(nsIContent* aAnonParent, nsIContent* aElem
     if (xuldoc)
       xuldoc->AddSubtreeToDocument(child);
 #endif
+
+    if (servoStyleSet) {
+      servoStyleSet->StyleNewSubtree(child);
+    }
   }
 }
 
@@ -393,18 +408,18 @@ nsXBLBinding::GenerateAnonymousContent()
   // Always check the content element for potential attributes.
   // This shorthand hack always happens, even when we didn't
   // build anonymous content.
-  const nsAttrName* attrName;
-  for (uint32_t i = 0; (attrName = content->GetAttrNameAt(i)); ++i) {
-    int32_t namespaceID = attrName->NamespaceID();
+  BorrowedAttrInfo attrInfo;
+  for (uint32_t i = 0; (attrInfo = content->GetAttrInfoAt(i)); ++i) {
+    int32_t namespaceID = attrInfo.mName->NamespaceID();
     // Hold a strong reference here so that the atom doesn't go away during
     // UnsetAttr.
-    nsCOMPtr<nsIAtom> name = attrName->LocalName();
+    nsCOMPtr<nsIAtom> name = attrInfo.mName->LocalName();
 
     if (name != nsGkAtoms::includes) {
       if (!nsContentUtils::HasNonEmptyAttr(mBoundElement, namespaceID, name)) {
         nsAutoString value2;
-        content->GetAttr(namespaceID, name, value2);
-        mBoundElement->SetAttr(namespaceID, name, attrName->GetPrefix(),
+        attrInfo.mValue->ToString(value2);
+        mBoundElement->SetAttr(namespaceID, name, attrInfo.mName->GetPrefix(),
                                value2, false);
       }
     }
@@ -953,6 +968,15 @@ GetOrCreateMapEntryForPrototype(JSContext *cx, JS::Handle<JSObject*> proto)
   return entry;
 }
 
+static
+nsXBLPrototypeBinding*
+GetProtoBindingFromClassObject(JSObject* obj)
+{
+  MOZ_ASSERT(JS_GetClass(obj) == &gPrototypeJSClass);
+  return static_cast<nsXBLPrototypeBinding*>(::JS_GetReservedSlot(obj, 0).toPrivate());
+}
+
+
 // static
 nsresult
 nsXBLBinding::DoInitJSClass(JSContext *cx,
@@ -1008,7 +1032,9 @@ nsXBLBinding::DoInitJSClass(JSContext *cx,
   *aNew = !desc.object();
   if (desc.object()) {
     proto = &desc.value().toObject();
-    MOZ_ASSERT(JS_GetClass(js::UncheckedUnwrap(proto)) == &gPrototypeJSClass);
+    DebugOnly<nsXBLPrototypeBinding*> cachedBinding =
+      GetProtoBindingFromClassObject(js::UncheckedUnwrap(proto));
+    MOZ_ASSERT(cachedBinding == aProtoBinding);
   } else {
 
     // We need to create the prototype. First, enter the compartment where it's

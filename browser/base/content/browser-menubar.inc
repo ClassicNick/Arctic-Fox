@@ -11,12 +11,19 @@
                 style="border:0px;padding:0px;margin:0px;-moz-appearance:none">
             <menu id="file-menu" label="&fileMenu.label;"
                   accesskey="&fileMenu.accesskey;">
-              <menupopup id="menu_FilePopup">
+              <menupopup id="menu_FilePopup"
+                         onpopupshowing="updateUserContextUIVisibility();">
                 <menuitem id="menu_newNavigatorTab"
                           label="&tabCmd.label;"
                           command="cmd_newNavigatorTab"
                           key="key_newNavigatorTab"
                           accesskey="&tabCmd.accesskey;"/>
+                <menu id="menu_newUserContext"
+                      label="&newUserContext.label;"
+                      accesskey="&newUserContext.accesskey;"
+                      hidden="true">
+                  <menupopup onpopupshowing="return createUserContextMenu(event);" />
+                </menu>
                 <menuitem id="menu_newNavigator"
                           label="&newNavigatorCmd.label;"
                           accesskey="&newNavigatorCmd.accesskey;"
@@ -66,7 +73,7 @@
                           accesskey="&emailPageCmd.accesskey;"
                           command="Browser:SendLink"/>
                 <menuseparator/>
-#if !defined(MOZ_WIDGET_GTK) && !defined(MOZ_WIDGET_QT)
+#if !defined(MOZ_WIDGET_GTK)
                 <menuitem id="menu_printSetup"
                           label="&printSetupCmd.label;"
                           accesskey="&printSetupCmd.accesskey;"
@@ -218,7 +225,9 @@
                               key="key_gotoHistory"
                               observes="viewHistorySidebar"
                               label="&historyButton.label;"/>
-
+                    <menuitem id="menu_tabsSidebar"
+                              observes="viewTabsSidebar"
+                              label="&syncedTabs.sidebar.label;"/>
                   </menupopup>
                 </menu>
                 <menuseparator/>
@@ -312,6 +321,9 @@
                           type="checkbox"
                           observes="View:FullScreen"/>
 #endif
+                <menuitem id="menu_readerModeItem"
+                          observes="View:ReaderView"
+                          hidden="true"/>
                 <menuitem id="menu_showAllTabs"
                           hidden="true"
                           accesskey="&showAllTabsCmd.accesskey;"
@@ -386,13 +398,11 @@
                           key="key_sanitize"
                           command="Tools:Sanitize"/>
                 <menuseparator id="sanitizeSeparator"/>
-#ifdef MOZ_SERVICES_SYNC
                 <menuitem id="sync-tabs-menuitem"
                           class="syncTabsMenuItem"
                           label="&syncTabsMenu2.label;"
                           oncommand="BrowserOpenSyncTabs();"
                           disabled="true"/>
-#endif
                 <menuitem id="historyRestoreLastSession"
                           label="&historyRestoreLastSession.label;"
                           command="Browser:RestoreLastSession"/>
@@ -478,6 +488,10 @@
                 class="show-only-for-keyboard"
                 command="Browser:BookmarkAllTabs"
                 key="bookmarkAllTabsKb"/>
+      <menuseparator/>
+      <menuitem label="&recentBookmarks.label;"
+                disabled="true"/>
+      <vbox id="menu_recentBookmarks"/>
       <menuseparator id="bookmarksToolbarSeparator"/>
       <menu id="bookmarksToolbarFolderMenu"
             class="menu-iconic bookmark-item"
@@ -499,7 +513,7 @@
 #ifndef XP_MACOSX
                 class="menuitem-iconic"
 #endif
-                label="&unsortedBookmarksCmd.label;"
+                label="&otherBookmarksCmd.label;"
                 oncommand="PlacesCommandHook.showPlacesOrganizer('UnfiledBookmarks');"/>
     </menupopup>
   </menu>
@@ -510,7 +524,10 @@
                   onpopupshowing="mirrorShow(this)">
               <menupopup id="menu_ToolsPopup"
 #ifdef MOZ_SERVICES_SYNC
-                         onpopupshowing="gSyncUI.updateUI();"
+# We have to use setTimeout() here to avoid a flickering menu bar when opening
+# the Tools menu, see bug 970769. This can be removed once we got rid of the
+# event loop spinning in Weave.Status._authManager.
+                         onpopupshowing="setTimeout(() => gSyncUI.updateUI());"
 #endif
                          >
               <menuitem id="menu_search"
@@ -535,7 +552,6 @@
                         label="&permissions.label;"
                         command="Tools:Permissions"
                         accesskey="&permissions.accesskey;"/>
-#ifdef MOZ_SERVICES_SYNC
               <!-- only one of sync-setup or sync-menu will be showing at once -->
               <menuitem id="sync-setup"
                         label="&syncSetup.label;"
@@ -552,45 +568,14 @@
                         accesskey="&syncReAuthItem.accesskey;"
                         observes="sync-reauth-state"
                         oncommand="gSyncUI.openSignInAgainPage('menubar');"/>
-#endif
               <menuseparator id="devToolsSeparator"/>
               <menu id="webDeveloperMenu"
                     label="&webDeveloperMenu.label;"
                     accesskey="&webDeveloperMenu.accesskey;">
                 <menupopup id="menuWebDeveloperPopup">
-                  <menuitem id="menu_devToolbox"
-                            observes="devtoolsMenuBroadcaster_DevToolbox"
-                            accesskey="&devToolboxMenuItem.accesskey;"/>
-                  <menuseparator id="menu_devtools_separator"/>
-                  <menuitem id="menu_devToolbar"
-                            observes="devtoolsMenuBroadcaster_DevToolbar"
-                            accesskey="&devToolbarMenu.accesskey;"/>
-                  <menuitem id="menu_chromeDebugger"
-                            observes="devtoolsMenuBroadcaster_ChromeDebugger"/>
-                  <menuitem id="menu_browserConsole"
-                            observes="devtoolsMenuBroadcaster_BrowserConsole"
-                            accesskey="&browserConsoleCmd.accesskey;"/>
-                  <menuitem id="menu_responsiveUI"
-                            observes="devtoolsMenuBroadcaster_ResponsiveUI"
-                            accesskey="&responsiveDesignTool.accesskey;"/>
-                  <menuitem id="menu_eyedropper"
-                            observes="devtoolsMenuBroadcaster_Eyedropper"
-                            accesskey="&eyedropper.accesskey;"/>
-                  <menuitem id="menu_scratchpad"
-                            observes="devtoolsMenuBroadcaster_Scratchpad"
-                            accesskey="&scratchpad.accesskey;"/>
                   <menuitem id="menu_pageSource"
                             observes="devtoolsMenuBroadcaster_PageSource"
                             accesskey="&pageSourceCmd.accesskey;"/>
-                  <menuitem id="javascriptConsole"
-                            observes="devtoolsMenuBroadcaster_ErrorConsole"
-                            accesskey="&errorConsoleCmd.accesskey;"/>
-                  <menuitem id="menu_devtools_connect"
-                            observes="devtoolsMenuBroadcaster_connect"/>
-                  <menuseparator id="devToolsEndSeparator"/>
-                  <menuitem id="getMoreDevtools"
-                            observes="devtoolsMenuBroadcaster_GetMoreTools"
-                            accesskey="&getMoreDevtoolsCmd.accesskey;"/>
                 </menupopup>
               </menu>
               <menuitem id="menu_pageInfo"

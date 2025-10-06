@@ -7,12 +7,11 @@
 #include "QuotaManagerService.h"
 
 #include "ActorsChild.h"
-#include "mozIApplicationClearPrivateDataParams.h"
 #include "mozilla/BasePrincipal.h"
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/Hal.h"
 #include "mozilla/Preferences.h"
-#include "mozilla/unused.h"
+#include "mozilla/Unused.h"
 #include "mozilla/ipc/BackgroundChild.h"
 #include "mozilla/ipc/BackgroundParent.h"
 #include "mozilla/ipc/BackgroundUtils.h"
@@ -25,7 +24,7 @@
 #include "QuotaManager.h"
 #include "QuotaRequests.h"
 
-#define PROFILE_BEFORE_CHANGE_OBSERVER_ID "profile-before-change"
+#define PROFILE_BEFORE_CHANGE_QM_OBSERVER_ID "profile-before-change-qm"
 
 namespace mozilla {
 namespace dom {
@@ -62,7 +61,7 @@ TestingPrefChangedCallback(const char* aPrefName,
 }
 
 class AbortOperationsRunnable final
-  : public nsRunnable
+  : public Runnable
 {
   ContentParentId mContentParentId;
 
@@ -258,7 +257,7 @@ QuotaManagerService::NoteLiveManager(QuotaManager* aManager)
 }
 
 void
-QuotaManagerService::NoteFinishedManager()
+QuotaManagerService::NoteShuttingDownManager()
 {
   MOZ_ASSERT(XRE_IsParentProcess());
   MOZ_ASSERT(NS_IsMainThread());
@@ -279,8 +278,8 @@ QuotaManagerService::AbortOperationsForProcess(ContentParentId aContentParentId)
   RefPtr<AbortOperationsRunnable> runnable =
     new AbortOperationsRunnable(aContentParentId);
 
-  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(
-    mBackgroundThread->Dispatch(runnable, NS_DISPATCH_NORMAL)));
+  MOZ_ALWAYS_SUCCEEDS(
+    mBackgroundThread->Dispatch(runnable, NS_DISPATCH_NORMAL));
 }
 
 nsresult
@@ -295,9 +294,10 @@ QuotaManagerService::Init()
       return NS_ERROR_FAILURE;
     }
 
-    nsresult rv = observerService->AddObserver(this,
-                                               PROFILE_BEFORE_CHANGE_OBSERVER_ID,
-                                               false);
+    nsresult rv =
+      observerService->AddObserver(this,
+                                   PROFILE_BEFORE_CHANGE_QM_OBSERVER_ID,
+                                   false);
     if (NS_WARN_IF(NS_FAILED(rv))) {
       return rv;
     }
@@ -463,8 +463,8 @@ QuotaManagerService::PerformIdleMaintenance()
       do_GetService(kIdleServiceContractId);
     MOZ_ASSERT(idleService);
 
-    MOZ_ALWAYS_TRUE(NS_SUCCEEDED(
-      idleService->AddIdleObserver(this, kIdleObserverTimeSec)));
+    MOZ_ALWAYS_SUCCEEDS(
+      idleService->AddIdleObserver(this, kIdleObserverTimeSec));
 
     mIdleObserverRegistered = true;
   }
@@ -481,8 +481,8 @@ QuotaManagerService::RemoveIdleObserver()
       do_GetService(kIdleServiceContractId);
     MOZ_ASSERT(idleService);
 
-    MOZ_ALWAYS_TRUE(NS_SUCCEEDED(
-      idleService->RemoveIdleObserver(this, kIdleObserverTimeSec)));
+    MOZ_ALWAYS_SUCCEEDS(
+      idleService->RemoveIdleObserver(this, kIdleObserverTimeSec));
 
     mIdleObserverRegistered = false;
   }
@@ -497,6 +497,7 @@ NS_IMPL_QUERY_INTERFACE(QuotaManagerService,
 NS_IMETHODIMP
 QuotaManagerService::GetUsageForPrincipal(nsIPrincipal* aPrincipal,
                                           nsIQuotaUsageCallback* aCallback,
+                                          bool aGetGroupUsage,
                                           nsIQuotaUsageRequest** _retval)
 {
   MOZ_ASSERT(NS_IsMainThread());
@@ -509,7 +510,6 @@ QuotaManagerService::GetUsageForPrincipal(nsIPrincipal* aPrincipal,
   UsageParams params;
 
   PrincipalInfo& principalInfo = params.principalInfo();
-
   nsresult rv = PrincipalToPrincipalInfo(aPrincipal, &principalInfo);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
@@ -519,6 +519,8 @@ QuotaManagerService::GetUsageForPrincipal(nsIPrincipal* aPrincipal,
       principalInfo.type() != PrincipalInfo::TSystemPrincipalInfo) {
     return NS_ERROR_UNEXPECTED;
   }
+
+  params.getGroupUsage() = aGetGroupUsage;
 
   nsAutoPtr<PendingRequestInfo> info(new UsageRequestInfo(request, params));
 
@@ -638,39 +640,20 @@ QuotaManagerService::Observe(nsISupports* aSubject,
   MOZ_ASSERT(XRE_IsParentProcess());
   MOZ_ASSERT(NS_IsMainThread());
 
-  if (!strcmp(aTopic, PROFILE_BEFORE_CHANGE_OBSERVER_ID)) {
+  if (!strcmp(aTopic, PROFILE_BEFORE_CHANGE_QM_OBSERVER_ID)) {
     RemoveIdleObserver();
     return NS_OK;
   }
 
-  if (!strcmp(aTopic, TOPIC_WEB_APP_CLEAR_DATA)) {
-    nsCOMPtr<mozIApplicationClearPrivateDataParams> params =
-      do_QueryInterface(aSubject);
-    if (NS_WARN_IF(!params)) {
-      return NS_ERROR_UNEXPECTED;
-    }
-
-    uint32_t appId;
-    nsresult rv = params->GetAppId(&appId);
-    if (NS_WARN_IF(NS_FAILED(rv))) {
-      return rv;
-    }
-
-    bool browserOnly;
-    rv = params->GetBrowserOnly(&browserOnly);
-    if (NS_WARN_IF(NS_FAILED(rv))) {
-      return rv;
-    }
-
+  if (!strcmp(aTopic, "clear-origin-data")) {
     RefPtr<Request> request = new Request();
 
-    ClearAppParams requestParams;
-    requestParams.appId() = appId;
-    requestParams.browserOnly() = browserOnly;
+    ClearOriginsParams requestParams;
+    requestParams.pattern() = nsDependentString(aData);
 
     nsAutoPtr<PendingRequestInfo> info(new RequestInfo(request, requestParams));
 
-    rv = InitiateRequest(info);
+    nsresult rv = InitiateRequest(info);
     if (NS_WARN_IF(NS_FAILED(rv))) {
       return rv;
     }

@@ -23,7 +23,6 @@ const PREF_APP_UPDATE_NEVER_BRANCH        = "app.update.never.";
 const PREF_APP_UPDATE_NOTIFIEDUNSUPPORTED = "app.update.notifiedUnsupported";
 const PREF_APP_UPDATE_PROMPTWAITTIME      = "app.update.promptWaitTime";
 const PREF_APP_UPDATE_SERVICE_ENABLED     = "app.update.service.enabled";
-const PREF_APP_UPDATE_SHOW_INSTALLED_UI   = "app.update.showInstalledUI";
 const PREF_APP_UPDATE_SILENT              = "app.update.silent";
 const PREF_APP_UPDATE_STAGING_ENABLED     = "app.update.staging.enabled";
 const PREF_APP_UPDATE_URL                 = "app.update.url";
@@ -139,6 +138,11 @@ XPCOMUtils.defineLazyGetter(this, "gZipW", function test_gZipW() {
   return Cc["@mozilla.org/zipwriter;1"].
          createInstance(Ci.nsIZipWriter);
 });
+
+/* Triggers post-update processing */
+function testPostUpdateProcessing() {
+  gAUS.observe(null, "test-post-update-processing", "");
+}
 
 /* Initializes the update service stub */
 function initUpdateServiceStub() {
@@ -482,7 +486,7 @@ function cleanUpdatesDir(aDir) {
         } catch (e) {
           logTestInfo("cleanUpdatesDir: unable to remove directory. Path: " +
                       entry.path + ", Exception: " + e);
-          throw(e);
+          throw (e);
         }
       }
     } else {
@@ -492,7 +496,7 @@ function cleanUpdatesDir(aDir) {
       } catch (e) {
        logTestInfo("cleanUpdatesDir: unable to remove file. Path: " +
                    entry.path + ", Exception: " + e);
-        throw(e);
+        throw (e);
       }
     }
   }
@@ -532,7 +536,7 @@ function removeDirRecursive(aDir) {
         entry.remove(false);
       } catch (e) {
         logTestInfo("error removing file. Exception: " + e);
-        throw(e);
+        throw (e);
       }
     }
   }
@@ -543,7 +547,7 @@ function removeDirRecursive(aDir) {
     aDir.remove(true);
   } catch (e) {
     logTestInfo("error removing directory. Exception: " + e);
-    throw(e);
+    throw (e);
   }
 }
 
@@ -609,8 +613,13 @@ function logTestInfo(aText, aCaller) {
   let ms = now.getMilliseconds();
   let time = (hh < 10 ? "0" + hh : hh) + ":" +
              (mm < 10 ? "0" + mm : mm) + ":" +
-             (ss < 10 ? "0" + ss : ss) + ":" +
-             (ms < 10 ? "00" + ms : ms < 100 ? "0" + ms : ms);
+             (ss < 10 ? "0" + ss : ss) + ":";
+  if (ms < 10) {
+    time += "00";
+  } else if (ms < 100) {
+    time += "0";
+  }
+  time += ms;
   let msg = time + " | TEST-INFO | " + caller.filename + " | [" + caller.name +
             " : " + caller.lineNumber + "] " + aText;
   LOG_FUNCTION(msg);

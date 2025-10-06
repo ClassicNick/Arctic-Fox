@@ -1,4 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
  * vim: set ts=8 sw=4 et tw=78:
  *
  * This Source Code Form is subject to the terms of the Mozilla Public
@@ -275,9 +275,14 @@
 using namespace mozilla;
 
 struct ComponentsInterfaceShimEntry {
+  constexpr
+  ComponentsInterfaceShimEntry(const char* aName, const nsIID& aIID,
+                               const dom::NativePropertyHooks* aNativePropHooks)
+    : geckoName(aName), iid(aIID), nativePropHooks(aNativePropHooks) {}
+
   const char *geckoName;
-  nsIID iid;
-  const mozilla::dom::NativePropertyHooks* nativePropHooks;
+  const nsIID& iid;
+  const dom::NativePropertyHooks* nativePropHooks;
 };
 
 #define DEFINE_SHIM_WITH_CUSTOM_INTERFACE(geckoName, domName) \
@@ -325,7 +330,7 @@ const ComponentsInterfaceShimEntry kComponentsInterfaceShimMap[] =
   DEFINE_SHIM(AnimationEvent),
   DEFINE_SHIM(Attr),
   DEFINE_SHIM(BeforeUnloadEvent),
-  DEFINE_SHIM_WITH_CUSTOM_INTERFACE(nsIBrowserBoxObject, ContainerBoxObject),  
+  DEFINE_SHIM_WITH_CUSTOM_INTERFACE(nsIBrowserBoxObject, ContainerBoxObject),
   DEFINE_SHIM(CanvasRenderingContext2D),
   DEFINE_SHIM(CDATASection),
   DEFINE_SHIM(CharacterData),
@@ -428,7 +433,7 @@ const ComponentsInterfaceShimEntry kComponentsInterfaceShimMap[] =
   DEFINE_SHIM(Rect),
   DEFINE_SHIM(Screen),
   DEFINE_SHIM(ScrollAreaEvent),
-  DEFINE_SHIM_WITH_CUSTOM_INTERFACE(nsIScrollBoxObject, ScrollBoxObject),  
+  DEFINE_SHIM_WITH_CUSTOM_INTERFACE(nsIScrollBoxObject, ScrollBoxObject),
   DEFINE_SHIM_WITH_CUSTOM_INTERFACE(nsIDOMSerializer, XMLSerializer),
   DEFINE_SHIM(SimpleGestureEvent),
   DEFINE_SHIM(StyleSheet),
@@ -439,7 +444,7 @@ const ComponentsInterfaceShimEntry kComponentsInterfaceShimMap[] =
   DEFINE_SHIM(TimeEvent),
   DEFINE_SHIM(TimeRanges),
   DEFINE_SHIM(TransitionEvent),
-  DEFINE_SHIM_WITH_CUSTOM_INTERFACE(nsITreeBoxObject, TreeBoxObject),  
+  DEFINE_SHIM_WITH_CUSTOM_INTERFACE(nsITreeBoxObject, TreeBoxObject),
   DEFINE_SHIM(TreeWalker),
   DEFINE_SHIM(UIEvent),
   DEFINE_SHIM(ValidityState),
@@ -555,8 +560,8 @@ ShimInterfaceInfo::GetConstantCount(uint16_t* aCount)
         };
         for (size_t i = 0; i < ArrayLength(props); ++i) {
             auto prop = props[i];
-            if (prop && prop->constants) {
-                for (auto cs = prop->constants->specs; cs->name; ++cs) {
+            if (prop && prop->HasConstants()) {
+                for (auto cs = prop->Constants()->specs; cs->name; ++cs) {
                     // We have found one constant here.  We explicitly do not
                     // bother calling isEnabled() here because it's OK to define
                     // potentially extra constants on these shim interfaces.
@@ -601,8 +606,8 @@ ShimInterfaceInfo::GetConstant(uint16_t aIndex, JS::MutableHandleValue aConstant
         };
         for (size_t i = 0; i < ArrayLength(props); ++i) {
             auto prop = props[i];
-            if (prop && prop->constants) {
-                for (auto cs = prop->constants->specs; cs->name; ++cs) {
+            if (prop && prop->HasConstants()) {
+                for (auto cs = prop->Constants()->specs; cs->name; ++cs) {
                     // We have found one constant here.  We explicitly do not
                     // bother calling isEnabled() here because it's OK to define
                     // potentially extra constants on these shim interfaces.

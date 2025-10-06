@@ -3,7 +3,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "ImageLogging.h"
-#include "nsWEBPDecoder.h"
+
+#include "nsWEBPDecoder.h" // Must appear first.
 
 #include "gfxPlatform.h"
 
@@ -21,6 +22,10 @@ static PRLogModuleInfo *gWEBPDecoderAccountingLog =
 
 nsWEBPDecoder::nsWEBPDecoder(RasterImage* aImage)
  : Decoder(aImage)
+ , mLexer(Transition::ToUnbuffered(State::FINISHED_WEBP_DATA,
+                                   State::WEBP_DATA,
+                                   SIZE_MAX),
+          Transition::TerminateSuccess())
  , mDecoder(nullptr)
  , mData(nullptr)
  , mPreviousLastLine(0)
@@ -41,7 +46,7 @@ nsWEBPDecoder::~nsWEBPDecoder()
 }
 
 
-void
+nsresult
 nsWEBPDecoder::InitInternal()
 {
 #if MOZ_BIG_ENDIAN
@@ -51,12 +56,13 @@ nsWEBPDecoder::InitInternal()
 #endif
 
   if (!mDecoder) {
-    PostDecoderError(NS_ERROR_FAILURE);
-    return;
+    return NS_ERROR_FAILURE;
   }
+
+  return NS_OK;
 }
 
-void
+nsresult
 nsWEBPDecoder::FinishInternal()
 {
   MOZ_ASSERT(!HasError(), "Shouldn't call FinishInternal after error!");
@@ -69,32 +75,46 @@ nsWEBPDecoder::FinishInternal()
     PostFrameStop();
     PostDecodeDone();
   }
+
+  return NS_OK;
 }
 
-void
-nsWEBPDecoder::WriteInternal(const char *aBuffer, uint32_t aCount)
+LexerResult
+nsWEBPDecoder::DoDecode(SourceBufferIterator& aIterator, IResumable* aOnResume)
 {
   MOZ_ASSERT(!HasError(), "Shouldn't call WriteInternal after error!");
 
-  const uint8_t* buf = (const uint8_t*)aBuffer;
-  VP8StatusCode rv = WebPIAppend(mDecoder, buf, aCount);
+  return mLexer.Lex(aIterator, aOnResume,
+                    [=](State aState, const char* aData, size_t aLength) {
+    switch (aState) {
+      case State::WEBP_DATA:
+        return ReadWEBPData(aData, aLength);
+      case State::FINISHED_WEBP_DATA:
+        return FinishedWEBPData();
+    }
+    MOZ_CRASH("Unknown State");
+  });
+}
+
+LexerTransition<nsWEBPDecoder::State>
+nsWEBPDecoder::ReadWEBPData(const char* aData, size_t aLength)
+{
+  const uint8_t* buf = reinterpret_cast<const uint8_t*>(aData);
+
+  VP8StatusCode rv = WebPIAppend(mDecoder, buf, aLength);
   if (rv == VP8_STATUS_OUT_OF_MEMORY) {
-    PostDecoderError(NS_ERROR_OUT_OF_MEMORY);
-    return;
+    return Transition::TerminateFailure();
   } else if (rv == VP8_STATUS_INVALID_PARAM ||
              rv == VP8_STATUS_BITSTREAM_ERROR) {
-    PostDataError();
-    return;
+    return Transition::TerminateFailure();
   } else if (rv == VP8_STATUS_UNSUPPORTED_FEATURE ||
              rv == VP8_STATUS_USER_ABORT) {
-    PostDecoderError(NS_ERROR_FAILURE);
-    return;
+    return Transition::TerminateFailure();
   }
 
   // Catch any remaining erroneous return value.
   if (rv != VP8_STATUS_OK && rv != VP8_STATUS_SUSPENDED) {
-    PostDecoderError(NS_ERROR_FAILURE);
-    return;
+    return Transition::TerminateFailure();
   }
 
   int lastLineRead = -1;
@@ -105,18 +125,19 @@ nsWEBPDecoder::WriteInternal(const char *aBuffer, uint32_t aCount)
   mData = WebPIDecGetRGB(mDecoder, &lastLineRead, &width, &height, &stride);
 
   if (lastLineRead == -1 || !mData)
-    return;
+    return Transition::TerminateFailure();
 
   if (width <= 0 || height <= 0) {
-    PostDataError();
-    return;
+    return Transition::TerminateFailure();
   }
 
   if (!HasSize())
     PostSize(width, height);
 
-  if (IsMetadataDecode())
-    return;
+  // If we're doing a metadata decode, we're done.
+  if (IsMetadataDecode()) {
+    return Transition::TerminateSuccess();
+  }
 
   // The only valid format for WebP decoding for both alpha and non-alpha
   // images is BGRA, where Opaque images have an A of 255.
@@ -128,9 +149,9 @@ nsWEBPDecoder::WriteInternal(const char *aBuffer, uint32_t aCount)
 
   if (!mImageData) {
     MOZ_ASSERT(HasSize(), "Didn't fetch metadata?");
-    nsresult rv_ = AllocateBasicFrame();
+    nsresult rv_ = AllocateFrame(0, Size(), FullFrame(), gfx::SurfaceFormat::B8G8R8A8);
     if (NS_FAILED(rv_)) {
-      return;
+      return Transition::TerminateFailure();
     }
   }
   MOZ_ASSERT(mImageData, "Should have a buffer now");
@@ -166,7 +187,16 @@ nsWEBPDecoder::WriteInternal(const char *aBuffer, uint32_t aCount)
   }
 
   mPreviousLastLine = lastLineRead;
-  return;
+  return Transition::TerminateSuccess();
+}
+
+LexerTransition<nsWEBPDecoder::State>
+nsWEBPDecoder::FinishedWEBPData()
+{
+  // Since we set up an unbuffered read for SIZE_MAX bytes, if we actually read
+  // all that data something is really wrong.
+  MOZ_ASSERT_UNREACHABLE("Read the entire address space?");
+  return Transition::TerminateFailure();
 }
 
 } // namespace imagelib

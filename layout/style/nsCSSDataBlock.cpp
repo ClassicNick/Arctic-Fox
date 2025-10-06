@@ -14,9 +14,9 @@
 #include "CSSVariableImageTable.h"
 #include "mozilla/css/Declaration.h"
 #include "mozilla/css/ImageLoader.h"
-#include "mozilla/Maybe.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/WritingModes.h"
+#include "nsAutoPtr.h"
 #include "nsIDocument.h"
 #include "nsRuleData.h"
 #include "nsStyleContext.h"
@@ -41,50 +41,6 @@ MoveValue(nsCSSValue* aSource, nsCSSValue* aDest)
   return changed;
 }
 
-/**
- * This function maps "-webkit-box-orient" values to "flex-direction" values,
- * for a given writing-mode (taken from aRuleData).
- *
- * Specifically:
- *  - If aBoxOrientVal is an enumerated value (representing a physical axis),
- * then we'll map it to the appropriate logical "flex-direction" value, using
- * the writing mode.  The converted value will be emplace()'d into in the
- * outparam aConvertedValStorage, and we'll return a pointer to that value.
- *  - Otherwise (e.g. if we have "inherit" or "initial"), we won't do any
- * mapping, and we'll directly return the passed-in aBoxOrientVal.
- *
- * Either way, the idea is that our caller can treat the returned value as if
- * it were a value for "flex-direction".
- */
-static const nsCSSValue*
-ConvertBoxOrientToFlexDirection(const nsCSSValue* aBoxOrientVal,
-                                const nsRuleData* aRuleData,
-                                Maybe<nsCSSValue>& aConvertedValStorage)
-{
-  MOZ_ASSERT(aBoxOrientVal, "expecting a non-null value to convert");
-  MOZ_ASSERT(aConvertedValStorage.isNothing(),
-             "expecting outparam for converted-value to be initially empty");
-
-  if (aBoxOrientVal->GetUnit() != eCSSUnit_Enumerated) {
-    // We probably have "inherit" or "initial" -- just return that & have the
-    // caller directly use it as a "flex-direction" value.
-    return aBoxOrientVal;
-  }
-
-  // OK, we have an enumerated value -- "horizontal" or "vertical".
-
-  WritingMode wm(aRuleData->mStyleContext);
-  // In a horizontal writing-mode, "horizontal" maps to "row".
-  // In a vertical writing-mode, "horizontal" maps to "column".
-  bool isRow = wm.IsVertical() !=
-    (aBoxOrientVal->GetIntValue() == NS_STYLE_BOX_ORIENT_HORIZONTAL);
-
-  aConvertedValStorage.emplace(isRow ? NS_STYLE_FLEX_DIRECTION_ROW :
-                                       NS_STYLE_FLEX_DIRECTION_COLUMN,
-                               eCSSUnit_Enumerated);
-  return aConvertedValStorage.ptr();
-}
-
 static bool
 ShouldIgnoreColors(nsRuleData *aRuleData)
 {
@@ -99,12 +55,46 @@ ShouldIgnoreColors(nsRuleData *aRuleData)
  */
 static void
 TryToStartImageLoadOnValue(const nsCSSValue& aValue, nsIDocument* aDocument,
-                           nsStyleContext* aContext, nsCSSProperty aProperty,
+                           nsStyleContext* aContext, nsCSSPropertyID aProperty,
                            bool aForTokenStream)
 {
   MOZ_ASSERT(aDocument);
 
   if (aValue.GetUnit() == eCSSUnit_URL) {
+#ifdef MOZ_ENABLE_MASK_AS_SHORTHAND
+    // The 'mask-image' property accepts local reference URIs.
+    // For example,
+    //   mask-image: url(#mask_id); // refer to a SVG mask element, whose id is
+    //                              // "mask_id", in the current document.
+    // For such 'mask-image' values (pointing to an in-document element),
+    // there is no need to trigger image download.
+    if (aProperty == eCSSProperty_mask_image) {
+      // Filter out all fragment URLs.
+      // Since nsCSSValue::GetURLStructValue runs much faster than
+      // nsIURI::EqualsExceptRef bellow, we get performance gain by this
+      // early return.
+      URLValue* urlValue = aValue.GetURLStructValue();
+      if (urlValue->GetLocalURLFlag()) {
+        return;
+      }
+
+      // Even though urlValue is not a fragment URL, it might still refer to
+      // an internal resource.
+      // For example, aDocument base URL is "http://foo/index.html" and
+      // intentionally references a mask-image at
+      // url(http://foo/index.html#mask) which still refers to a resource in
+      // aDocument.
+      nsIURI* imageURI = aValue.GetURLValue();
+      if (imageURI) {
+        nsIURI* docURI = aDocument->GetDocumentURI();
+        bool isEqualExceptRef = false;
+        nsresult  rv = imageURI->EqualsExceptRef(docURI, &isEqualExceptRef);
+        if (NS_SUCCEEDED(rv) && isEqualExceptRef) {
+          return;
+        }
+      }
+    }
+#endif
     aValue.StartImageLoad(aDocument);
     if (aForTokenStream && aContext) {
       CSSVariableImageTable::Add(aContext, aProperty,
@@ -135,7 +125,7 @@ TryToStartImageLoadOnValue(const nsCSSValue& aValue, nsIDocument* aDocument,
 
 static void
 TryToStartImageLoad(const nsCSSValue& aValue, nsIDocument* aDocument,
-                    nsStyleContext* aContext, nsCSSProperty aProperty,
+                    nsStyleContext* aContext, nsCSSPropertyID aProperty,
                     bool aForTokenStream)
 {
   if (aValue.GetUnit() == eCSSUnit_List) {
@@ -156,7 +146,7 @@ TryToStartImageLoad(const nsCSSValue& aValue, nsIDocument* aDocument,
 }
 
 static inline bool
-ShouldStartImageLoads(nsRuleData *aRuleData, nsCSSProperty aProperty)
+ShouldStartImageLoads(nsRuleData *aRuleData, nsCSSPropertyID aProperty)
 {
   // Don't initiate image loads for if-visited styles.  This is
   // important because:
@@ -170,31 +160,14 @@ ShouldStartImageLoads(nsRuleData *aRuleData, nsCSSProperty aProperty)
 }
 
 static void
-MapSinglePropertyInto(nsCSSProperty aSrcProp,
+MapSinglePropertyInto(nsCSSPropertyID aTargetProp,
                       const nsCSSValue* aSrcValue,
-                      nsCSSProperty aTargetProp,
                       nsCSSValue* aTargetValue,
                       nsRuleData* aRuleData)
 {
   MOZ_ASSERT(!nsCSSProps::PropHasFlags(aTargetProp, CSS_PROPERTY_LOGICAL),
              "Can't map into a logical property");
-  MOZ_ASSERT(aSrcProp == aTargetProp ||
-             nsCSSProps::PropHasFlags(aSrcProp, CSS_PROPERTY_LOGICAL),
-             "Source & target property must be the same, except when we're "
-             "doing a logical-to-physical property mapping");
   MOZ_ASSERT(aSrcValue->GetUnit() != eCSSUnit_Null, "oops");
-
-  // Handle logical properties that have custom value-mapping behavior:
-  Maybe<nsCSSValue> convertedVal; // storage for converted value, if needed
-  bool hasCustomValMapping =
-      nsCSSProps::PropHasFlags(aSrcProp,
-                               CSS_PROPERTY_LOGICAL_SINGLE_CUSTOM_VALMAPPING);
-  if (hasCustomValMapping) {
-    if (aSrcProp == eCSSProperty_webkit_box_orient) {
-      aSrcValue = ConvertBoxOrientToFlexDirection(aSrcValue, aRuleData,
-                                                  convertedVal);
-    }
-  }
 
   // Although aTargetValue is the nsCSSValue we are going to write into,
   // we also look at its value before writing into it.  This is done
@@ -234,20 +207,13 @@ MapSinglePropertyInto(nsCSSProperty aSrcProp,
 }
 
 /**
- * If aProperty is a logical property, returns the equivalent physical
+ * If aProperty is a logical property, converts it to the equivalent physical
  * property based on writing mode information obtained from aRuleData's
  * style context.
  */
-static inline nsCSSProperty
-EnsurePhysicalProperty(nsCSSProperty aProperty, nsRuleData* aRuleData)
+static inline void
+EnsurePhysicalProperty(nsCSSPropertyID& aProperty, nsRuleData* aRuleData)
 {
-  if (!nsCSSProps::PropHasFlags(aProperty, CSS_PROPERTY_LOGICAL)) {
-    return aProperty;
-  }
-
-  bool isSingleProperty =
-      nsCSSProps::PropHasFlags(aProperty,
-                               CSS_PROPERTY_LOGICAL_SINGLE_CUSTOM_VALMAPPING);
   bool isAxisProperty =
     nsCSSProps::PropHasFlags(aProperty, CSS_PROPERTY_LOGICAL_AXIS);
   bool isBlock =
@@ -255,9 +221,7 @@ EnsurePhysicalProperty(nsCSSProperty aProperty, nsRuleData* aRuleData)
 
   int index;
 
-  if (isSingleProperty) {
-    index = 0; // We always map to the same physical property.
-  } else if (isAxisProperty) {
+  if (isAxisProperty) {
     LogicalAxis logicalAxis = isBlock ? eLogicalAxisBlock : eLogicalAxisInline;
     uint8_t wm = aRuleData->mStyleContext->StyleVisibility()->mWritingMode;
     PhysicalAxis axis =
@@ -294,20 +258,44 @@ EnsurePhysicalProperty(nsCSSProperty aProperty, nsRuleData* aRuleData)
     index = side;
   }
 
-  const nsCSSProperty* props = nsCSSProps::LogicalGroup(aProperty);
+  const nsCSSPropertyID* props = nsCSSProps::LogicalGroup(aProperty);
+  size_t len = isAxisProperty ? 2 : 4;
 #ifdef DEBUG
-  {
-    // Table-length is 1 for single prop, 2 for axis prop, 4 for block prop.
-    size_t len = isSingleProperty ? 1 : (isAxisProperty ? 2 : 4);
     for (size_t i = 0; i < len; i++) {
-      MOZ_ASSERT(props[i] != eCSSProperty_UNKNOWN,
-                 "unexpected logical group length");
-    }
-    MOZ_ASSERT(props[len] == eCSSProperty_UNKNOWN,
+    MOZ_ASSERT(props[i] != eCSSProperty_UNKNOWN,
                "unexpected logical group length");
   }
+  MOZ_ASSERT(props[len] == eCSSProperty_UNKNOWN,
+             "unexpected logical group length");
 #endif
-  return props[index];
+
+  for (size_t i = 0; i < len; i++) {
+    if (aRuleData->ValueFor(props[i])->GetUnit() == eCSSUnit_Null) {
+      // A declaration of one of the logical properties in this logical
+      // group (but maybe not aProperty) would be the winning
+      // declaration in the cascade.  This means that it's reasonably
+      // likely that this logical property could be the winning
+      // declaration in the cascade for some values of writing-mode,
+      // direction, and text-orientation.  (It doesn't mean that for
+      // sure, though.  For example, if this is a block-start logical
+      // property, and all but the bottom physical property were set.
+      // But the common case we want to hit here is logical declarations
+      // that are completely overridden by a shorthand.)
+      //
+      // If this logical property could be the winning declaration in
+      // the cascade for some values of writing-mode, direction, and
+      // text-orientation, then we have to fault the resulting style
+      // struct out of the rule tree.  We can't cache anything on the
+      // rule tree if it depends on data from the style context, since
+      // data cached in the rule tree could be used with a style context
+      // with a different value of the depended-upon data.
+      uint8_t wm = WritingMode(aRuleData->mStyleContext).GetBits();
+      aRuleData->mConditions.SetWritingModeDependency(wm);
+      break;
+    }
+  }
+
+  aProperty = props[index];
 }
 
 void
@@ -324,19 +312,13 @@ nsCSSCompressedDataBlock::MapRuleInfoInto(nsRuleData *aRuleData) const
   // right property when one can be expressed using both logical and
   // physical property names.
   for (uint32_t i = mNumProps; i-- > 0; ) {
-    nsCSSProperty iProp = PropertyAtIndex(i);
+    nsCSSPropertyID iProp = PropertyAtIndex(i);
     if (nsCachedStyleData::GetBitForSID(nsCSSProps::kSIDTable[iProp]) &
         aRuleData->mSIDs) {
-      nsCSSProperty physicalProp = EnsurePhysicalProperty(iProp,
-                                                          aRuleData);
-      if (physicalProp != iProp) {
-        // We can't cache anything on the rule tree if we use any data from
-        // the style context, since data cached in the rule tree could be
-        // used with a style context with a different value.
-        uint8_t wm = WritingMode(aRuleData->mStyleContext).GetBits();
-        aRuleData->mConditions.SetWritingModeDependency(wm);
+      if (nsCSSProps::PropHasFlags(iProp, CSS_PROPERTY_LOGICAL)) {
+        EnsurePhysicalProperty(iProp, aRuleData);
       }
-      nsCSSValue* target = aRuleData->ValueFor(physicalProp);
+      nsCSSValue* target = aRuleData->ValueFor(iProp);
       if (target->GetUnit() == eCSSUnit_Null) {
         const nsCSSValue *val = ValueAtIndex(i);
         // In order for variable resolution to have the right information
@@ -348,15 +330,14 @@ nsCSSCompressedDataBlock::MapRuleInfoInto(nsRuleData *aRuleData) const
         if (val->GetUnit() == eCSSUnit_TokenStream) {
           val->GetTokenStreamValue()->mLevel = aRuleData->mLevel;
         }
-        MapSinglePropertyInto(iProp, val, physicalProp, target,
-                              aRuleData);
+        MapSinglePropertyInto(iProp, val, target, aRuleData);
       }
     }
   }
 }
 
 const nsCSSValue*
-nsCSSCompressedDataBlock::ValueFor(nsCSSProperty aProperty) const
+nsCSSCompressedDataBlock::ValueFor(nsCSSPropertyID aProperty) const
 {
   MOZ_ASSERT(!nsCSSProps::IsShorthand(aProperty),
              "Don't call for shorthands");
@@ -379,7 +360,7 @@ nsCSSCompressedDataBlock::ValueFor(nsCSSProperty aProperty) const
 }
 
 bool
-nsCSSCompressedDataBlock::TryReplaceValue(nsCSSProperty aProperty,
+nsCSSCompressedDataBlock::TryReplaceValue(nsCSSPropertyID aProperty,
                                           nsCSSExpandedDataBlock& aFromBlock,
                                           bool *aChanged)
 {
@@ -499,7 +480,7 @@ nsCSSExpandedDataBlock::DoExpand(nsCSSCompressedDataBlock *aBlock,
    * corresponding to the stored data in the compressed block.
    */
   for (uint32_t i = 0; i < aBlock->mNumProps; i++) {
-    nsCSSProperty iProp = aBlock->PropertyAtIndex(i);
+    nsCSSPropertyID iProp = aBlock->PropertyAtIndex(i);
     MOZ_ASSERT(!nsCSSProps::IsShorthand(iProp), "out of range");
     MOZ_ASSERT(!HasPropertyBit(iProp),
                "compressed block has property multiple times");
@@ -542,14 +523,14 @@ nsCSSExpandedDataBlock::ComputeNumProps(uint32_t* aNumPropsNormal,
                                         uint32_t* aNumPropsImportant)
 {
   *aNumPropsNormal = *aNumPropsImportant = 0;
-  for (size_t iHigh = 0; iHigh < nsCSSPropertySet::kChunkCount; ++iHigh) {
+  for (size_t iHigh = 0; iHigh < nsCSSPropertyIDSet::kChunkCount; ++iHigh) {
     if (!mPropertiesSet.HasPropertyInChunk(iHigh))
       continue;
-    for (size_t iLow = 0; iLow < nsCSSPropertySet::kBitsInChunk; ++iLow) {
+    for (size_t iLow = 0; iLow < nsCSSPropertyIDSet::kBitsInChunk; ++iLow) {
       if (!mPropertiesSet.HasPropertyAt(iHigh, iLow))
         continue;
 #ifdef DEBUG
-      nsCSSProperty iProp = nsCSSPropertySet::CSSPropertyAt(iHigh, iLow);
+      nsCSSPropertyID iProp = nsCSSPropertyIDSet::CSSPropertyAt(iHigh, iLow);
 #endif
       MOZ_ASSERT(!nsCSSProps::IsShorthand(iProp), "out of range");
       MOZ_ASSERT(PropertyAt(iProp)->GetUnit() != eCSSUnit_Null,
@@ -589,7 +570,7 @@ nsCSSExpandedDataBlock::Compress(nsCSSCompressedDataBlock **aNormalBlock,
    * clearing the data in the expanded block.
    */
   for (size_t i = 0; i < aOrder.Length(); i++) {
-    nsCSSProperty iProp = static_cast<nsCSSProperty>(aOrder[i]);
+    nsCSSPropertyID iProp = static_cast<nsCSSPropertyID>(aOrder[i]);
     if (iProp >= eCSSProperty_COUNT) {
       // a custom property
       continue;
@@ -624,11 +605,11 @@ nsCSSExpandedDataBlock::Compress(nsCSSCompressedDataBlock **aNormalBlock,
     // assert that we didn't have any other properties on this expanded data
     // block that we didn't find in aOrder
     uint32_t numPropsInSet = 0;
-    for (size_t iHigh = 0; iHigh < nsCSSPropertySet::kChunkCount; iHigh++) {
+    for (size_t iHigh = 0; iHigh < nsCSSPropertyIDSet::kChunkCount; iHigh++) {
       if (!mPropertiesSet.HasPropertyInChunk(iHigh)) {
         continue;
       }
-      for (size_t iLow = 0; iLow < nsCSSPropertySet::kBitsInChunk; iLow++) {
+      for (size_t iLow = 0; iLow < nsCSSPropertyIDSet::kBitsInChunk; iLow++) {
         if (mPropertiesSet.HasPropertyAt(iHigh, iLow)) {
           numPropsInSet++;
         }
@@ -646,7 +627,7 @@ nsCSSExpandedDataBlock::Compress(nsCSSCompressedDataBlock **aNormalBlock,
 }
 
 void
-nsCSSExpandedDataBlock::AddLonghandProperty(nsCSSProperty aProperty,
+nsCSSExpandedDataBlock::AddLonghandProperty(nsCSSPropertyID aProperty,
                                             const nsCSSValue& aValue)
 {
   MOZ_ASSERT(!nsCSSProps::IsShorthand(aProperty),
@@ -659,13 +640,13 @@ nsCSSExpandedDataBlock::AddLonghandProperty(nsCSSProperty aProperty,
 void
 nsCSSExpandedDataBlock::Clear()
 {
-  for (size_t iHigh = 0; iHigh < nsCSSPropertySet::kChunkCount; ++iHigh) {
+  for (size_t iHigh = 0; iHigh < nsCSSPropertyIDSet::kChunkCount; ++iHigh) {
     if (!mPropertiesSet.HasPropertyInChunk(iHigh))
       continue;
-    for (size_t iLow = 0; iLow < nsCSSPropertySet::kBitsInChunk; ++iLow) {
+    for (size_t iLow = 0; iLow < nsCSSPropertyIDSet::kBitsInChunk; ++iLow) {
       if (!mPropertiesSet.HasPropertyAt(iHigh, iLow))
         continue;
-      nsCSSProperty iProp = nsCSSPropertySet::CSSPropertyAt(iHigh, iLow);
+      nsCSSPropertyID iProp = nsCSSPropertyIDSet::CSSPropertyAt(iHigh, iLow);
       ClearLonghandProperty(iProp);
     }
   }
@@ -674,11 +655,11 @@ nsCSSExpandedDataBlock::Clear()
 }
 
 void
-nsCSSExpandedDataBlock::ClearProperty(nsCSSProperty aPropID)
+nsCSSExpandedDataBlock::ClearProperty(nsCSSPropertyID aPropID)
 {
   if (nsCSSProps::IsShorthand(aPropID)) {
-    CSSPROPS_FOR_SHORTHAND_SUBPROPERTIES(p, aPropID,
-                                         nsCSSProps::eIgnoreEnabledState) {
+    CSSPROPS_FOR_SHORTHAND_SUBPROPERTIES(
+        p, aPropID, CSSEnabledState::eIgnoreEnabledState) {
       ClearLonghandProperty(*p);
     }
   } else {
@@ -687,7 +668,7 @@ nsCSSExpandedDataBlock::ClearProperty(nsCSSProperty aPropID)
 }
 
 void
-nsCSSExpandedDataBlock::ClearLonghandProperty(nsCSSProperty aPropID)
+nsCSSExpandedDataBlock::ClearLonghandProperty(nsCSSPropertyID aPropID)
 {
   MOZ_ASSERT(!nsCSSProps::IsShorthand(aPropID), "out of range");
 
@@ -698,8 +679,8 @@ nsCSSExpandedDataBlock::ClearLonghandProperty(nsCSSProperty aPropID)
 
 bool
 nsCSSExpandedDataBlock::TransferFromBlock(nsCSSExpandedDataBlock& aFromBlock,
-                                          nsCSSProperty aPropID,
-                                          nsCSSProps::EnabledState aEnabledState,
+                                          nsCSSPropertyID aPropID,
+                                          CSSEnabledState aEnabledState,
                                           bool aIsImportant,
                                           bool aOverrideImportant,
                                           bool aMustCallValueAppended,
@@ -713,11 +694,11 @@ nsCSSExpandedDataBlock::TransferFromBlock(nsCSSExpandedDataBlock& aFromBlock,
                                aSheetDocument);
   }
 
-  // We can pass eIgnoreEnabledState (here, and in ClearProperty above) rather
-  // than a value corresponding to whether we're parsing a UA style sheet or
-  // certified app because we assert in nsCSSProps::AddRefTable that shorthand
-  // properties available in these contexts also have all of their
-  // subproperties available in these contexts.
+  // We can pass CSSEnabledState::eIgnore (here, and in ClearProperty
+  // above) rather than a value corresponding to whether we're parsing
+  // a UA style sheet or certified app because we assert in nsCSSProps::
+  // AddRefTable that shorthand properties available in these contexts
+  // also have all of their subproperties available in these contexts.
   bool changed = false;
   CSSPROPS_FOR_SHORTHAND_SUBPROPERTIES(p, aPropID, aEnabledState) {
     changed |= DoTransferFromBlock(aFromBlock, *p,
@@ -730,7 +711,7 @@ nsCSSExpandedDataBlock::TransferFromBlock(nsCSSExpandedDataBlock& aFromBlock,
 
 bool
 nsCSSExpandedDataBlock::DoTransferFromBlock(nsCSSExpandedDataBlock& aFromBlock,
-                                            nsCSSProperty aPropID,
+                                            nsCSSPropertyID aPropID,
                                             bool aIsImportant,
                                             bool aOverrideImportant,
                                             bool aMustCallValueAppended,
@@ -783,7 +764,7 @@ nsCSSExpandedDataBlock::DoTransferFromBlock(nsCSSExpandedDataBlock& aFromBlock,
 }
 
 void
-nsCSSExpandedDataBlock::MapRuleInfoInto(nsCSSProperty aPropID,
+nsCSSExpandedDataBlock::MapRuleInfoInto(nsCSSPropertyID aPropID,
                                         nsRuleData* aRuleData) const
 {
   MOZ_ASSERT(!nsCSSProps::IsShorthand(aPropID));
@@ -791,10 +772,9 @@ nsCSSExpandedDataBlock::MapRuleInfoInto(nsCSSProperty aPropID,
   const nsCSSValue* src = PropertyAt(aPropID);
   MOZ_ASSERT(src->GetUnit() != eCSSUnit_Null);
 
-  nsCSSProperty physicalProp = EnsurePhysicalProperty(aPropID, aRuleData);
-  if (physicalProp != aPropID) {
-    uint8_t wm = WritingMode(aRuleData->mStyleContext).GetBits();
-    aRuleData->mConditions.SetWritingModeDependency(wm);
+  nsCSSPropertyID physicalProp = aPropID;
+  if (nsCSSProps::PropHasFlags(aPropID, CSS_PROPERTY_LOGICAL)) {
+    EnsurePhysicalProperty(physicalProp, aRuleData);
   }
 
   nsCSSValue* dest = aRuleData->ValueFor(physicalProp);
@@ -802,7 +782,7 @@ nsCSSExpandedDataBlock::MapRuleInfoInto(nsCSSProperty aPropID,
              dest->GetTokenStreamValue()->mPropertyID == aPropID);
 
   CSSVariableImageTable::ReplaceAll(aRuleData->mStyleContext, aPropID, [=] {
-    MapSinglePropertyInto(aPropID, src, physicalProp, dest, aRuleData);
+    MapSinglePropertyInto(physicalProp, src, dest, aRuleData);
   });
 }
 
@@ -814,7 +794,7 @@ nsCSSExpandedDataBlock::DoAssertInitialState()
   mPropertiesImportant.AssertIsEmpty("not initial state");
 
   for (uint32_t i = 0; i < eCSSProperty_COUNT_no_shorthands; ++i) {
-    nsCSSProperty prop = nsCSSProperty(i);
+    nsCSSPropertyID prop = nsCSSPropertyID(i);
     MOZ_ASSERT(PropertyAt(prop)->GetUnit() == eCSSUnit_Null,
                "not initial state");
   }

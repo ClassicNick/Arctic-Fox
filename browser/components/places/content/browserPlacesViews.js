@@ -196,7 +196,7 @@ PlacesViewBase.prototype = {
     if (selectedNode) {
       let popup = document.popupNode;
       if (!popup._placesNode || popup._placesNode == this._resultNode ||
-          popup._placesNode.itemId == -1) {
+          popup._placesNode.itemId == -1 || !selectedNode.parent) {
         // If a static menuitem is selected, or if the root node is selected,
         // the insertion point is inside the folder, at the end.
         container = selectedNode;
@@ -329,6 +329,7 @@ PlacesViewBase.prototype = {
     let type = aPlacesNode.type;
     if (type == Ci.nsINavHistoryResultNode.RESULT_TYPE_SEPARATOR) {
       element = document.createElement("menuseparator");
+      element.setAttribute("class", "small-separator");
     }
     else {
       let itemId = aPlacesNode.itemId;
@@ -480,10 +481,9 @@ PlacesViewBase.prototype = {
       if (aPopup._startMarker.nextSibling != statusMenuitem)
         aPopup.insertBefore(statusMenuitem, aPopup._startMarker.nextSibling);
     }
-    else {
+    else if (aPopup._statusMenuitem.parentNode == aPopup) {
       // The livemark has finished loading.
-      if (aPopup._statusMenuitem.parentNode == aPopup)
-        aPopup.removeChild(aPopup._statusMenuitem);
+      aPopup.removeChild(aPopup._statusMenuitem);
     }
   },
 
@@ -887,7 +887,8 @@ PlacesViewBase.prototype = {
         break;
       }
 
-      if (child._placesNode && !firstNonStaticNodeFound) {
+      if (child._placesNode && !child.hasAttribute("simulated-places-node") &&
+          !firstNonStaticNodeFound) {
         firstNonStaticNodeFound = true;
         aPopup.insertBefore(aPopup._startMarker, child);
       }
@@ -996,6 +997,10 @@ PlacesToolbar.prototype = {
     this._removeEventListeners(this._rootElt, ["overflow", "underflow"], true);
     this._removeEventListeners(window, ["resize", "unload"], false);
     this._removeEventListeners(gBrowser.tabContainer, ["TabOpen", "TabClose"], false);
+
+    if (this._chevron._placesView) {
+      this._chevron._placesView.uninit();
+    }
 
     PlacesViewBase.prototype.uninit.apply(this, arguments);
   },
@@ -1615,6 +1620,7 @@ PlacesToolbar.prototype = {
       // Dragging over a normal toolbarbutton,
       // show indicator bar and move it to the appropriate drop point.
       let ind = this._dropIndicator;
+      ind.parentNode.collapsed = false;
       let halfInd = ind.clientWidth / 2;
       let translateX;
       if (this.isRTL) {
@@ -1644,7 +1650,7 @@ PlacesToolbar.prototype = {
       }
 
       ind.style.transform = "translate(" + Math.round(translateX) + "px)";
-      ind.style.MozMarginStart = (-ind.clientWidth) + "px";
+      ind.style.marginInlineStart = (-ind.clientWidth) + "px";
       ind.collapsed = false;
 
       // Clear out old folder information.

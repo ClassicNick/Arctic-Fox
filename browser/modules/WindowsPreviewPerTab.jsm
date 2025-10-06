@@ -50,7 +50,6 @@ const Cu = Components.utils;
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/NetUtil.jsm");
 Cu.import("resource://gre/modules/PrivateBrowsingUtils.jsm");
-Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/PageThumbs.jsm");
 
 // Pref to enable/disable preview-per-tab
@@ -64,9 +63,6 @@ const WINTASKBAR_CONTRACTID = "@mozilla.org/windows-taskbar;1";
 
 ////////////////////////////////////////////////////////////////////////////////
 //// Various utility properties
-XPCOMUtils.defineLazyServiceGetter(this, "ioSvc",
-                                   "@mozilla.org/network/io-service;1",
-                                   "nsIIOService");
 XPCOMUtils.defineLazyServiceGetter(this, "imgTools",
                                    "@mozilla.org/image/tools;1",
                                    "imgITools");
@@ -76,12 +72,12 @@ XPCOMUtils.defineLazyServiceGetter(this, "faviconSvc",
 
 // nsIURI -> imgIContainer
 function _imageFromURI(doc, uri, privateMode, callback) {
-  let channel = ioSvc.newChannelFromURI2(uri,
-                                         null,
-                                         Services.scriptSecurityManager.getSystemPrincipal(),
-                                         null,
-                                         Ci.nsILoadInfo.SEC_NORMAL,
-                                         Ci.nsIContentPolicy.TYPE_INTERNAL_IMAGE);
+  let channel = NetUtil.newChannel({
+    uri: uri,
+    loadUsingSystemPrincipal: true,
+    contentPolicyType: Ci.nsIContentPolicy.TYPE_INTERNAL_IMAGE
+  });
+
   try {
     channel.QueryInterface(Ci.nsIPrivateBrowsingChannel);
     channel.setPrivate(privateMode);
@@ -296,11 +292,14 @@ PreviewController.prototype = {
       ctx.drawWindow(this.win.win, 0, 0, winWidth, winHeight, "rgba(0,0,0,0)");
 
       // Draw the content are into the composite canvas at the right location.
-      ctx.drawImage(aPreviewCanvas, this.browserDims.x, this.browserDims.y, aPreviewCanvas.width, aPreviewCanvas.height);
+      ctx.drawImage(aPreviewCanvas, this.browserDims.x, this.browserDims.y,
+                    aPreviewCanvas.width, aPreviewCanvas.height);
       ctx.restore();
 
       // Deliver the resulting composite canvas to Windows
-      this.win.tabbrowser.previewTab(this.tab, function () { aTaskbarCallback.done(composite, false); });
+      this.win.tabbrowser.previewTab(this.tab, function () {
+        aTaskbarCallback.done(composite, false);
+      });
     });
   },
 
@@ -368,8 +367,6 @@ function TabWindow(win) {
   this.win = win;
   this.tabbrowser = win.gBrowser;
 
-  this.cacheDims();
-
   this.previews = new Map();
 
   for (let i = 0; i < this.tabEvents.length; i++)
@@ -379,7 +376,7 @@ function TabWindow(win) {
     this.win.addEventListener(this.winEvents[i], this, false);
 
   this.tabbrowser.addTabsProgressListener(this);
-   
+
   AeroPeek.windows.push(this);
   let tabs = this.tabbrowser.tabs;
   for (let i = 0; i < tabs.length; i++)
@@ -391,6 +388,8 @@ function TabWindow(win) {
 
 TabWindow.prototype = {
   _enabled: false,
+  _cachedWidth: 0,
+  _cachedHeight: 0,
   tabEvents: ["TabOpen", "TabClose", "TabSelect", "TabMove"],
   winEvents: ["resize"],
 
@@ -401,8 +400,8 @@ TabWindow.prototype = {
 
     this.tabbrowser.removeTabsProgressListener(this);
 
-  for (let i = 0; i < this.winEvents.length; i++)
-    this.win.removeEventListener(this.winEvents[i], this, false);
+    for (let i = 0; i < this.winEvents.length; i++)
+      this.win.removeEventListener(this.winEvents[i], this, false);
 
     for (let i = 0; i < this.tabEvents.length; i++)
       this.tabbrowser.tabContainer.removeEventListener(this.tabEvents[i], this, false);

@@ -59,22 +59,33 @@ SVGTransformableElement::GetAttributeChangeHint(const nsIAtom* aAttribute,
       aAttribute == nsGkAtoms::mozAnimateMotionDummyAttr) {
     nsIFrame* frame =
       const_cast<SVGTransformableElement*>(this)->GetPrimaryFrame();
-    NS_UpdateHint(retval, nsChangeHint_InvalidateRenderingObservers);
+    retval |= nsChangeHint_InvalidateRenderingObservers;
     if (!frame || (frame->GetStateBits() & NS_FRAME_IS_NONDISPLAY)) {
       return retval;
     }
+
+    bool isAdditionOrRemoval = false;
     if (aModType == nsIDOMMutationEvent::ADDITION ||
-        aModType == nsIDOMMutationEvent::REMOVAL ||
-        (aModType == nsIDOMMutationEvent::MODIFICATION &&
-         !(mTransforms && mTransforms->HasTransform()))) {
-      // Reconstruct the frame tree to handle stacking context changes:
-      NS_UpdateHint(retval, nsChangeHint_ReconstructFrame);
+        aModType == nsIDOMMutationEvent::REMOVAL) {
+      isAdditionOrRemoval = true;
     } else {
       MOZ_ASSERT(aModType == nsIDOMMutationEvent::MODIFICATION,
                  "Unknown modification type.");
+      if (!mTransforms ||
+          !mTransforms->HasTransform() ||
+          !mTransforms->HadTransformBeforeLastBaseValChange()) {
+        // New or old value is empty; this is effectively addition or removal.
+        isAdditionOrRemoval = true;
+      }
+    }
+
+    if (isAdditionOrRemoval) {
+      // Reconstruct the frame tree to handle stacking context changes:
+      retval |= nsChangeHint_ReconstructFrame;
+    } else {
       // We just assume the old and new transforms are different.
-      NS_UpdateHint(retval, NS_CombineHint(nsChangeHint_UpdatePostTransformOverflow,
-                                           nsChangeHint_UpdateTransformLayer));
+      retval |= nsChangeHint_UpdatePostTransformOverflow |
+                nsChangeHint_UpdateTransformLayer;
     }
   }
   return retval;
@@ -176,27 +187,27 @@ SVGTransformableElement::GetBBox(const SVGBoundingBoxOptions& aOptions,
   if (!NS_SVGNewGetBBoxEnabled()) {
     return NS_NewSVGRect(this, ToRect(nsSVGUtils::GetBBox(frame)));
   } else {
-    uint32_t aFlags = 0;
+    uint32_t flags = 0;
     if (aOptions.mFill) {
-      aFlags |= nsSVGUtils::eBBoxIncludeFill;
+      flags |= nsSVGUtils::eBBoxIncludeFill;
     }
     if (aOptions.mStroke) {
-      aFlags |= nsSVGUtils::eBBoxIncludeStroke;
+      flags |= nsSVGUtils::eBBoxIncludeStroke;
     }
     if (aOptions.mMarkers) {
-      aFlags |= nsSVGUtils::eBBoxIncludeMarkers;
+      flags |= nsSVGUtils::eBBoxIncludeMarkers;
     }
     if (aOptions.mClipped) {
-      aFlags |= nsSVGUtils::eBBoxIncludeClipped;
+      flags |= nsSVGUtils::eBBoxIncludeClipped;
     }
-    if (aFlags == 0) {
+    if (flags == 0) {
       return NS_NewSVGRect(this,0,0,0,0);
     }
-    if (aFlags == nsSVGUtils::eBBoxIncludeMarkers || 
-        aFlags == nsSVGUtils::eBBoxIncludeClipped) {
-      aFlags |= nsSVGUtils::eBBoxIncludeFill;
+    if (flags == nsSVGUtils::eBBoxIncludeMarkers ||
+        flags == nsSVGUtils::eBBoxIncludeClipped) {
+      flags |= nsSVGUtils::eBBoxIncludeFill;
     }
-    return NS_NewSVGRect(this, ToRect(nsSVGUtils::GetBBox(frame, aFlags)));
+    return NS_NewSVGRect(this, ToRect(nsSVGUtils::GetBBox(frame, flags)));
   }
 }
 

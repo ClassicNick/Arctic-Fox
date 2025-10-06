@@ -99,6 +99,8 @@ IDBKeyRange::FromJSVal(JSContext* aCx,
                        JS::Handle<JS::Value> aVal,
                        IDBKeyRange** aKeyRange)
 {
+  MOZ_ASSERT_IF(!aCx, aVal.isUndefined());
+
   RefPtr<IDBKeyRange> keyRange;
 
   if (aVal.isNullOrUndefined()) {
@@ -110,11 +112,11 @@ IDBKeyRange::FromJSVal(JSContext* aCx,
   JS::Rooted<JSObject*> obj(aCx, aVal.isObject() ? &aVal.toObject() : nullptr);
   bool isValidKey = aVal.isPrimitive();
   if (!isValidKey) {
-    js::ESClassValue cls;
+    js::ESClass cls;
     if (!js::GetBuiltinClass(aCx, obj, &cls)) {
       return NS_ERROR_UNEXPECTED;
     }
-    isValidKey = cls == js::ESClass_Array || cls == js::ESClass_Date;
+    isValidKey = cls == js::ESClass::Array || cls == js::ESClass::Date;
   }
   if (isValidKey) {
     // A valid key returns an 'only' IDBKeyRange.
@@ -332,6 +334,55 @@ IDBKeyRange::GetUpper(JSContext* aCx, JS::MutableHandle<JS::Value> aResult,
 
   JS::ExposeValueToActiveJS(mCachedUpperVal);
   aResult.set(mCachedUpperVal);
+}
+
+bool
+IDBKeyRange::Includes(JSContext* aCx,
+                      JS::Handle<JS::Value> aValue,
+                      ErrorResult& aRv) const
+{
+  Key key;
+  aRv = GetKeyFromJSVal(aCx, aValue, key);
+  if (aRv.Failed()) {
+    return false;
+  }
+
+  switch (Key::CompareKeys(Lower(), key)) {
+  case 1:
+    return false;
+  case 0:
+    // Identical keys.
+    if (LowerOpen()) {
+      return false;
+    }
+    break;
+  case -1:
+    if (IsOnly()) {
+      return false;
+    }
+    break;
+  default:
+    MOZ_CRASH();
+  }
+
+  if (!IsOnly()) {
+    switch (Key::CompareKeys(key, Upper())) {
+    case 1:
+      return false;
+    case 0:
+      // Identical keys.
+      if (UpperOpen()) {
+        return false;
+      }
+      break;
+    case -1:
+      break;
+    }
+  } else {
+    MOZ_ASSERT(key == Lower());
+  }
+
+  return true;
 }
 
 // static

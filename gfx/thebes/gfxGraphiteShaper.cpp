@@ -1,5 +1,5 @@
-/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
-/* This Source Code Form is subject to the terms of the Mozilla Public
+/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+ * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -86,7 +86,7 @@ gfxGraphiteShaper::ShapeText(DrawTarget      *aDrawTarget,
                              const char16_t *aText,
                              uint32_t         aOffset,
                              uint32_t         aLength,
-                             int32_t          aScript,
+                             Script           aScript,
                              bool             aVertical,
                              gfxShapedText   *aShapedText)
 {
@@ -158,6 +158,21 @@ gfxGraphiteShaper::ShapeText(DrawTarget      *aDrawTarget,
                       mFallbackToSmallCaps,
                       AddFeature,
                       &f);
+
+    // Graphite shaping doesn't map U+00a0 (nbsp) to space if it is missing
+    // from the font, so check for that possibility. (Most fonts double-map
+    // the space glyph to both 0x20 and 0xA0, so this won't often be needed;
+    // so we don't copy the text until we know it's required.)
+    nsAutoString transformed;
+    const char16_t NO_BREAK_SPACE = 0x00a0;
+    if (!entry->HasCharacter(NO_BREAK_SPACE)) {
+        nsDependentSubstring src(aText, aLength);
+        if (src.FindChar(NO_BREAK_SPACE) != kNotFound) {
+            transformed = src;
+            transformed.ReplaceChar(NO_BREAK_SPACE, ' ');
+            aText = transformed.BeginReading();
+        }
+    }
 
     size_t numChars = gr_count_unicode_characters(gr_utf16,
                                                   aText, aText + aLength,
@@ -262,6 +277,11 @@ gfxGraphiteShaper::SetGlyphsFromSegment(DrawTarget      *aDrawTarget,
         NS_ASSERTION(cIndex < aLength, "cIndex beyond word length");
         ++clusters[cIndex].nGlyphs;
 
+        // bump |after| index if it falls in the middle of a surrogate pair
+        if (NS_IS_HIGH_SURROGATE(aText[after]) && after < aLength - 1 &&
+            NS_IS_LOW_SURROGATE(aText[after + 1])) {
+            after++;
+        }
         // extend cluster if necessary to reach the glyph's "after" index
         if (clusters[cIndex].baseChar + clusters[cIndex].nChars < after + 1) {
             clusters[cIndex].nChars = after + 1 - clusters[cIndex].baseChar;

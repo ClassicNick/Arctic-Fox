@@ -5,11 +5,13 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "AudioBufferSourceNode.h"
+#include "nsDebug.h"
 #include "mozilla/dom/AudioBufferSourceNodeBinding.h"
 #include "mozilla/dom/AudioParam.h"
 #include "mozilla/FloatingPoint.h"
 #include "nsContentUtils.h"
 #include "nsMathUtils.h"
+#include "AlignmentUtils.h"
 #include "AudioNodeEngine.h"
 #include "AudioNodeStream.h"
 #include "AudioDestinationNode.h"
@@ -180,7 +182,10 @@ public:
       if (mResamplerOutRate == aOutRate) {
         return;
       }
-      speex_resampler_set_rate(mResampler, mBufferSampleRate, aOutRate);
+      if (speex_resampler_set_rate(mResampler, mBufferSampleRate, aOutRate) != RESAMPLER_ERR_SUCCESS) {
+        NS_ASSERTION(false, "speex_resampler_set_rate failed");
+        return;
+      }
     }
 
     mResamplerOutRate = aOutRate;
@@ -410,7 +415,15 @@ public:
 
     uint32_t numFrames = std::min(aBufferMax - mBufferPosition,
                                   availableInOutput);
-    if (numFrames == WEBAUDIO_BLOCK_SIZE) {
+
+    bool inputBufferAligned = true;
+    for (uint32_t i = 0; i < aChannels; ++i) {
+      if (!IS_ALIGNED16(mBuffer->GetData(i) + mBufferPosition)) {
+        inputBufferAligned = false;
+      }
+    }
+
+    if (numFrames == WEBAUDIO_BLOCK_SIZE && inputBufferAligned) {
       MOZ_ASSERT(mBufferPosition < aBufferMax);
       BorrowFromInputBuffer(aOutput, aChannels);
     } else {
@@ -615,9 +628,8 @@ size_t
 AudioBufferSourceNode::SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const
 {
   size_t amount = AudioNode::SizeOfExcludingThis(aMallocSizeOf);
-  if (mBuffer) {
-    amount += mBuffer->SizeOfIncludingThis(aMallocSizeOf);
-  }
+
+  /* mBuffer can be shared and is accounted for separately. */
 
   amount += mPlaybackRate->SizeOfIncludingThis(aMallocSizeOf);
   amount += mDetune->SizeOfIncludingThis(aMallocSizeOf);
@@ -662,6 +674,10 @@ AudioBufferSourceNode::Start(double aWhen, double aOffset,
   mOffset = aOffset;
   mDuration = aDuration.WasPassed() ? aDuration.Value()
                                     : std::numeric_limits<double>::min();
+
+  WEB_AUDIO_API_LOG("%f: %s %u Start(%f, %g, %g)", Context()->CurrentTime(),
+                    NodeType(), Id(), aWhen, aOffset, mDuration);
+
   // We can't send these parameters without a buffer because we don't know the
   // buffer's sample rate or length.
   if (mBuffer) {
@@ -743,6 +759,9 @@ AudioBufferSourceNode::Stop(double aWhen, ErrorResult& aRv)
     return;
   }
 
+  WEB_AUDIO_API_LOG("%f: %s %u Stop(%f)", Context()->CurrentTime(),
+                    NodeType(), Id(), aWhen);
+
   AudioNodeStream* ns = mStream;
   if (!ns || !Context()) {
     // We've already stopped and had our stream shut down
@@ -757,12 +776,12 @@ AudioBufferSourceNode::NotifyMainThreadStreamFinished()
 {
   MOZ_ASSERT(mStream->IsFinished());
 
-  class EndedEventDispatcher final : public nsRunnable
+  class EndedEventDispatcher final : public Runnable
   {
   public:
     explicit EndedEventDispatcher(AudioBufferSourceNode* aNode)
       : mNode(aNode) {}
-    NS_IMETHODIMP Run() override
+    NS_IMETHOD Run() override
     {
       // If it's not safe to run scripts right now, schedule this to run later
       if (!nsContentUtils::IsSafeToRunScript()) {

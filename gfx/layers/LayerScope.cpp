@@ -10,14 +10,14 @@
 #include "nsAppRunner.h"
 #include "Composer2D.h"
 #include "Effects.h"
-#include "mozilla/Endian.h"
+#include "mozilla/EndianUtils.h"
 #include "mozilla/MathAlgorithms.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/TimeStamp.h"
 
 #include "TexturePoolOGL.h"
 #include "mozilla/layers/CompositorOGL.h"
-#include "mozilla/layers/CompositorParent.h"
+#include "mozilla/layers/CompositorThread.h"
 #include "mozilla/layers/LayerManagerComposite.h"
 #include "mozilla/layers/TextureHostOGL.h"
 
@@ -143,10 +143,10 @@ private:
        SocketListener() { }
 
        /* nsIServerSocketListener */
-       NS_IMETHODIMP OnSocketAccepted(nsIServerSocket *aServ,
-                                      nsISocketTransport *aTransport) override;
-       NS_IMETHODIMP OnStopListening(nsIServerSocket *aServ,
-                                   nsresult aStatus) override
+       NS_IMETHOD OnSocketAccepted(nsIServerSocket *aServ,
+                                   nsISocketTransport *aTransport) override;
+       NS_IMETHOD OnStopListening(nsIServerSocket *aServ,
+                                  nsresult aStatus) override
        {
            return NS_OK;
        }
@@ -171,7 +171,7 @@ private:
         bool WriteToStream(void *aPtr, uint32_t aSize);
 
         // nsIInputStreamCallback
-        NS_IMETHODIMP OnInputStreamReady(nsIAsyncInputStream *aStream) override;
+        NS_IMETHOD OnInputStreamReady(nsIAsyncInputStream *aStream) override;
 
     private:
         virtual ~SocketHandler() { CloseConnection(); }
@@ -342,14 +342,14 @@ public:
     }
 private:
     friend class CreateServerSocketRunnable;
-    class CreateServerSocketRunnable : public nsRunnable
+    class CreateServerSocketRunnable : public Runnable
     {
     public:
         explicit CreateServerSocketRunnable(LayerScopeManager *aLayerScopeManager)
             : mLayerScopeManager(aLayerScopeManager)
         {
         }
-        NS_IMETHOD Run() {
+        NS_IMETHOD Run() override {
             mLayerScopeManager->mWebSocketManager =
                 mozilla::MakeUnique<LayerScopeWebSocketManager>();
             return NS_OK;
@@ -380,20 +380,21 @@ static void DumpRect(T* aPacketRect, const Rect& aRect)
     aPacketRect->set_h(aRect.height);
 }
 
-static void DumpFilter(TexturePacket* aTexturePacket, const Filter& aFilter)
+static void DumpFilter(TexturePacket* aTexturePacket,
+                       const SamplingFilter aSamplingFilter)
 {
-    switch (aFilter) {
-        case Filter::GOOD:
+    switch (aSamplingFilter) {
+        case SamplingFilter::GOOD:
             aTexturePacket->set_mfilter(TexturePacket::GOOD);
             break;
-        case Filter::LINEAR:
+        case SamplingFilter::LINEAR:
             aTexturePacket->set_mfilter(TexturePacket::LINEAR);
             break;
-        case Filter::POINT:
+        case SamplingFilter::POINT:
             aTexturePacket->set_mfilter(TexturePacket::POINT);
             break;
         default:
-            MOZ_ASSERT(false, "Can't dump unexpected mFilter to texture packet!");
+            MOZ_ASSERT(false, "Can't dump unexpected mSamplingFilter to texture packet!");
             break;
     }
 }
@@ -796,7 +797,7 @@ public:
               mHost(host)
         {  }
 
-        NS_IMETHODIMP Run() override {
+        NS_IMETHOD Run() override {
             mHost->mList.insertBack(mData);
             return NS_OK;
         }
@@ -820,7 +821,7 @@ public:
             : mHost(host)
         {  }
 
-        NS_IMETHODIMP Run() override {
+        NS_IMETHOD Run() override {
             mHost->RemoveData();
             return NS_OK;
         }
@@ -842,7 +843,7 @@ public:
             : mHost(host)
         {  }
 
-        NS_IMETHODIMP Run() override {
+        NS_IMETHOD Run() override {
             // Sendout all appended debug data.
             DebugGLData *d = nullptr;
             while ((d = mHost->mList.popFirst()) != nullptr) {
@@ -1023,7 +1024,7 @@ SenderHelper::SendLayer(LayerComposite* aLayer,
             Compositor* comp = compHost->GetCompositor();
             // Send EffectChain only for CompositorOGL
             if (LayersBackend::LAYERS_OPENGL == comp->GetBackendType()) {
-                CompositorOGL* compOGL = static_cast<CompositorOGL*>(comp);
+                CompositorOGL* compOGL = comp->AsCompositorOGL();
                 EffectChain effect;
                 // Generate primary effect (lock and gen)
                 AutoLockCompositableHost lock(compHost);
@@ -1054,7 +1055,7 @@ GLuint
 SenderHelper::GetTextureID(GLContext* aGLContext,
                            TextureSourceOGL* aSource) {
     GLenum textureTarget = aSource->GetTextureTarget();
-    aSource->BindTexture(LOCAL_GL_TEXTURE0, gfx::Filter::LINEAR);
+    aSource->BindTexture(LOCAL_GL_TEXTURE0, gfx::SamplingFilter::LINEAR);
 
     GLuint texID = 0;
     // This is horrid hack. It assumes that aGLContext matches the context
@@ -1128,7 +1129,7 @@ SenderHelper::SendGraphicBuffer(GLContext* aGLContext,
     auto packet = MakeUnique<layerscope::Packet>();
     layerscope::TexturePacket* texturePacket = packet->mutable_texture();
     texturePacket->set_mpremultiplied(aEffect->mPremultiplied);
-    DumpFilter(texturePacket, aEffect->mFilter);
+    DumpFilter(texturePacket, aEffect->mSamplingFilter);
     DumpRect(texturePacket->mutable_mtexturecoords(), aEffect->mTextureCoords);
 
     GLenum target = aSource->GetTextureTarget();
@@ -1164,7 +1165,7 @@ SenderHelper::SetAndSendTexture(GLContext* aGLContext,
     auto packet = MakeUnique<layerscope::Packet>();
     layerscope::TexturePacket* texturePacket = packet->mutable_texture();
     texturePacket->set_mpremultiplied(aEffect->mPremultiplied);
-    DumpFilter(texturePacket, aEffect->mFilter);
+    DumpFilter(texturePacket, aEffect->mSamplingFilter);
     DumpRect(texturePacket->mutable_mtexturecoords(), aEffect->mTextureCoords);
     SendTextureSource(aGLContext, aLayerRef, aSource, false, false, Move(packet));
 }
@@ -1202,7 +1203,6 @@ SenderHelper::SendMaskEffect(GLContext* aGLContext,
     // Expose packet creation here, so we could dump secondary mask effect attributes.
     auto packet = MakeUnique<layerscope::Packet>();
     TexturePacket::EffectMask* mask = packet->mutable_texture()->mutable_mask();
-    mask->set_mis3d(aEffect->mIs3D);
     mask->mutable_msize()->set_w(aEffect->mSize.width);
     mask->mutable_msize()->set_h(aEffect->mSize.height);
     auto element = reinterpret_cast<const Float *>(&(aEffect->mMaskTransform));
@@ -1477,8 +1477,10 @@ LayerScopeWebSocketManager::SocketHandler::WebSocketHandshake(nsTArray<nsCString
     uint8_t digest[SHA1Sum::kHashSize]; // SHA1 digests are 20 bytes long.
     sha1.finish(digest);
     nsCString newString(reinterpret_cast<char*>(digest), SHA1Sum::kHashSize);
-    Base64Encode(newString, res);
-
+    rv = Base64Encode(newString, res);
+    if (NS_FAILED(rv)) {
+        return false;
+    }
     nsCString response("HTTP/1.1 101 Switching Protocols\r\n");
     response.AppendLiteral("Upgrade: websocket\r\n");
     response.AppendLiteral("Connection: Upgrade\r\n");
@@ -1900,7 +1902,7 @@ bool
 LayerScope::CheckSendable()
 {
     // Only compositor threads check LayerScope status
-    MOZ_ASSERT(CompositorParent::IsInCompositorThread() || gIsGtest);
+    MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread() || gIsGtest);
 
     if (!gfxPrefs::LayerScopeEnabled()) {
         return false;

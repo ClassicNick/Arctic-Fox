@@ -26,7 +26,9 @@ if (gTestInWindow) {
 const RELATIVE_DIR = pathParts.slice(4).join("/") + "/";
 
 const TESTROOT = "http://example.com/" + RELATIVE_DIR;
+const SECURE_TESTROOT = "https://example.com/" + RELATIVE_DIR;
 const TESTROOT2 = "http://example.org/" + RELATIVE_DIR;
+const SECURE_TESTROOT2 = "https://example.org/" + RELATIVE_DIR;
 const CHROMEROOT = pathParts.join("/") + "/";
 const PREF_DISCOVERURL = "extensions.webservice.discoverURL";
 const PREF_DISCOVER_ENABLED = "extensions.getAddons.showPane";
@@ -77,7 +79,6 @@ var gRestorePrefs = [{name: PREF_LOGGING_ENABLED},
                      {name: "extensions.getAddons.search.url"},
                      {name: "extensions.getAddons.cache.enabled"},
                      {name: "devtools.chrome.enabled"},
-                     {name: "devtools.debugger.remote-enabled"},
                      {name: PREF_SEARCH_MAXRESULTS},
                      {name: PREF_STRICT_COMPAT},
                      {name: PREF_CHECK_COMPATIBILITY}];
@@ -259,12 +260,10 @@ var get_tooltip_info = Task.async(function*(addon) {
       version: undefined
     };
   }
-  else {
-    return {
-      name: tiptext.substring(0, expectedName.length),
-      version: tiptext.substring(expectedName.length + 1)
-    };
-  }
+  return {
+    name: tiptext.substring(0, expectedName.length),
+    version: tiptext.substring(expectedName.length + 1)
+  };
 });
 
 function get_addon_file_url(aFilename) {
@@ -273,7 +272,7 @@ function get_addon_file_url(aFilename) {
              getService(Ci.nsIChromeRegistry);
     var fileurl = cr.convertChromeURL(makeURI(CHROMEROOT + "addons/" + aFilename));
     return fileurl.QueryInterface(Ci.nsIFileURL);
-  } catch(ex) {
+  } catch (ex) {
     var jar = getJar(CHROMEROOT + "addons/" + aFilename);
     var tmpDir = extractJarToTmp(jar);
     tmpDir.append(aFilename);
@@ -282,10 +281,19 @@ function get_addon_file_url(aFilename) {
   }
 }
 
+function get_current_view(aManager) {
+  let view = aManager.document.getElementById("view-port").selectedPanel;
+  if (view.id == "headered-views") {
+    view = aManager.document.getElementById("headered-views-content").selectedPanel;
+  }
+  is(view, aManager.gViewController.displayedView, "view controller is tracking the displayed view correctly");
+  return view;
+}
+
 function get_test_items_in_list(aManager) {
   var tests = "@tests.mozilla.org";
 
-  let view = aManager.document.getElementById("view-port").selectedPanel;
+  let view = get_current_view(aManager);
   let listid = view.id == "search-view" ? "search-list" : "addon-list";
   let item = aManager.document.getElementById(listid).firstChild;
   let items = [];
@@ -306,7 +314,7 @@ function get_test_items_in_list(aManager) {
 
 function check_all_in_list(aManager, aIds, aIgnoreExtras) {
   var doc = aManager.document;
-  var view = doc.getElementById("view-port").selectedPanel;
+  var view = get_current_view(aManager);
   var listid = view.id == "search-view" ? "search-list" : "addon-list";
   var list = doc.getElementById(listid);
 
@@ -334,7 +342,7 @@ function check_all_in_list(aManager, aIds, aIgnoreExtras) {
 
 function get_addon_element(aManager, aId) {
   var doc = aManager.document;
-  var view = doc.getElementById("view-port").selectedPanel;
+  var view = get_current_view(aManager);
   var listid = "addon-list";
   if (view.id == "search-view")
     listid = "search-list";
@@ -442,7 +450,7 @@ function close_manager(aManagerWindow, aCallback, aLongerTimeout) {
         dump("Manager window unload handler\n");
         this.removeEventListener("unload", arguments.callee, false);
         resolve();
-      } catch(e) {
+      } catch (e) {
         reject(e);
       }
     }, false);
@@ -527,6 +535,12 @@ function is_element_visible(aElement, aMsg) {
 function is_element_hidden(aElement, aMsg) {
   isnot(aElement, null, "Element should not be null, when checking visibility");
   ok(is_hidden(aElement), aMsg || (aElement + " should be hidden"));
+}
+
+function promiseAddonByID(aId) {
+  return new Promise(resolve => {
+    AddonManager.getAddonByID(aId, resolve);
+  });
 }
 
 function promiseAddonsByIDs(aIDs) {
@@ -894,7 +908,7 @@ MockProvider.prototype = {
         info("Notifying timer set at " + (setAt || "unknown location"));
         timer.callback.notify(timer);
         timer.cancel();
-      } catch(e) {
+      } catch (e) {
         info("Timer notify failed: " + e);
       }
     }
@@ -1115,7 +1129,6 @@ function MockAddon(aId, aName, aType, aOperationsRequiringRestart) {
   this.type = aType || "extension";
   this.version = "";
   this.isCompatible = true;
-  this.isDebuggable = false;
   this.providesUpdatesSecurely = true;
   this.blocklistState = 0;
   this._appDisabled = false;
@@ -1129,7 +1142,8 @@ function MockAddon(aId, aName, aType, aOperationsRequiringRestart) {
                       AddonManager.PERM_CAN_ENABLE |
                       AddonManager.PERM_CAN_DISABLE |
                       AddonManager.PERM_CAN_UPGRADE;
-  this.operationsRequiringRestart = aOperationsRequiringRestart ||
+  this.operationsRequiringRestart = (aOperationsRequiringRestart != undefined) ?
+    aOperationsRequiringRestart :
     (AddonManager.OP_NEEDS_RESTART_INSTALL |
      AddonManager.OP_NEEDS_RESTART_UNINSTALL |
      AddonManager.OP_NEEDS_RESTART_ENABLE |

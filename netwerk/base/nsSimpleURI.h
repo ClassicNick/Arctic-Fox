@@ -15,6 +15,9 @@
 #include "nsISizeOf.h"
 #include "nsIIPCSerializableURI.h"
 
+namespace mozilla {
+namespace net {
+
 #define NS_THIS_SIMPLEURI_IMPLEMENTATION_CID         \
 { /* 0b9bb0c2-fee6-470b-b9b9-9fd9462b5e19 */         \
     0x0b9bb0c2,                                      \
@@ -52,14 +55,15 @@ public:
     // - nsJSURI: mBaseURI
     // - nsSimpleNestedURI: mInnerURI
     // - nsBlobURI: mPrincipal
-    virtual size_t SizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf) const override;
-    virtual size_t SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const override;
+    virtual size_t SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const override;
+    virtual size_t SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const override;
 
 protected:
     // enum used in a few places to specify how .ref attribute should be handled
     enum RefHandlingEnum {
         eIgnoreRef,
-        eHonorRef
+        eHonorRef,
+        eReplaceRef
     };
 
     // Helper to share code between Equals methods.
@@ -72,13 +76,20 @@ protected:
     // the passed-in other for QI to our CID.
     bool EqualsInternal(nsSimpleURI* otherUri, RefHandlingEnum refHandlingMode);
 
+    // Used by StartClone (and versions of StartClone in subclasses) to
+    // handle the ref in the right way for clones.
+    void SetRefOnClone(nsSimpleURI* url, RefHandlingEnum refHandlingMode,
+                       const nsACString& newRef);
+
     // NOTE: This takes the refHandlingMode as an argument because
     // nsSimpleNestedURI's specialized version needs to know how to clone
     // its inner URI.
-    virtual nsSimpleURI* StartClone(RefHandlingEnum refHandlingMode);
+    virtual nsSimpleURI* StartClone(RefHandlingEnum refHandlingMode,
+                                    const nsACString& newRef);
 
     // Helper to share code between Clone methods.
     virtual nsresult CloneInternal(RefHandlingEnum refHandlingMode,
+                                   const nsACString &newRef,
                                    nsIURI** clone);
     
     nsCString mScheme;
@@ -87,5 +98,8 @@ protected:
     bool mMutable;
     bool mIsRefValid; // To distinguish between empty-ref and no-ref.
 };
+
+} // namespace net
+} // namespace mozilla
 
 #endif // nsSimpleURI_h__

@@ -22,13 +22,6 @@
 #include "PseudoStack.h"
 #include "ProfilerBacktrace.h"
 
-/* QT has a #define for the word "slots" and jsfriendapi.h has a struct with
- * this variable name, causing compilation problems. Alleviate this for now by
- * removing this #define */
-#ifdef MOZ_WIDGET_QT
-#undef slots
-#endif
-
 // Make sure that we can use std::min here without the Windows headers messing with us.
 #ifdef min
 #undef min
@@ -411,23 +404,26 @@ protected:
   const char* mInfo;
 };
 
-class MOZ_STACK_CLASS SamplerStackFrameRAII {
+class MOZ_RAII SamplerStackFrameRAII {
 public:
   // we only copy the strings at save time, so to take multiple parameters we'd need to copy them then.
   SamplerStackFrameRAII(const char *aInfo,
-    js::ProfileEntry::Category aCategory, uint32_t line)
+    js::ProfileEntry::Category aCategory, uint32_t line
+    MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
   {
+    MOZ_GUARD_OBJECT_NOTIFIER_INIT;
     mHandle = mozilla_sampler_call_enter(aInfo, aCategory, this, false, line);
   }
   ~SamplerStackFrameRAII() {
     mozilla_sampler_call_exit(mHandle);
   }
 private:
+  MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
   void* mHandle;
 };
 
 static const int SAMPLER_MAX_STRING = 128;
-class MOZ_STACK_CLASS SamplerStackFramePrintfRAII {
+class MOZ_RAII SamplerStackFramePrintfRAII {
 public:
   // we only copy the strings at save time, so to take multiple parameters we'd need to copy them then.
   SamplerStackFramePrintfRAII(const char *aInfo,
@@ -441,13 +437,9 @@ public:
 
       // We have to use seperate printf's because we're using
       // the vargs.
-#if _MSC_VER
-      _vsnprintf(buff, SAMPLER_MAX_STRING, aFormat, args);
-      _snprintf(mDest, SAMPLER_MAX_STRING, "%s %s", aInfo, buff);
-#else
       ::vsnprintf(buff, SAMPLER_MAX_STRING, aFormat, args);
       ::snprintf(mDest, SAMPLER_MAX_STRING, "%s %s", aInfo, buff);
-#endif
+
       mHandle = mozilla_sampler_call_enter(mDest, aCategory, this, true, line);
       va_end(args);
     } else {

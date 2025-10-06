@@ -4,12 +4,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "mozilla/dom/Navigator.h"
 #include "mozilla/dom/TouchEvent.h"
 #include "mozilla/dom/Touch.h"
 #include "mozilla/dom/TouchListBinding.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/TouchEvents.h"
 #include "nsContentUtils.h"
+#include "nsIDocShell.h"
 #include "mozilla/WidgetUtils.h"
 
 namespace mozilla {
@@ -43,18 +45,6 @@ TouchList::PrefEnabled(JSContext* aCx, JSObject* aGlobal)
   return TouchEvent::PrefEnabled(aCx, aGlobal);
 }
 
-Touch*
-TouchList::IdentifiedTouch(int32_t aIdentifier) const
-{
-  for (uint32_t i = 0; i < mPoints.Length(); ++i) {
-    Touch* point = mPoints[i];
-    if (point && point->Identifier() == aIdentifier) {
-      return point;
-    }
-  }
-  return nullptr;
-}
-
 /******************************************************************************
  * TouchEvent
  *****************************************************************************/
@@ -69,13 +59,13 @@ TouchEvent::TouchEvent(EventTarget* aOwner,
   if (aEvent) {
     mEventIsInternal = false;
 
-    for (uint32_t i = 0; i < aEvent->touches.Length(); ++i) {
-      Touch* touch = aEvent->touches[i];
+    for (uint32_t i = 0; i < aEvent->mTouches.Length(); ++i) {
+      Touch* touch = aEvent->mTouches[i];
       touch->InitializePoints(mPresContext, aEvent);
     }
   } else {
     mEventIsInternal = true;
-    mEvent->time = PR_Now();
+    mEvent->mTime = PR_Now();
   }
 }
 
@@ -118,9 +108,9 @@ TouchEvent::Touches()
   if (!mTouches) {
     WidgetTouchEvent* touchEvent = mEvent->AsTouchEvent();
     if (mEvent->mMessage == eTouchEnd || mEvent->mMessage == eTouchCancel) {
-      // for touchend events, remove any changed touches from the touches array
+      // for touchend events, remove any changed touches from mTouches
       WidgetTouchEvent::AutoTouchArray unchangedTouches;
-      const WidgetTouchEvent::TouchArray& touches = touchEvent->touches;
+      const WidgetTouchEvent::TouchArray& touches = touchEvent->mTouches;
       for (uint32_t i = 0; i < touches.Length(); ++i) {
         if (!touches[i]->mChanged) {
           unchangedTouches.AppendElement(touches[i]);
@@ -128,7 +118,7 @@ TouchEvent::Touches()
       }
       mTouches = new TouchList(ToSupports(this), unchangedTouches);
     } else {
-      mTouches = new TouchList(ToSupports(this), touchEvent->touches);
+      mTouches = new TouchList(ToSupports(this), touchEvent->mTouches);
     }
   }
   return mTouches;
@@ -140,13 +130,13 @@ TouchEvent::TargetTouches()
   if (!mTargetTouches) {
     WidgetTouchEvent::AutoTouchArray targetTouches;
     WidgetTouchEvent* touchEvent = mEvent->AsTouchEvent();
-    const WidgetTouchEvent::TouchArray& touches = touchEvent->touches;
+    const WidgetTouchEvent::TouchArray& touches = touchEvent->mTouches;
     for (uint32_t i = 0; i < touches.Length(); ++i) {
       // for touchend/cancel events, don't append to the target list if this is a
       // touch that is ending
       if ((mEvent->mMessage != eTouchEnd && mEvent->mMessage != eTouchCancel) ||
           !touches[i]->mChanged) {
-        if (touches[i]->mTarget == mEvent->originalTarget) {
+        if (touches[i]->mTarget == mEvent->mOriginalTarget) {
           targetTouches.AppendElement(touches[i]);
         }
       }
@@ -162,7 +152,7 @@ TouchEvent::ChangedTouches()
   if (!mChangedTouches) {
     WidgetTouchEvent::AutoTouchArray changedTouches;
     WidgetTouchEvent* touchEvent = mEvent->AsTouchEvent();
-    const WidgetTouchEvent::TouchArray& touches = touchEvent->touches;
+    const WidgetTouchEvent::TouchArray& touches = touchEvent->mTouches;
     for (uint32_t i = 0; i < touches.Length(); ++i) {
       if (touches[i]->mChanged) {
         changedTouches.AppendElement(touches[i]);
@@ -177,13 +167,43 @@ TouchEvent::ChangedTouches()
 bool
 TouchEvent::PrefEnabled(JSContext* aCx, JSObject* aGlobal)
 {
-  bool prefValue = false;
-  int32_t flag = 0;
-  if (NS_SUCCEEDED(Preferences::GetInt("dom.w3c_touch_events.enabled", &flag))) {
-    if (flag == 2) {
+  nsIDocShell* docShell = nullptr;
+  if (aGlobal) {
+    nsGlobalWindow* win = xpc::WindowOrNull(aGlobal);
+    if (win) {
+      docShell = win->GetDocShell();
+    }
+  }
+  return PrefEnabled(docShell);
+}
+
+// static
+bool
+TouchEvent::PrefEnabled(nsIDocShell* aDocShell)
+{
+  static bool sPrefCached = false;
+  static int32_t sPrefCacheValue = 0;
+
+  uint32_t touchEventsOverride = nsIDocShell::TOUCHEVENTS_OVERRIDE_NONE;
+  if (aDocShell) {
+    aDocShell->GetTouchEventsOverride(&touchEventsOverride);
+  }
+
+  if (!sPrefCached) {
+    sPrefCached = true;
+    Preferences::AddIntVarCache(&sPrefCacheValue, "dom.w3c_touch_events.enabled");
+  }
+
+  bool enabled = false;
+  if (touchEventsOverride == nsIDocShell::TOUCHEVENTS_OVERRIDE_ENABLED) {
+    enabled = true;
+  } else if (touchEventsOverride == nsIDocShell::TOUCHEVENTS_OVERRIDE_DISABLED) {
+    enabled = false;
+  } else {
+    if (sPrefCacheValue == 2) {
 #if defined(MOZ_B2G) || defined(MOZ_WIDGET_ANDROID)
       // Touch support is always enabled on B2G and android.
-      prefValue = true;
+      enabled = true;
 #elif defined(XP_WIN) || MOZ_WIDGET_GTK == 3
       static bool sDidCheckTouchDeviceSupport = false;
       static bool sIsTouchDeviceSupportPresent = false;
@@ -192,18 +212,19 @@ TouchEvent::PrefEnabled(JSContext* aCx, JSObject* aGlobal)
         sDidCheckTouchDeviceSupport = true;
         sIsTouchDeviceSupportPresent = WidgetUtils::IsTouchDeviceSupportPresent();
       }
-      prefValue = sIsTouchDeviceSupportPresent;
+      enabled = sIsTouchDeviceSupportPresent;
 #else
-      prefValue = false;
+      enabled = false;
 #endif
     } else {
-      prefValue = !!flag;
+      enabled = !!sPrefCacheValue;
     }
   }
-  if (prefValue) {
+
+  if (enabled) {
     nsContentUtils::InitializeTouchEventTable();
   }
-  return prefValue;
+  return enabled;
 }
 
 // static

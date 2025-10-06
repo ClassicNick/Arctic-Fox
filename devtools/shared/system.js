@@ -4,10 +4,11 @@
 "use strict";
 
 const { Cc, Ci, Cu } = require("chrome");
-const { Task } = require("resource://gre/modules/Task.jsm");
+const { Task } = require("devtools/shared/task");
 
 loader.lazyRequireGetter(this, "Services");
 loader.lazyRequireGetter(this, "promise");
+loader.lazyRequireGetter(this, "defer", "devtools/shared/defer");
 loader.lazyRequireGetter(this, "OS", "resource://gre/modules/commonjs/node/os.js");
 loader.lazyRequireGetter(this, "DebuggerServer", "devtools/server/main", true);
 loader.lazyRequireGetter(this, "AppConstants",
@@ -32,7 +33,7 @@ const APP_MAP = {
 
 var CACHED_INFO = null;
 
-function *getSystemInfo() {
+function* getSystemInfo() {
   if (CACHED_INFO) {
     return CACHED_INFO;
   }
@@ -40,22 +41,35 @@ function *getSystemInfo() {
   let appInfo = Services.appinfo;
   let win = Services.wm.getMostRecentWindow(DebuggerServer.chromeWindowType);
   let [processor, compiler] = appInfo.XPCOMABI.split("-");
-  let dpi, useragent, width, height, os, hardware, version, brandName;
+  let dpi,
+    useragent,
+    width,
+    height,
+    physicalWidth,
+    physicalHeight,
+    os,
+    brandName;
   let appid = appInfo.ID;
   let apptype = APP_MAP[appid];
   let geckoVersion = appInfo.platformVersion;
+  let hardware = "unknown";
+  let version = "unknown";
 
   // B2G specific
   if (apptype === "b2g") {
     os = "B2G";
-    hardware = yield exports.getSetting("deviceinfo.hardware");
-    version = yield exports.getSetting("deviceinfo.os");
+    // `getSetting` does not work in child processes on b2g.
+    // TODO bug 1205797, make this work in child processes.
+    try {
+      hardware = yield exports.getSetting("deviceinfo.hardware");
+      version = yield exports.getSetting("deviceinfo.os");
+    } catch (e) {
+    }
   }
   // Not B2G
   else {
     os = appInfo.OS;
     version = appInfo.version;
-    hardware = "unknown";
   }
 
   let bundle = Services.strings.createBundle("chrome://branding/locale/brand.properties");
@@ -71,6 +85,8 @@ function *getSystemInfo() {
     useragent = win.navigator.userAgent;
     width = win.screen.width;
     height = win.screen.height;
+    physicalWidth = win.screen.width * win.devicePixelRatio;
+    physicalHeight = win.screen.height * win.devicePixelRatio;
   }
 
   let info = {
@@ -157,6 +173,8 @@ function *getSystemInfo() {
     useragent,
     width,
     height,
+    physicalWidth,
+    physicalHeight,
     brandName,
   };
 
@@ -164,7 +182,7 @@ function *getSystemInfo() {
   return info;
 }
 
-function getProfileLocation () {
+function getProfileLocation() {
   // In child processes, we cannot access the profile location.
   try {
     let profd = Services.dirsvc.get("ProfD", Ci.nsILocalFile);
@@ -290,10 +308,19 @@ function getOSCPU() {
 }
 
 function getSetting(name) {
-  let deferred = promise.defer();
+  let deferred = defer();
 
   if ("@mozilla.org/settingsService;1" in Cc) {
-    let settingsService = Cc["@mozilla.org/settingsService;1"].getService(Ci.nsISettingsService);
+    let settingsService;
+
+    // settingsService fails in b2g child processes
+    // TODO bug 1205797, make this work in child processes.
+    try {
+      settingsService = Cc["@mozilla.org/settingsService;1"].getService(Ci.nsISettingsService);
+    } catch (e) {
+      return promise.reject(e);
+    }
+
     let req = settingsService.createLock().get(name, {
       handle: (name, value) => deferred.resolve(value),
       handleError: (error) => deferred.reject(error),
@@ -304,7 +331,6 @@ function getSetting(name) {
   return deferred.promise;
 }
 
-exports.is64Bit = Cc["@mozilla.org/xre/app-info;1"].getService(Ci.nsIXULAppInfo).is64Bit;
 exports.getSystemInfo = Task.async(getSystemInfo);
 exports.getAppIniString = getAppIniString;
 exports.getSetting = getSetting;

@@ -189,16 +189,31 @@ void nsViewManager::DoSetWindowDimensions(nscoord aWidth, nscoord aHeight)
     // Don't resize the widget. It is already being set elsewhere.
     mRootView->SetDimensions(newDim, true, false);
     if (mPresShell)
-      mPresShell->ResizeReflow(aWidth, aHeight);
+      mPresShell->ResizeReflow(aWidth, aHeight, oldDim.width, oldDim.height);
   }
 }
 
+bool
+nsViewManager::ShouldDelayResize() const
+{
+  MOZ_ASSERT(mRootView);
+  if (!mRootView->IsEffectivelyVisible() ||
+      !mPresShell || !mPresShell->IsVisible()) {
+    return true;
+  }
+  if (nsRefreshDriver* rd = mPresShell->GetRefreshDriver()) {
+    if (rd->IsResizeSuppressed()) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void
-nsViewManager::SetWindowDimensions(nscoord aWidth, nscoord aHeight)
+nsViewManager::SetWindowDimensions(nscoord aWidth, nscoord aHeight, bool aDelayResize)
 {
   if (mRootView) {
-    if (mRootView->IsEffectivelyVisible() && mPresShell &&
-        mPresShell->IsVisible() && !mPresShell->IsInFullscreenChange()) {
+    if (!ShouldDelayResize() && !aDelayResize) {
       if (mDelayedResize != nsSize(NSCOORD_NONE, NSCOORD_NONE) &&
           mDelayedResize != nsSize(aWidth, aHeight)) {
         // We have a delayed resize; that now obsolete size may already have
@@ -214,7 +229,9 @@ nsViewManager::SetWindowDimensions(nscoord aWidth, nscoord aHeight)
     } else {
       mDelayedResize.SizeTo(aWidth, aHeight);
       if (mPresShell && mPresShell->GetDocument()) {
-        mPresShell->GetDocument()->SetNeedStyleFlush();
+        nsIDocument* doc = mPresShell->GetDocument();
+        doc->SetNeedStyleFlush();
+        doc->SetNeedLayoutFlush();
       }
     }
   }
@@ -586,8 +603,7 @@ nsViewManager::InvalidateWidgetArea(nsView *aWidgetView,
         // plugin widgets are basically invisible
 #ifndef XP_MACOSX
         // GetBounds should compensate for chrome on a toplevel widget
-        LayoutDeviceIntRect bounds;
-        childWidget->GetBounds(bounds);
+        LayoutDeviceIntRect bounds = childWidget->GetBounds();
 
         nsTArray<LayoutDeviceIntRect> clipRects;
         childWidget->GetWindowClipRegion(&clipRects);
@@ -693,15 +709,16 @@ void nsViewManager::InvalidateViews(nsView *aView)
 
 void nsViewManager::WillPaintWindow(nsIWidget* aWidget)
 {
-  if (aWidget) {
-    nsView* view = nsView::GetViewFor(aWidget);
-    LayerManager *manager = aWidget->GetLayerManager();
+  RefPtr<nsIWidget> widget(aWidget);
+  if (widget) {
+    nsView* view = nsView::GetViewFor(widget);
+    LayerManager* manager = widget->GetLayerManager();
     if (view &&
         (view->ForcedRepaint() || !manager->NeedsWidgetInvalidation())) {
       ProcessPendingUpdates();
       // Re-get the view pointer here since the ProcessPendingUpdates might have
       // destroyed it during CallWillPaintOnObservers.
-      view = nsView::GetViewFor(aWidget);
+      view = nsView::GetViewFor(widget);
       if (view) {
         view->SetForcedRepaint(false);
       }
@@ -752,7 +769,7 @@ nsViewManager::DispatchEvent(WidgetGUIEvent *aEvent,
   WidgetMouseEvent* mouseEvent = aEvent->AsMouseEvent();
   if ((mouseEvent &&
        // Ignore mouse events that we synthesize.
-       mouseEvent->reason == WidgetMouseEvent::eReal &&
+       mouseEvent->mReason == WidgetMouseEvent::eReal &&
        // Ignore mouse exit and enter (we'll get moves if the user
        // is really moving the mouse) since we get them when we
        // create and destroy widgets.

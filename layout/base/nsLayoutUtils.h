@@ -9,16 +9,16 @@
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/Maybe.h"
+#include "mozilla/TypedEnumBits.h"
 #include "nsBoundingMetrics.h"
 #include "nsChangeHint.h"
-#include "nsAutoPtr.h"
 #include "nsFrameList.h"
 #include "mozilla/layout/FrameChildList.h"
 #include "nsThreadUtils.h"
 #include "nsIPrincipal.h"
 #include "FrameMetrics.h"
 #include "nsIWidget.h"
-#include "nsCSSProperty.h"
+#include "nsCSSPropertyID.h"
 #include "nsStyleCoord.h"
 #include "nsStyleConsts.h"
 #include "nsGkAtoms.h"
@@ -27,8 +27,9 @@
 #include "mozilla/gfx/2D.h"
 #include "Units.h"
 #include "mozilla/ToString.h"
-#include "nsHTMLReflowMetrics.h"
+#include "mozilla/ReflowOutput.h"
 #include "ImageContainer.h"
+#include "gfx2DGlue.h"
 
 #include <limits>
 #include <algorithm>
@@ -40,6 +41,7 @@ class nsIScrollableFrame;
 class nsIDOMEvent;
 class nsRegion;
 class nsDisplayListBuilder;
+enum class nsDisplayListBuilderMode : uint8_t;
 class nsDisplayItem;
 class nsFontMetrics;
 class nsFontFaceList;
@@ -130,7 +132,7 @@ class nsLayoutUtils
   typedef mozilla::gfx::Color Color;
   typedef mozilla::gfx::DrawTarget DrawTarget;
   typedef mozilla::gfx::ExtendMode ExtendMode;
-  typedef mozilla::gfx::Filter Filter;
+  typedef mozilla::gfx::SamplingFilter SamplingFilter;
   typedef mozilla::gfx::Float Float;
   typedef mozilla::gfx::Point Point;
   typedef mozilla::gfx::Rect Rect;
@@ -142,6 +144,7 @@ class nsLayoutUtils
 
 public:
   typedef mozilla::layers::FrameMetrics FrameMetrics;
+  typedef mozilla::layers::ScrollMetadata ScrollMetadata;
   typedef FrameMetrics::ViewID ViewID;
   typedef mozilla::CSSPoint CSSPoint;
   typedef mozilla::CSSSize CSSSize;
@@ -183,6 +186,16 @@ public:
    * Check whether the given element has a displayport.
    */
   static bool HasDisplayPort(nsIContent* aContent);
+
+
+  /**
+   * Go through the IPC Channel and update displayport margins for content
+   * elements based on UpdateFrame messages. The messages are left in the
+   * queue and will be fully processed when dequeued. The aim is to paint
+   * the most up-to-date displayport without waiting for these message to
+   * go through the message queue.
+   */
+  static void UpdateDisplayPortMarginsFromPendingMessages();
 
   /**
    * @return the display port for the given element which should be used for
@@ -240,6 +253,12 @@ public:
    * Check whether the given element has a critical display port.
    */
   static bool HasCriticalDisplayPort(nsIContent* aContent);
+
+  /**
+   * If low-precision painting is turned on, delegates to GetCriticalDisplayPort.
+   * Otherwise, delegates to GetDisplayPort.
+   */
+  static bool GetHighResolutionDisplayPort(nsIContent* aContent, nsRect* aResult);
 
   /**
    * Remove the displayport for the given element.
@@ -327,29 +346,38 @@ public:
 
   /**
    * Given a frame which is the primary frame for an element,
-   * return the frame that has the non-psuedoelement style context for
+   * return the frame that has the non-pseudoelement style context for
    * the content.
-   * This is aPrimaryFrame itself except for tableOuter frames.
+   * This is aPrimaryFrame itself except for tableWrapper frames.
    *
    * Given a non-null input, this will return null if and only if its
-   * argument is a table outer frame that is mid-destruction (and its
+   * argument is a table wrapper frame that is mid-destruction (and its
    * table frame has been destroyed).
    */
   static nsIFrame* GetStyleFrame(nsIFrame* aPrimaryFrame);
 
   /**
    * Given a content node,
-   * return the frame that has the non-psuedoelement style context for
+   * return the frame that has the non-pseudoelement style context for
    * the content.  May return null.
-   * This is aContent->GetPrimaryFrame() except for tableOuter frames.
+   * This is aContent->GetPrimaryFrame() except for tableWrapper frames.
    */
   static nsIFrame* GetStyleFrame(const nsIContent* aContent);
+
+  /**
+   * Gets the real primary frame associated with the content object.
+   *
+   * In the case of absolutely positioned elements and floated elements,
+   * the real primary frame is the frame that is out of the flow and not the
+   * placeholder frame.
+   */
+  static nsIFrame* GetRealPrimaryFrameFor(const nsIContent* aContent);
 
   /**
    * IsGeneratedContentFor returns true if aFrame is the outermost
    * frame for generated content of type aPseudoElement for aContent.
    * aFrame *might not* have the aPseudoElement pseudo-style! For example
-   * it might be a table outer frame and the inner table frame might
+   * it might be a table wrapper frame and the inner table frame might
    * have the pseudo-style.
    *
    * @param aContent the content node we're looking at.  If this is
@@ -534,16 +562,12 @@ public:
    * properties (top, left, right, bottom) are auto. aAnchorRect is in the
    * coordinate space of aLayer's container layer (i.e. relative to the reference
    * frame of the display item which is building aLayer's container layer).
-   * aIsClipFixed is true if the layer's clip rect should also remain fixed
-   * during async-scrolling (true for fixed position elements, false for
-   * fixed backgrounds).
    */
   static void SetFixedPositionLayerData(Layer* aLayer, const nsIFrame* aViewportFrame,
                                         const nsRect& aAnchorRect,
                                         const nsIFrame* aFixedPosFrame,
                                         nsPresContext* aPresContext,
-                                        const ContainerLayerParameters& aContainerParameters,
-                                        bool aIsClipFixed);
+                                        const ContainerLayerParameters& aContainerParameters);
 
   /**
    * Return true if aPresContext's viewport has a displayport.
@@ -808,11 +832,23 @@ public:
    * aAncestor. Computes the bounding-box of the true quadrilateral.
    * Pass non-null aPreservesAxisAlignedRectangles and it will be set to true if
    * we only need to use a 2d transform that PreservesAxisAlignedRectangles().
+   *
+   * |aMatrixCache| allows for optimizations in recomputing the same matrix over
+   * and over. The argument can be one of the following values:
+   * nullptr (the default) - No optimization; the transform matrix is computed on
+   *   every call to this function.
+   * non-null pointer to an empty Maybe<Matrix4x4> - Upon return, the Maybe is
+   *   filled with the transform matrix that was computed. This can then be passed
+   *   in to subsequent calls with the same source and destination frames to avoid
+   *   recomputing the matrix.
+   * non-null pointer to a non-empty Matrix4x4 - The provided matrix will be used
+   *   as the transform matrix and applied to the rect.
    */
   static nsRect TransformFrameRectToAncestor(nsIFrame* aFrame,
                                              const nsRect& aRect,
                                              const nsIFrame* aAncestor,
-                                             bool* aPreservesAxisAlignedRectangles = nullptr);
+                                             bool* aPreservesAxisAlignedRectangles = nullptr,
+                                             mozilla::Maybe<Matrix4x4>* aMatrixCache = nullptr);
 
 
   /**
@@ -876,6 +912,12 @@ public:
                                        nsRect& aRect);
 
   /**
+   * Converts app units to pixels (with optional snapping) and appends as a
+   * translation to aTransform.
+   */
+  static void PostTranslate(Matrix4x4& aTransform, const nsPoint& aOrigin, float aAppUnitsPerPixel, bool aRounded);
+
+  /**
    * Get the border-box of aElement's primary frame, transformed it to be
    * relative to aFrame.
    */
@@ -888,13 +930,6 @@ public:
    */
   static bool ContainsPoint(const nsRect& aRect, const nsPoint& aPoint,
                             nscoord aInflateSize);
-
-  /**
-   * Check whether aRect is visible in the boundary of the scroll frames
-   * boundary.
-   */
-  static bool IsRectVisibleInScrollFrames(nsIFrame* aFrame,
-                                          const nsRect& aRect);
 
   /**
    * Clamp aRect relative to aFrame to the scroll frames boundary searching from
@@ -1000,7 +1035,7 @@ public:
                                         const nscoord aRadii[8],
                                         const nsRect& aTestRect);
 
-  enum {
+  enum class PaintFrameFlags : uint32_t {
     PAINT_IN_TRANSFORM = 0x01,
     PAINT_SYNC_DECODE_IMAGES = 0x02,
     PAINT_WIDGET_LAYERS = 0x04,
@@ -1026,6 +1061,7 @@ public:
    * of aFrame.
    * @param aBackstop paint the dirty area with this color before drawing
    * the actual content; pass NS_RGBA(0,0,0,0) to draw no background.
+   * @param aBuilderMode Passed through to the display-list builder.
    * @param aFlags if PAINT_IN_TRANSFORM is set, then we assume
    * this is inside a transform or SVG foreignObject. If
    * PAINT_SYNC_DECODE_IMAGES is set, we force synchronous decode on all
@@ -1061,7 +1097,8 @@ public:
    */
   static nsresult PaintFrame(nsRenderingContext* aRenderingContext, nsIFrame* aFrame,
                              const nsRegion& aDirtyRegion, nscolor aBackstop,
-                             uint32_t aFlags = 0);
+                             nsDisplayListBuilderMode aBuilderMode,
+                             PaintFrameFlags aFlags = PaintFrameFlags(0));
 
   /**
    * Uses a binary search for find where the cursor falls in the line of text
@@ -1096,7 +1133,7 @@ public:
   };
   /**
    * Collect all CSS boxes associated with aFrame and its
-   * continuations, "drilling down" through outer table frames and
+   * continuations, "drilling down" through table wrapper frames and
    * some anonymous blocks since they're not real CSS boxes.
    * If aFrame is null, no boxes are returned.
    * SVG frames return a single box, themselves.
@@ -1144,7 +1181,7 @@ public:
   };
   /**
    * Collect all CSS boxes (content, padding, border, or margin) associated
-   * with aFrame and its continuations, "drilling down" through outer table
+   * with aFrame and its continuations, "drilling down" through table wrapper
    * frames and some anonymous blocks since they're not real CSS boxes.
    * The boxes are positioned relative to aRelativeTo (taking scrolling
    * into account) and passed to the callback in frame-tree order.
@@ -1218,40 +1255,37 @@ public:
   /**
    * Get the font metrics corresponding to the frame's style data.
    * @param aFrame the frame
-   * @param aFontMetrics the font metrics result
    * @param aSizeInflation number to multiply font size by
-   * @return success or failure code
    */
-  static nsresult GetFontMetricsForFrame(const nsIFrame* aFrame,
-                                         nsFontMetrics** aFontMetrics,
-                                         float aSizeInflation = 1.0f);
+  static already_AddRefed<nsFontMetrics> GetFontMetricsForFrame(
+    const nsIFrame* aFrame, float aSizeInflation);
+
+  static already_AddRefed<nsFontMetrics>
+    GetInflatedFontMetricsForFrame(const nsIFrame* aFrame)
+  {
+    return GetFontMetricsForFrame(aFrame, FontSizeInflationFor(aFrame));
+  }
 
   /**
    * Get the font metrics corresponding to the given style data.
    * @param aStyleContext the style data
-   * @param aFontMetrics the font metrics result
    * @param aSizeInflation number to multiply font size by
-   * @return success or failure code
    */
-  static nsresult GetFontMetricsForStyleContext(nsStyleContext* aStyleContext,
-                                                nsFontMetrics** aFontMetrics,
-                                                float aSizeInflation = 1.0f);
+  static already_AddRefed<nsFontMetrics> GetFontMetricsForStyleContext(
+      nsStyleContext* aStyleContext, float aSizeInflation = 1.0f,
+      uint8_t aVariantWidth = NS_FONT_VARIANT_WIDTH_NORMAL);
 
   /**
    * Get the font metrics of emphasis marks corresponding to the given
    * style data. The result is same as GetFontMetricsForStyleContext
    * except that the font size is scaled down to 50%.
    * @param aStyleContext the style data
-   * @param aFontMetrics the font metrics result
    * @param aInflation number to multiple font size by
-   * @return success or failure code
    */
-  static nsresult GetFontMetricsOfEmphasisMarks(nsStyleContext* aStyleContext,
-                                                nsFontMetrics** aFontMetrics,
-                                                float aInflation)
+  static already_AddRefed<nsFontMetrics> GetFontMetricsOfEmphasisMarks(
+      nsStyleContext* aStyleContext, float aInflation)
   {
-    return GetFontMetricsForStyleContext(aStyleContext, aFontMetrics,
-                                         aInflation * 0.5f);
+    return GetFontMetricsForStyleContext(aStyleContext, aInflation * 0.5f);
   }
 
   /**
@@ -1411,40 +1445,6 @@ public:
   static nscoord ComputeCBDependentValue(nscoord aPercentBasis,
                                          const nsStyleCoord& aCoord);
 
-  /*
-   * Convert nsStyleCoord to nscoord when percentages depend on the
-   * containing block width, and enumerated values are for width,
-   * min-width, or max-width.  Returns the content-box width value based
-   * on aContentEdgeToBoxSizing and aBoxSizingToMarginEdge (which are
-   * also used for the enumerated values for width.  This function does
-   * not handle 'auto'.  It ensures that the result is nonnegative.
-   *
-   * @param aRenderingContext Rendering context for font measurement/metrics.
-   * @param aFrame Frame whose (min-/max-/)width is being computed.
-   * @param aContainingBlockWidth Width of aFrame's containing block.
-   * @param aContentEdgeToBoxSizing The sum of any left/right padding and
-   *          border that goes inside the rect chosen by box-sizing.
-   * @param aBoxSizingToMarginEdge The sum of any left/right padding, border,
-   *          and margin that goes outside the rect chosen by box-sizing.
-   * @param aCoord The width value to compute.
-   */
-  // XXX to be removed
-  static nscoord ComputeWidthValue(
-                   nsRenderingContext* aRenderingContext,
-                   nsIFrame*            aFrame,
-                   nscoord              aContainingBlockWidth,
-                   nscoord              aContentEdgeToBoxSizing,
-                   nscoord              aBoxSizingToMarginEdge,
-                   const nsStyleCoord&  aCoord)
-  {
-    return ComputeISizeValue(aRenderingContext,
-                             aFrame,
-                             aContainingBlockWidth,
-                             aContentEdgeToBoxSizing,
-                             aBoxSizingToMarginEdge,
-                             aCoord);
-  }
-
   static nscoord ComputeISizeValue(
                    nsRenderingContext* aRenderingContext,
                    nsIFrame*           aFrame,
@@ -1453,34 +1453,9 @@ public:
                    nscoord             aBoxSizingToMarginEdge,
                    const nsStyleCoord& aCoord);
 
-  /*
-   * Convert nsStyleCoord to nscoord when percentages depend on the
-   * containing block height.
-   */
-  // XXX to be removed
-  static nscoord ComputeHeightDependentValue(
-                   nscoord              aContainingBlockHeight,
-                   const nsStyleCoord&  aCoord)
-  {
-    return ComputeBSizeDependentValue(aContainingBlockHeight, aCoord);
-  }
-
   static nscoord ComputeBSizeDependentValue(
                    nscoord              aContainingBlockBSize,
                    const nsStyleCoord&  aCoord);
-
-  /*
-   * Likewise, but for 'height', 'min-height', or 'max-height'.
-   */
-  // XXX to be removed
-  static nscoord ComputeHeightValue(nscoord aContainingBlockHeight,
-                                    nscoord aContentEdgeToBoxSizingBoxEdge,
-                                    const nsStyleCoord& aCoord)
-  {
-    return ComputeBSizeValue(aContainingBlockHeight,
-                             aContentEdgeToBoxSizingBoxEdge,
-                             aCoord);
-  }
 
   static nscoord ComputeBSizeValue(nscoord aContainingBlockBSize,
                                     nscoord aContentEdgeToBoxSizingBoxEdge,
@@ -1545,6 +1520,8 @@ public:
 
   static void MarkDescendantsDirty(nsIFrame *aSubtreeRoot);
 
+  static void MarkIntrinsicISizesDirtyIfDependentOnBSize(nsIFrame* aFrame);
+
   /*
    * Calculate the used values for 'width' and 'height' for a replaced element.
    *
@@ -1579,7 +1556,7 @@ public:
                                     nsRenderingContext* aRenderingContext);
 
   // Get a suitable foreground color for painting aProperty for aFrame.
-  static nscolor GetColor(nsIFrame* aFrame, nsCSSProperty aProperty);
+  static nscolor GetColor(nsIFrame* aFrame, nsCSSPropertyID aProperty);
 
   // Get a baseline y position in app units that is snapped to device pixels.
   static gfxFloat GetSnappedBaselineY(nsIFrame* aFrame, gfxContext* aContext,
@@ -1741,9 +1718,9 @@ public:
   static nsIFrame* GetClosestLayer(nsIFrame* aFrame);
 
   /**
-   * Gets the graphics filter for the frame
+   * Gets the graphics sampling filter for the frame
    */
-  static Filter GetGraphicsFilterForFrame(nsIFrame* aFrame);
+  static SamplingFilter GetSamplingFilterForFrame(nsIFrame* aFrame);
 
   /* N.B. The only difference between variants of the Draw*Image
    * functions below is the type of the aImage argument.
@@ -1780,7 +1757,7 @@ public:
                                         nsPresContext*      aPresContext,
                                         imgIContainer*      aImage,
                                         const CSSIntSize&   aImageSize,
-                                        Filter              aGraphicsFilter,
+                                        SamplingFilter      aSamplingFilter,
                                         const nsRect&       aDest,
                                         const nsRect&       aFill,
                                         const nsSize&       aRepeatSize,
@@ -1807,7 +1784,7 @@ public:
   static DrawResult DrawImage(gfxContext&         aContext,
                               nsPresContext*      aPresContext,
                               imgIContainer*      aImage,
-                              Filter              aGraphicsFilter,
+                              const SamplingFilter aSamplingFilter,
                               const nsRect&       aDest,
                               const nsRect&       aFill,
                               const nsPoint&      aAnchor,
@@ -1861,7 +1838,7 @@ public:
   static DrawResult DrawSingleUnscaledImage(gfxContext&          aContext,
                                             nsPresContext*       aPresContext,
                                             imgIContainer*       aImage,
-                                            Filter               aGraphicsFilter,
+                                            const SamplingFilter aSamplingFilter,
                                             const nsPoint&       aDest,
                                             const nsRect*        aDirty,
                                             uint32_t             aImageFlags,
@@ -1892,7 +1869,7 @@ public:
   static DrawResult DrawSingleImage(gfxContext&         aContext,
                                     nsPresContext*      aPresContext,
                                     imgIContainer*      aImage,
-                                    Filter              aGraphicsFilter,
+                                    const SamplingFilter aSamplingFilter,
                                     const nsRect&       aDest,
                                     const nsRect&       aDirty,
                                     const mozilla::SVGImageContext* aSVGContext,
@@ -2255,23 +2232,11 @@ public:
                                         bool clear);
 
   /**
-   * Given a frame with possibly animated content, finds the content node
-   * that contains its animations as well as the frame's pseudo-element type
-   * relative to the resulting content node. Returns true if animated content
-   * was found, otherwise it returns false and the output parameters are
-   * undefined.
-   */
-  static bool GetAnimationContent(const nsIFrame* aFrame,
-                                  nsIContent* &aContentResult,
-                                  mozilla::CSSPseudoElementType
-                                    &aPseudoTypeResult);
-
-  /**
    * Returns true if the frame has current (i.e. running or scheduled-to-run)
    * animations or transitions for the property.
    */
   static bool HasCurrentAnimationOfProperty(const nsIFrame* aFrame,
-                                            nsCSSProperty aProperty);
+                                            nsCSSPropertyID aProperty);
 
   /**
    * Returns true if the frame has any current CSS transitions.
@@ -2281,12 +2246,12 @@ public:
   static bool HasCurrentTransitions(const nsIFrame* aFrame);
 
   /**
-   * Returns true if the frame has any current animations or transitions
-   * for any of the specified properties.
+   * Returns true if the frame has current or in-effect (i.e. in before phase,
+   * running or filling) animations or transitions for the
+   * property.
    */
-  static bool HasCurrentAnimationsForProperties(const nsIFrame* aFrame,
-                                                const nsCSSProperty* aProperties,
-                                                size_t aPropertyCount);
+  static bool HasRelevantAnimationOfProperty(const nsIFrame* aFrame,
+                                             nsCSSPropertyID aProperty);
 
   /**
    * Checks if off-main-thread animations are enabled.
@@ -2352,7 +2317,7 @@ public:
   static bool IsGridTemplateSubgridValueEnabled();
 
   /**
-   * Checks whether support for the CSS text-align (and -moz-text-align-last)
+   * Checks whether support for the CSS text-align (and text-align-last)
    * 'true' value is enabled.
    */
   static bool IsTextAlignUnsafeValueEnabled();
@@ -2456,6 +2421,21 @@ public:
 
   static bool SVGTransformBoxEnabled() {
     return sSVGTransformBoxEnabled;
+  }
+
+  static bool TextCombineUprightDigitsEnabled() {
+    return sTextCombineUprightDigitsEnabled;
+  }
+
+  // Stylo (the Servo backend for Gecko's style system) is generally enabled
+  // or disabled at compile-time. However, we provide the additional capability
+  // to disable it dynamically in stylo-enabled builds via a pref.
+  static bool StyloEnabled() {
+#ifdef MOZ_STYLO
+    return sStyloEnabled;
+#else
+    return false;
+#endif
   }
 
   /**
@@ -2600,19 +2580,12 @@ public:
    */
   static void
   TransformToAncestorAndCombineRegions(
-    const nsRect& aBounds,
+    const nsRegion& aRegion,
     nsIFrame* aFrame,
     const nsIFrame* aAncestorFrame,
     nsRegion* aPreciseTargetDest,
-    nsRegion* aImpreciseTargetDest);
-
-  /**
-   * Determine if aImageFrame (which is an nsImageFrame, nsImageControlFrame, or
-   * nsSVGImageFrame) is visible or close to being visible via scrolling and
-   * update the presshell with this knowledge.
-   */
-  static void
-  UpdateImageVisibilityForFrame(nsIFrame* aImageFrame);
+    nsRegion* aImpreciseTargetDest,
+    mozilla::Maybe<Matrix4x4>* aMatrixCache);
 
   /**
    * Populate aOutSize with the size of the content viewer corresponding
@@ -2768,7 +2741,7 @@ public:
   static bool IsOutlineStyleAutoEnabled();
 
   static void SetBSizeFromFontMetrics(const nsIFrame* aFrame,
-                                      nsHTMLReflowMetrics& aMetrics,
+                                      mozilla::ReflowOutput& aMetrics,
                                       const mozilla::LogicalMargin& aFramePadding,
                                       mozilla::WritingMode aLineWM,
                                       mozilla::WritingMode aFrameWM);
@@ -2792,16 +2765,16 @@ public:
    */
   static bool CanScrollOriginClobberApz(nsIAtom* aScrollOrigin);
 
-  static FrameMetrics ComputeFrameMetrics(nsIFrame* aForFrame,
-                                          nsIFrame* aScrollFrame,
-                                          nsIContent* aContent,
-                                          const nsIFrame* aReferenceFrame,
-                                          Layer* aLayer,
-                                          ViewID aScrollParentId,
-                                          const nsRect& aViewport,
-                                          const mozilla::Maybe<nsRect>& aClipRect,
-                                          bool aIsRoot,
-                                          const ContainerLayerParameters& aContainerParameters);
+  static ScrollMetadata ComputeScrollMetadata(nsIFrame* aForFrame,
+                                              nsIFrame* aScrollFrame,
+                                              nsIContent* aContent,
+                                              const nsIFrame* aReferenceFrame,
+                                              Layer* aLayer,
+                                              ViewID aScrollParentId,
+                                              const nsRect& aViewport,
+                                              const mozilla::Maybe<nsRect>& aClipRect,
+                                              bool aIsRoot,
+                                              const ContainerLayerParameters& aContainerParameters);
 
   /**
    * If the given scroll frame needs an area excluded from its composition
@@ -2854,10 +2827,6 @@ public:
   static nsRect GetSelectionBoundingRect(mozilla::dom::Selection* aSel);
 
   /**
-   * Returns true if the given frame is a scrollframe and it has snap points.
-   */
-  static bool IsScrollFrameWithSnapping(nsIFrame* aFrame);
-  /**
    * Calculate the bounding rect of |aContent|, relative to the origin
    * of the scrolled content of |aRootScrollFrame|.
    * Where the element is contained inside a scrollable subframe, the
@@ -2871,6 +2840,31 @@ public:
    */
   static nsBlockFrame* GetFloatContainingBlock(nsIFrame* aFrame);
 
+  /**
+   * Walks up the frame tree from |aForFrame| up to |aTopFrame|, or to the
+   * root of the frame tree if |aTopFrame| is nullptr, and returns true if
+   * a transformed frame is encountered.
+   */
+  static bool IsTransformed(nsIFrame* aForFrame, nsIFrame* aTopFrame = nullptr);
+
+  /**
+   * Walk up from aFrame to the cross-doc root, accumulating all the APZ callback
+   * transforms on the content elements encountered along the way. Return the
+   * accumulated value.
+   * XXX: Note that this does not take into account CSS transforms, nor
+   * differences in structure between the frame tree and the layer tree (which
+   * is probably what we *want* to be computing).
+   */
+  static CSSPoint GetCumulativeApzCallbackTransform(nsIFrame* aFrame);
+
+  /*
+   * Returns whether the given document supports being rendered with a
+   * Servo-backed style system.  This checks whether Stylo is enabled
+   * globally, that the document is an HTML document, and that it is
+   * being presented in a content docshell.
+   */
+  static bool SupportsServoStyleBackend(nsIDocument* aDocument);
+
 private:
   static uint32_t sFontSizeInflationEmPerLine;
   static uint32_t sFontSizeInflationMinTwips;
@@ -2883,6 +2877,10 @@ private:
   static bool sCSSVariablesEnabled;
   static bool sInterruptibleReflowEnabled;
   static bool sSVGTransformBoxEnabled;
+  static bool sTextCombineUprightDigitsEnabled;
+#ifdef MOZ_STYLO
+  static bool sStyloEnabled;
+#endif
 
   /**
    * Helper function for LogTestDataForPaint().
@@ -2894,6 +2892,8 @@ private:
 
   static bool IsAPZTestLoggingEnabled();
 };
+
+MOZ_MAKE_ENUM_CLASS_BITWISE_OPERATORS(nsLayoutUtils::PaintFrameFlags)
 
 template<typename PointType, typename RectType, typename CoordType>
 /* static */ bool
@@ -3010,7 +3010,7 @@ void StrokeLineWithSnapping(const nsPoint& aP1, const nsPoint& aP2,
   } // namespace layout
 } // namespace mozilla
 
-class nsSetAttrRunnable : public nsRunnable
+class nsSetAttrRunnable : public mozilla::Runnable
 {
 public:
   nsSetAttrRunnable(nsIContent* aContent, nsIAtom* aAttrName,
@@ -3025,7 +3025,7 @@ public:
   nsAutoString mValue;
 };
 
-class nsUnsetAttrRunnable : public nsRunnable
+class nsUnsetAttrRunnable : public mozilla::Runnable
 {
 public:
   nsUnsetAttrRunnable(nsIContent* aContent, nsIAtom* aAttrName);

@@ -48,10 +48,10 @@ private:
 //----------------------------------------------------------------------
 // Implementation
 
-nsSVGGradientFrame::nsSVGGradientFrame(nsStyleContext* aContext) :
-  nsSVGGradientFrameBase(aContext),
-  mLoopFlag(false),
-  mNoHRefURI(false)
+nsSVGGradientFrame::nsSVGGradientFrame(nsStyleContext* aContext)
+  : nsSVGPaintServerFrame(aContext)
+  , mLoopFlag(false)
+  , mNoHRefURI(false)
 {
 }
 
@@ -71,14 +71,14 @@ nsSVGGradientFrame::AttributeChanged(int32_t         aNameSpaceID,
   } else if (aNameSpaceID == kNameSpaceID_XLink &&
              aAttribute == nsGkAtoms::href) {
     // Blow away our reference, if any
-    Properties().Delete(nsSVGEffects::HrefProperty());
+    Properties().Delete(nsSVGEffects::HrefAsPaintingProperty());
     mNoHRefURI = false;
     // And update whoever references us
     nsSVGEffects::InvalidateDirectRenderingObservers(this);
   }
 
-  return nsSVGGradientFrameBase::AttributeChanged(aNameSpaceID,
-                                                  aAttribute, aModType);
+  return nsSVGPaintServerFrame::AttributeChanged(aNameSpaceID,
+                                                 aAttribute, aModType);
 }
 
 //----------------------------------------------------------------------
@@ -314,8 +314,8 @@ nsSVGGradientFrame::GetReferencedGradient()
   if (mNoHRefURI)
     return nullptr;
 
-  nsSVGPaintingProperty *property = static_cast<nsSVGPaintingProperty*>
-    (Properties().Get(nsSVGEffects::HrefProperty()));
+  nsSVGPaintingProperty *property =
+    Properties().Get(nsSVGEffects::HrefAsPaintingProperty());
 
   if (!property) {
     // Fetch our gradient element's xlink:href attribute
@@ -331,10 +331,11 @@ nsSVGGradientFrame::GetReferencedGradient()
     nsCOMPtr<nsIURI> targetURI;
     nsCOMPtr<nsIURI> base = mContent->GetBaseURI();
     nsContentUtils::NewURIWithDocumentCharset(getter_AddRefs(targetURI), href,
-                                              mContent->GetCurrentDoc(), base);
+                                              mContent->GetUncomposedDoc(), base);
 
     property =
-      nsSVGEffects::GetPaintingProperty(targetURI, this, nsSVGEffects::HrefProperty());
+      nsSVGEffects::GetPaintingProperty(targetURI, this,
+                                        nsSVGEffects::HrefAsPaintingProperty());
     if (!property)
       return nullptr;
   }
@@ -405,7 +406,7 @@ nsSVGLinearGradientFrame::Init(nsIContent*       aContent,
   NS_ASSERTION(aContent->IsSVGElement(nsGkAtoms::linearGradient),
                "Content is not an SVG linearGradient");
 
-  nsSVGLinearGradientFrameBase::Init(aContent, aParent, aPrevInFlow);
+  nsSVGGradientFrame::Init(aContent, aParent, aPrevInFlow);
 }
 #endif /* DEBUG */
 
@@ -474,8 +475,7 @@ nsSVGLinearGradientFrame::GetLinearGradientWithLength(uint32_t aIndex,
     return thisElement;
   }
 
-  return nsSVGLinearGradientFrameBase::GetLinearGradientWithLength(aIndex,
-                                                                   aDefault);
+  return nsSVGGradientFrame::GetLinearGradientWithLength(aIndex, aDefault);
 }
 
 bool
@@ -514,7 +514,7 @@ nsSVGRadialGradientFrame::Init(nsIContent*       aContent,
   NS_ASSERTION(aContent->IsSVGElement(nsGkAtoms::radialGradient),
                "Content is not an SVG radialGradient");
 
-  nsSVGRadialGradientFrameBase::Init(aContent, aParent, aPrevInFlow);
+  nsSVGGradientFrame::Init(aContent, aParent, aPrevInFlow);
 }
 #endif /* DEBUG */
 
@@ -601,8 +601,7 @@ nsSVGRadialGradientFrame::GetRadialGradientWithLength(uint32_t aIndex,
     return thisElement;
   }
 
-  return nsSVGRadialGradientFrameBase::GetRadialGradientWithLength(aIndex,
-                                                                   aDefault);
+  return nsSVGGradientFrame::GetRadialGradientWithLength(aIndex, aDefault);
 }
 
 bool

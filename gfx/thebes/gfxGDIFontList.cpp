@@ -7,6 +7,7 @@
 #include <algorithm>
 
 #include "mozilla/Logging.h"
+#include "mozilla/Sprintf.h"
 
 #include "gfxGDIFontList.h"
 #include "gfxWindowsPlatform.h"
@@ -75,12 +76,12 @@ public:
 #if DEBUG
         if (!success) {
             char buf[256];
-            sprintf(buf, "error deleting font handle (%p) - RemoveFontMemResourceEx failed", mFontRef);
+            SprintfLiteral(buf, "error deleting font handle (%p) - RemoveFontMemResourceEx failed", mFontRef);
             NS_ASSERTION(success, buf);
         }
 #endif
     }
-    
+
     HANDLE mFontRef;
 };
 
@@ -130,7 +131,7 @@ GDIFontEntry::GDIFontEntry(const nsAString& aFaceName,
       mFamilyHasItalicFace(aFamilyHasItalicFace),
       mCharset(), mUnicodeRanges()
 {
-    mUserFontData = aUserFontData;
+    mUserFontData.reset(aUserFontData);
     mStyle = aStyle;
     mWeight = aWeight;
     mStretch = aStretch;
@@ -202,8 +203,8 @@ GDIFontEntry::ReadCMAP(FontInfoData *aFontInfoData)
                   charmap->mHash, mCharacterMap == charmap ? " new" : ""));
     if (LOG_CMAPDATA_ENABLED()) {
         char prefix[256];
-        sprintf(prefix, "(cmapdata) name: %.220s",
-                NS_ConvertUTF16toUTF8(mName).get());
+        SprintfLiteral(prefix, "(cmapdata) name: %.220s",
+                       NS_ConvertUTF16toUTF8(mName).get());
         charmap->Dump(prefix, eGfxLog_cmapdata);
     }
 
@@ -325,7 +326,7 @@ GDIFontEntry::TestCharacterMap(uint32_t aCh)
         HFONT hfont = font->GetHFONT();
         HFONT oldFont = (HFONT)SelectObject(dc, hfont);
 
-        wchar_t str[1] = { aCh };
+        wchar_t str[1] = { (wchar_t)aCh };
         WORD glyph[1];
 
         bool hasGlyph = false;
@@ -860,9 +861,9 @@ gfxGDIFontList::MakePlatformFont(const nsAString& aFontName,
             fontRef = AddFontMemResourceEx(fontData, fontLength, 0, &numFonts);
         }
     }
-	if (!fontRef) {
-		return nullptr;
-	}
+    if (!fontRef) {
+        return nullptr;
+    }
 
     // only load fonts with a single face contained in the data
     // AddFontMemResourceEx generates an additional face name for
@@ -895,23 +896,27 @@ gfxGDIFontList::MakePlatformFont(const nsAString& aFontName,
     return fe;
 }
 
-gfxFontFamily*
-gfxGDIFontList::FindFamily(const nsAString& aFamily, gfxFontStyle* aStyle,
-                           gfxFloat aDevToCssSize)
+bool
+gfxGDIFontList::FindAndAddFamilies(const nsAString& aFamily,
+                                   nsTArray<gfxFontFamily*>* aOutput,
+                                   gfxFontStyle* aStyle,
+                                   gfxFloat aDevToCssSize)
 {
     nsAutoString keyName(aFamily);
     BuildKeyNameFromFontName(keyName);
 
     gfxFontFamily *ff = mFontSubstitutes.GetWeak(keyName);
     if (ff) {
-        return ff;
+        aOutput->AppendElement(ff);
+        return true;
     }
 
     if (mNonExistingFonts.Contains(keyName)) {
-        return nullptr;
+        return false;
     }
 
-    return gfxPlatformFontList::FindFamily(aFamily);
+    return gfxPlatformFontList::FindAndAddFamilies(aFamily, aOutput, aStyle,
+                                                   aDevToCssSize);
 }
 
 gfxFontFamily*

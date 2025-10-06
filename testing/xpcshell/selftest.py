@@ -4,12 +4,17 @@
 # http://creativecommons.org/publicdomain/zero/1.0/
 #
 
-from __future__ import with_statement
-import sys, os, unittest, tempfile, shutil, re, pprint
 import mozinfo
+import mozunit
+import os
+import pprint
+import re
+import shutil
+import sys
+import tempfile
+import unittest
 
 from StringIO import StringIO
-
 from mozlog import structured
 from mozbuild.base import MozbuildObject
 os.environ.pop('MOZ_OBJDIR', None)
@@ -857,6 +862,9 @@ add_test({
         self.writeManifest(["test_simple_uncaught_rejection.js"])
 
         self.assertTestResult(False)
+        self.assertInLog(TEST_FAIL_STRING)
+        self.assertInLog("test_simple_uncaught_rejection.js:3:3")
+        self.assertInLog("Test rejection.")
         self.assertEquals(1, self.x.testCount)
         self.assertEquals(0, self.x.passCount)
         self.assertEquals(1, self.x.failCount)
@@ -869,6 +877,9 @@ add_test({
         self.writeManifest(["test_simple_uncaught_rejection_jsm.js"])
 
         self.assertTestResult(False)
+        self.assertInLog(TEST_FAIL_STRING)
+        self.assertInLog("test_simple_uncaught_rejection_jsm.js:4:16")
+        self.assertInLog("Test rejection.")
         self.assertEquals(1, self.x.testCount)
         self.assertEquals(0, self.x.passCount)
         self.assertEquals(1, self.x.failCount)
@@ -1341,4 +1352,4 @@ add_test({
         self.assertNotInLog(TEST_FAIL_STRING)
 
 if __name__ == "__main__":
-    unittest.main(verbosity=3)
+    mozunit.main()

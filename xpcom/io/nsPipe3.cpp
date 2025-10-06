@@ -7,6 +7,7 @@
 #include <algorithm>
 #include "mozilla/Attributes.h"
 #include "mozilla/ReentrantMonitor.h"
+#include "nsIBufferedStreams.h"
 #include "nsICloneableInputStream.h"
 #include "nsIPipe.h"
 #include "nsIEventTarget.h"
@@ -29,7 +30,7 @@ using namespace mozilla;
 #undef LOG
 #endif
 //
-// set NSPR_LOG_MODULES=nsPipe:5
+// set MOZ_LOG=nsPipe:5
 //
 static LazyLogModule sPipeLog("nsPipe");
 #define LOG(args) MOZ_LOG(sPipeLog, mozilla::LogLevel::Debug, args)
@@ -144,6 +145,7 @@ class nsPipeInputStream final
   , public nsISearchableInputStream
   , public nsICloneableInputStream
   , public nsIClassInfo
+  , public nsIBufferedInputStream
 {
 public:
   NS_DECL_THREADSAFE_ISUPPORTS
@@ -153,6 +155,7 @@ public:
   NS_DECL_NSISEARCHABLEINPUTSTREAM
   NS_DECL_NSICLONEABLEINPUTSTREAM
   NS_DECL_NSICLASSINFO
+  NS_DECL_NSIBUFFEREDINPUTSTREAM
 
   explicit nsPipeInputStream(nsPipe* aPipe)
     : mPipe(aPipe)
@@ -577,6 +580,9 @@ nsPipe::Init(bool aNonBlockingIn,
 NS_IMETHODIMP
 nsPipe::GetInputStream(nsIAsyncInputStream** aInputStream)
 {
+  if (NS_WARN_IF(!mInited)) {
+    return NS_ERROR_NOT_INITIALIZED;
+  }
   RefPtr<nsPipeInputStream> ref = mOriginalInput;
   ref.forget(aInputStream);
   return NS_OK;
@@ -988,7 +994,8 @@ nsPipe::CloneInputStream(nsPipeInputStream* aOriginal,
   ReentrantMonitorAutoEnter mon(mReentrantMonitor);
   RefPtr<nsPipeInputStream> ref = new nsPipeInputStream(*aOriginal);
   mInputList.AppendElement(ref);
-  ref.forget(aCloneOut);
+  nsCOMPtr<nsIAsyncInputStream> downcast = ref.forget();
+  downcast.forget(aCloneOut);
   return NS_OK;
 }
 
@@ -1121,22 +1128,37 @@ nsPipeEvents::~nsPipeEvents()
 NS_IMPL_ADDREF(nsPipeInputStream);
 NS_IMPL_RELEASE(nsPipeInputStream);
 
-NS_IMPL_QUERY_INTERFACE(nsPipeInputStream,
-                        nsIInputStream,
-                        nsIAsyncInputStream,
-                        nsISeekableStream,
-                        nsISearchableInputStream,
-                        nsICloneableInputStream,
-                        nsIClassInfo)
+NS_INTERFACE_TABLE_HEAD(nsPipeInputStream)
+  NS_INTERFACE_TABLE_BEGIN
+    NS_INTERFACE_TABLE_ENTRY(nsPipeInputStream, nsIAsyncInputStream)
+    NS_INTERFACE_TABLE_ENTRY(nsPipeInputStream, nsISeekableStream)
+    NS_INTERFACE_TABLE_ENTRY(nsPipeInputStream, nsISearchableInputStream)
+    NS_INTERFACE_TABLE_ENTRY(nsPipeInputStream, nsICloneableInputStream)
+    NS_INTERFACE_TABLE_ENTRY(nsPipeInputStream, nsIBufferedInputStream)
+    NS_INTERFACE_TABLE_ENTRY(nsPipeInputStream, nsIClassInfo)
+    NS_INTERFACE_TABLE_ENTRY_AMBIGUOUS(nsPipeInputStream, nsIInputStream,
+                                       nsIAsyncInputStream)
+    NS_INTERFACE_TABLE_ENTRY_AMBIGUOUS(nsPipeInputStream, nsISupports,
+                                       nsIAsyncInputStream)
+  NS_INTERFACE_TABLE_END
+NS_INTERFACE_TABLE_TAIL
 
 NS_IMPL_CI_INTERFACE_GETTER(nsPipeInputStream,
                             nsIInputStream,
                             nsIAsyncInputStream,
                             nsISeekableStream,
                             nsISearchableInputStream,
-                            nsICloneableInputStream)
+                            nsICloneableInputStream,
+                            nsIBufferedInputStream)
 
 NS_IMPL_THREADSAFE_CI(nsPipeInputStream)
+
+NS_IMETHODIMP
+nsPipeInputStream::Init(nsIInputStream*, uint32_t)
+{
+  MOZ_CRASH("nsPipeInputStream should never be initialized with "
+            "nsIBufferedInputStream::Init!\n");
+}
 
 uint32_t
 nsPipeInputStream::Available()
@@ -1300,8 +1322,8 @@ nsPipeInputStream::ReadSegments(nsWriteSegmentFun aWriter,
     while (segment.Length()) {
       writeCount = 0;
 
-      rv = aWriter(this, aClosure, segment.Data(), *aReadCount,
-                   segment.Length(), &writeCount);
+      rv = aWriter(static_cast<nsIAsyncInputStream*>(this), aClosure,
+                   segment.Data(), *aReadCount, segment.Length(), &writeCount);
 
       if (NS_FAILED(rv) || writeCount == 0) {
         aCount = 0;
@@ -1700,7 +1722,7 @@ nsPipeOutputStream::WriteSegments(nsReadSegmentFun aReader,
   return rv;
 }
 
-static NS_METHOD
+static nsresult
 nsReadFromRawBuffer(nsIOutputStream* aOutStr,
                     void* aClosure,
                     char* aToRawSegment,
@@ -1729,7 +1751,7 @@ nsPipeOutputStream::Flush(void)
   return NS_OK;
 }
 
-static NS_METHOD
+static nsresult
 nsReadFromInputStream(nsIOutputStream* aOutStr,
                       void* aClosure,
                       char* aToRawSegment,
@@ -1838,21 +1860,20 @@ NS_NewPipe2(nsIAsyncInputStream** aPipeIn,
             uint32_t aSegmentSize,
             uint32_t aSegmentCount)
 {
-  nsresult rv;
-
   nsPipe* pipe = new nsPipe();
-  rv = pipe->Init(aNonBlockingInput,
-                  aNonBlockingOutput,
-                  aSegmentSize,
-                  aSegmentCount);
+  nsresult rv = pipe->Init(aNonBlockingInput,
+                           aNonBlockingOutput,
+                           aSegmentSize,
+                           aSegmentCount);
   if (NS_FAILED(rv)) {
     NS_ADDREF(pipe);
     NS_RELEASE(pipe);
     return rv;
   }
 
-  pipe->GetInputStream(aPipeIn);
-  pipe->GetOutputStream(aPipeOut);
+  // These always succeed because the pipe is initialized above.
+  MOZ_ALWAYS_SUCCEEDS(pipe->GetInputStream(aPipeIn));
+  MOZ_ALWAYS_SUCCEEDS(pipe->GetOutputStream(aPipeOut));
   return NS_OK;
 }
 

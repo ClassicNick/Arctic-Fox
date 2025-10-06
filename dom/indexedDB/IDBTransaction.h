@@ -50,8 +50,8 @@ class IDBTransaction final
   friend class indexedDB::BackgroundCursorChild;
   friend class indexedDB::BackgroundRequestChild;
 
-  class WorkerFeature;
-  friend class WorkerFeature;
+  class WorkerHolder;
+  friend class WorkerHolder;
 
 public:
   enum Mode
@@ -59,6 +59,7 @@ public:
     READ_ONLY = 0,
     READ_WRITE,
     READ_WRITE_FLUSH,
+    CLEANUP,
     VERSION_CHANGE,
 
     // Only needed for IPC serialization helper, should never be used in code.
@@ -79,7 +80,7 @@ private:
   nsTArray<nsString> mObjectStoreNames;
   nsTArray<RefPtr<IDBObjectStore>> mObjectStores;
   nsTArray<RefPtr<IDBObjectStore>> mDeletedObjectStores;
-  nsAutoPtr<WorkerFeature> mWorkerFeature;
+  nsAutoPtr<WorkerHolder> mWorkerHolder;
 
   // Tagged with mMode. If mMode is VERSION_CHANGE then mBackgroundActor will be
   // a BackgroundVersionChangeTransactionChild. Otherwise it will be a
@@ -123,7 +124,7 @@ public:
                       int64_t aNextIndexId);
 
   static already_AddRefed<IDBTransaction>
-  Create(IDBDatabase* aDatabase,
+  Create(JSContext* aCx, IDBDatabase* aDatabase,
          const nsTArray<nsString>& aObjectStoreNames,
          Mode aMode);
 
@@ -188,6 +189,7 @@ public:
     AssertIsOnOwningThread();
     return mMode == READ_WRITE ||
            mMode == READ_WRITE_FLUSH ||
+           mMode == CLEANUP ||
            mMode == VERSION_CHANGE;
   }
 
@@ -244,10 +246,16 @@ public:
   DeleteObjectStore(int64_t aObjectStoreId);
 
   void
+  RenameObjectStore(int64_t aObjectStoreId, const nsAString& aName);
+
+  void
   CreateIndex(IDBObjectStore* aObjectStore, const indexedDB::IndexMetadata& aMetadata);
 
   void
   DeleteIndex(IDBObjectStore* aObjectStore, int64_t aIndexId);
+
+  void
+  RenameIndex(IDBObjectStore* aObjectStore, int64_t aIndexId, const nsAString& aName);
 
   void
   Abort(IDBRequest* aRequest);

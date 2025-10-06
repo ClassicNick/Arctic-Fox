@@ -8,6 +8,7 @@
 #define nsINode_h___
 
 #include "mozilla/Likely.h"
+#include "mozilla/UniquePtr.h"
 #include "nsCOMPtr.h"               // for member, local
 #include "nsGkAtoms.h"              // for nsGkAtoms::baseURIProperty
 #include "nsIDOMNode.h"
@@ -52,6 +53,22 @@ class nsNodeSupportsWeakRefTearoff;
 class nsNodeWeakReference;
 class nsDOMMutationObserver;
 
+// We declare the bare minimum infrastructure here to allow us to have a
+// UniquePtr<ServoNodeData> on nsINode.
+struct ServoNodeData;
+extern "C" void Servo_NodeData_Drop(ServoNodeData*);
+namespace mozilla {
+template<>
+class DefaultDelete<ServoNodeData>
+{
+public:
+  void operator()(ServoNodeData* aPtr) const
+  {
+    Servo_NodeData_Drop(aPtr);
+  }
+};
+} // namespace mozilla
+
 namespace mozilla {
 class EventListenerManager;
 namespace dom {
@@ -67,6 +84,7 @@ inline bool IsSpaceCharacter(char aChar) {
   return aChar == ' ' || aChar == '\t' || aChar == '\n' || aChar == '\r' ||
          aChar == '\f';
 }
+class AccessibleNode;
 struct BoxQuadOptions;
 struct ConvertCoordinateOptions;
 class DOMPoint;
@@ -180,8 +198,20 @@ enum {
 
   NODE_IS_ROOT_OF_CHROME_ONLY_ACCESS =    NODE_FLAG_BIT(20),
 
+  // These two bits are shared by Gecko's and Servo's restyle systems for
+  // different purposes. They should not be accessed directly, and access to
+  // them should be properly guarded by asserts.
+  NODE_SHARED_RESTYLE_BIT_1 =             NODE_FLAG_BIT(21),
+  NODE_SHARED_RESTYLE_BIT_2 =             NODE_FLAG_BIT(22),
+
+  // Whether this node is dirty for Servo's style system.
+  NODE_IS_DIRTY_FOR_SERVO =               NODE_SHARED_RESTYLE_BIT_1,
+
+  // Whether this node has dirty descendants for Servo's style system.
+  NODE_HAS_DIRTY_DESCENDANTS_FOR_SERVO =  NODE_SHARED_RESTYLE_BIT_2,
+
   // Remaining bits are node type specific.
-  NODE_TYPE_SPECIFIC_BITS_OFFSET =        21
+  NODE_TYPE_SPECIFIC_BITS_OFFSET =        23
 };
 
 // Make sure we have space for our bits
@@ -319,14 +349,14 @@ public:
 
 #ifdef MOZILLA_INTERNAL_API
   explicit nsINode(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo)
-  : mNodeInfo(aNodeInfo),
-    mParent(nullptr),
-    mBoolFlags(0),
-    mNextSibling(nullptr),
-    mPreviousSibling(nullptr),
-    mFirstChild(nullptr),
-    mSubtreeRoot(this),
-    mSlots(nullptr)
+  : mNodeInfo(aNodeInfo)
+  , mParent(nullptr)
+  , mBoolFlags(0)
+  , mNextSibling(nullptr)
+  , mPreviousSibling(nullptr)
+  , mFirstChild(nullptr)
+  , mSubtreeRoot(this)
+  , mSlots(nullptr)
   {
   }
 #endif
@@ -477,10 +507,18 @@ public:
   virtual int32_t IndexOf(const nsINode* aPossibleChild) const = 0;
 
   /**
-   * Return the "owner document" of this node.  Note that this is not the same
-   * as the DOM ownerDocument -- that's null for Document nodes, whereas for a
-   * nsIDocument GetOwnerDocument returns the document itself.  For nsIContent
-   * implementations the two are the same.
+   * Returns the "node document" of this node.
+   *
+   * https://dom.spec.whatwg.org/#concept-node-document
+   *
+   * Note that in the case that this node is a document node this method
+   * will return |this|.  That is different to the Node.ownerDocument DOM
+   * attribute (implemented by nsINode::GetOwnerDocument) which is specified to
+   * be null in that case:
+   *
+   * https://dom.spec.whatwg.org/#dom-node-ownerdocument
+   *
+   * For all other cases OwnerDoc and GetOwnerDocument behave identically.
    */
   nsIDocument *OwnerDoc() const
   {
@@ -504,14 +542,6 @@ public:
   }
 
   /**
-   * @deprecated
-   */
-  bool IsInDoc() const
-  {
-    return IsInUncomposedDoc();
-  }
-
-  /**
    * Get the document that this content is currently in, if any. This will be
    * null if the content has no ancestor that is a document.
    *
@@ -524,14 +554,6 @@ public:
   }
 
   /**
-   * @deprecated
-   */
-  nsIDocument *GetCurrentDoc() const
-  {
-    return GetUncomposedDoc();
-  }
-
-  /**
    * This method returns the owner doc if the node is in the
    * composed document (as defined in the Shadow DOM spec), otherwise
    * it returns null.
@@ -540,14 +562,6 @@ public:
   {
     return IsInShadowTree() ?
       GetComposedDocInternal() : GetUncomposedDoc();
-  }
-
-  /**
-   * @deprecated
-   */
-  nsIDocument* GetCrossShadowCurrentDoc() const
-  {
-    return GetComposedDoc();
   }
 
   /**
@@ -719,7 +733,7 @@ public:
   {
     return InsertChildAt(aKid, GetChildCount(), aNotify);
   }
-  
+
   /**
    * Remove a child from this node.  This method handles calling UnbindFromTree
    * on the child appropriately.
@@ -882,7 +896,7 @@ public:
   virtual void* UnsetProperty(uint16_t aCategory,
                               nsIAtom *aPropertyName,
                               nsresult *aStatus = nullptr);
-  
+
   bool HasProperties() const
   {
     return HasFlag(NODE_HAS_PROPERTIES);
@@ -914,7 +928,17 @@ public:
   {
     return mParent;
   }
-  
+
+  /**
+   * Returns the node that is the parent of this node in the flattened
+   * tree. This differs from the normal parent if the node is filtered
+   * into an insertion point, or if the node is a direct child of a
+   * shadow root.
+   *
+   * @return the flattened tree parent
+   */
+  inline nsINode* GetFlattenedTreeParentNode() const;
+
   /**
    * Get the parent nsINode for this node if it is an Element.
    * @return the parent node
@@ -937,6 +961,11 @@ public:
    */
   nsINode* SubtreeRoot() const;
 
+  nsINode* RootNode() const
+  {
+    return SubtreeRoot();
+  }
+
   /**
    * See nsIDOMEventTarget
    */
@@ -951,15 +980,54 @@ public:
   using nsIDOMEventTarget::AddEventListener;
   virtual void AddEventListener(const nsAString& aType,
                                 mozilla::dom::EventListener* aListener,
-                                bool aUseCapture,
+                                const mozilla::dom::AddEventListenerOptionsOrBoolean& aOptions,
                                 const mozilla::dom::Nullable<bool>& aWantsUntrusted,
                                 mozilla::ErrorResult& aRv) override;
   using nsIDOMEventTarget::AddSystemEventListener;
 
-  virtual bool HasApzAwareListeners() const override;
+  virtual bool IsApzAware() const override;
 
   virtual nsPIDOMWindowOuter* GetOwnerGlobalForBindings() override;
   virtual nsIGlobalObject* GetOwnerGlobal() const override;
+
+  /**
+   * Returns true if this is a node belonging to a document that uses the Servo
+   * style system.
+   */
+#ifdef MOZ_STYLO
+  bool IsStyledByServo() const;
+#else
+  bool IsStyledByServo() const { return false; }
+#endif
+
+  inline bool IsDirtyForServo() const
+  {
+    MOZ_ASSERT(IsStyledByServo());
+    return HasFlag(NODE_IS_DIRTY_FOR_SERVO);
+  }
+
+  inline bool HasDirtyDescendantsForServo() const
+  {
+    MOZ_ASSERT(IsStyledByServo());
+    return HasFlag(NODE_HAS_DIRTY_DESCENDANTS_FOR_SERVO);
+  }
+
+  inline void SetIsDirtyForServo() {
+    MOZ_ASSERT(IsStyledByServo());
+    SetFlags(NODE_IS_DIRTY_FOR_SERVO);
+  }
+
+  inline void SetHasDirtyDescendantsForServo() {
+    MOZ_ASSERT(IsStyledByServo());
+    SetFlags(NODE_HAS_DIRTY_DESCENDANTS_FOR_SERVO);
+  }
+
+  inline void SetIsDirtyAndHasDirtyDescendantsForServo() {
+    MOZ_ASSERT(IsStyledByServo());
+    SetFlags(NODE_HAS_DIRTY_DESCENDANTS_FOR_SERVO | NODE_IS_DIRTY_FOR_SERVO);
+  }
+
+  inline void UnsetRestyleFlagsIfGecko();
 
   /**
    * Adds a mutation observer to be notified when this node, or any of its
@@ -1237,6 +1305,30 @@ public:
   /**
    * The explicit base URI, if set, otherwise null
    */
+
+  /**
+   * Return true if the node may be apz aware. There are two cases. One is that
+   * the node is apz aware (such as HTMLInputElement with number type). The
+   * other is that the node has apz aware listeners. This is a non-virtual
+   * function which calls IsNodeApzAwareInternal only when the MayBeApzAware is
+   * set. We check the details in IsNodeApzAwareInternal which may be overriden
+   * by child classes
+   */
+  bool IsNodeApzAware() const
+  {
+    return NodeMayBeApzAware() ? IsNodeApzAwareInternal() : false;
+  }
+
+  /**
+   * Override this function and set the flag MayBeApzAware in case the node has
+   * to let APZC be aware of it. It's used when the node may handle the apz
+   * aware events and may do preventDefault to stop APZC to do default actions.
+   *
+   * For example, instead of scrolling page by APZ, we handle mouse wheel event
+   * in HTMLInputElement with number type as increasing / decreasing its value.
+   */
+  virtual bool IsNodeApzAwareInternal() const;
+
 protected:
   nsIURI* GetExplicitBaseURI() const {
     if (HasExplicitBaseURI()) {
@@ -1244,7 +1336,7 @@ protected:
     }
     return nullptr;
   }
-  
+
 public:
   void GetTextContent(nsAString& aTextContent,
                       mozilla::ErrorResult& aError)
@@ -1299,7 +1391,7 @@ public:
   nsresult GetUserData(const nsAString& aKey, nsIVariant** aResult)
   {
     NS_IF_ADDREF(*aResult = GetUserData(aKey));
-  
+
     return NS_OK;
   }
 
@@ -1460,7 +1552,7 @@ private:
     NodeIsCCMarkedRoot,
     // Maybe set if this node is in black subtree.
     NodeIsCCBlackTree,
-    // Maybe set if the node is a root of a subtree 
+    // Maybe set if the node is a root of a subtree
     // which needs to be kept in the purple buffer.
     NodeIsPurpleRoot,
     // Set if the node has an explicit base URI stored
@@ -1504,8 +1596,8 @@ private:
     ElementHasWeirdParserInsertionMode,
     // Parser sets this flag if it has notified about the node.
     ParserHasNotified,
-    // EventListenerManager sets this flag in case we have apz aware listeners.
-    MayHaveApzAwareListeners,
+    // Sets if the node is apz aware or we have apz aware listeners.
+    MayBeApzAware,
     // Guard value
     BooleanFlagCount
   };
@@ -1613,8 +1705,11 @@ public:
                "ClearHasTextNodeDirectionalityMap on non-text node");
     ClearBoolFlag(NodeHasTextNodeDirectionalityMap);
   }
-  bool HasTextNodeDirectionalityMap() const
-    { return GetBoolFlag(NodeHasTextNodeDirectionalityMap); }
+  bool HasTextNodeDirectionalityMap() const {
+    MOZ_ASSERT(NodeType() == nsIDOMNode::TEXT_NODE,
+               "HasTextNodeDirectionalityMap on non-text node");
+    return GetBoolFlag(NodeHasTextNodeDirectionalityMap);
+  }
 
   void SetHasDirAuto() { SetBoolFlag(NodeHasDirAuto); }
   void ClearHasDirAuto() { ClearBoolFlag(NodeHasDirAuto); }
@@ -1649,14 +1744,14 @@ public:
   void SetParserHasNotified() { SetBoolFlag(ParserHasNotified); };
   bool HasParserNotified() { return GetBoolFlag(ParserHasNotified); }
 
-  void SetMayHaveApzAwareListeners() { SetBoolFlag(MayHaveApzAwareListeners); }
-  bool NodeMayHaveApzAwareListeners() const
+  void SetMayBeApzAware() { SetBoolFlag(MayBeApzAware); }
+  bool NodeMayBeApzAware() const
   {
-    return GetBoolFlag(MayHaveApzAwareListeners);
+    return GetBoolFlag(MayBeApzAware);
   }
 protected:
   void SetParentIsContent(bool aValue) { SetBoolFlag(ParentIsContent, aValue); }
-  void SetInDocument() { SetBoolFlag(IsInDocument); }
+  void SetIsInDocument() { SetBoolFlag(IsInDocument); }
   void SetNodeIsContent() { SetBoolFlag(NodeIsContent); }
   void ClearInDocument() { ClearBoolFlag(IsInDocument); }
   void SetIsElement() { SetBoolFlag(NodeIsElement); }
@@ -1683,7 +1778,7 @@ protected:
   void SetSubtreeRootPointer(nsINode* aSubtreeRoot)
   {
     NS_ASSERTION(aSubtreeRoot, "aSubtreeRoot can never be null!");
-    NS_ASSERTION(!(IsNodeOfType(eCONTENT) && IsInDoc()) &&
+    NS_ASSERTION(!(IsNodeOfType(eCONTENT) && IsInUncomposedDoc()) &&
                  !IsInShadowTree(), "Shouldn't be here!");
     mSubtreeRoot = aSubtreeRoot;
   }
@@ -1701,6 +1796,8 @@ public:
   void UnbindObject(nsISupports* aObject);
 
   void GetBoundMutationObservers(nsTArray<RefPtr<nsDOMMutationObserver> >& aResult);
+
+  already_AddRefed<mozilla::dom::AccessibleNode> GetAccessibleNode();
 
   /**
    * Returns the length of this node, as specified at
@@ -1741,6 +1838,8 @@ public:
     // The DOM spec says that when nodeValue is defined to be null "setting it
     // has no effect", so we don't throw an exception.
   }
+  void EnsurePreInsertionValidity(nsINode& aNewChild, nsINode* aRefChild,
+                                  mozilla::ErrorResult& aError);
   nsINode* InsertBefore(nsINode& aNode, nsINode* aChild,
                         mozilla::ErrorResult& aError)
   {
@@ -1899,6 +1998,11 @@ protected:
   nsresult CompareDocumentPosition(nsIDOMNode* aOther,
                                    uint16_t* aReturn);
 
+  void EnsurePreInsertionValidity1(nsINode& aNewChild, nsINode* aRefChild,
+                                   mozilla::ErrorResult& aError);
+  void EnsurePreInsertionValidity2(bool aReplace, nsINode& aNewChild,
+                                   nsINode* aRefChild,
+                                   mozilla::ErrorResult& aError);
   nsresult ReplaceOrInsertBefore(bool aReplace, nsIDOMNode *aNewChild,
                                  nsIDOMNode *aRefChild, nsIDOMNode **aReturn);
   nsINode* ReplaceOrInsertBefore(bool aReplace, nsINode* aNewChild,
@@ -1971,6 +2075,14 @@ public:
 #undef TOUCH_EVENT
 #undef EVENT
 
+  mozilla::UniquePtr<ServoNodeData>& ServoData() {
+#ifdef MOZ_STYLO
+    return mServoNodeData;
+#else
+    MOZ_CRASH("Accessing servo node data in non-stylo build");
+#endif
+  }
+
 protected:
   static bool Traverse(nsINode *tmp, nsCycleCollectionTraversalCallback &cb);
   static void Unlink(nsINode *tmp);
@@ -2008,6 +2120,11 @@ protected:
 
   // Storage for more members that are usually not needed; allocated lazily.
   nsSlots* mSlots;
+
+#ifdef MOZ_STYLO
+  // Layout data managed by Servo.
+  mozilla::UniquePtr<ServoNodeData> mServoNodeData;
+#endif
 };
 
 inline nsIDOMNode* GetAsDOMNode(nsINode* aNode)

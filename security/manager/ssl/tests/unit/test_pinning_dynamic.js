@@ -1,6 +1,7 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+"use strict";
 
 // The purpose of this test is to create a site security service state file
 // and see that the site security service reads it properly.
@@ -20,7 +21,7 @@ function certFromFile(cert_name) {
 
 function loadCert(cert_name, trust_string) {
   let cert_filename = "test_pinning_dynamic/" + cert_name + ".pem";
-  addCertFromFile(certdb,  cert_filename, trust_string);
+  addCertFromFile(certdb, cert_filename, trust_string);
   return constructCertFromFile(cert_filename);
 }
 

@@ -6,15 +6,18 @@
 
 #include "vm/Xdr.h"
 
+#include "mozilla/PodOperations.h"
+
 #include <string.h>
 
 #include "jsapi.h"
 #include "jsscript.h"
 
 #include "vm/Debugger.h"
-#include "vm/ScopeObject.h"
+#include "vm/EnvironmentObject.h"
 
 using namespace js;
+using mozilla::PodEqual;
 
 void
 XDRBuffer::freeBuffer()
@@ -92,17 +95,46 @@ template<XDRMode mode>
 static bool
 VersionCheck(XDRState<mode>* xdr)
 {
-    uint32_t bytecodeVer;
+    JS::BuildIdCharVector buildId;
+    if (!xdr->cx()->buildIdOp() || !xdr->cx()->buildIdOp()(&buildId)) {
+        JS_ReportErrorNumber(xdr->cx(), GetErrorMessage, nullptr, JSMSG_BUILD_ID_NOT_AVAILABLE);
+        return false;
+    }
+    MOZ_ASSERT(!buildId.empty());
+
+    uint32_t buildIdLength;
     if (mode == XDR_ENCODE)
-        bytecodeVer = XDR_BYTECODE_VERSION;
+        buildIdLength = buildId.length();
 
-    if (!xdr->codeUint32(&bytecodeVer))
+    if (!xdr->codeUint32(&buildIdLength))
         return false;
 
-    if (mode == XDR_DECODE && bytecodeVer != XDR_BYTECODE_VERSION) {
-        /* We do not provide binary compatibility with older scripts. */
-        JS_ReportErrorNumber(xdr->cx(), GetErrorMessage, nullptr, JSMSG_BAD_SCRIPT_MAGIC);
+    if (mode == XDR_DECODE && buildIdLength != buildId.length()) {
+        JS_ReportErrorNumber(xdr->cx(), GetErrorMessage, nullptr, JSMSG_BAD_BUILD_ID);
         return false;
+    }
+
+    if (mode == XDR_ENCODE) {
+        if (!xdr->codeBytes(buildId.begin(), buildIdLength))
+            return false;
+    } else {
+        JS::BuildIdCharVector decodedBuildId;
+
+        // buildIdLength is already checked against the length of current
+        // buildId.
+        if (!decodedBuildId.resize(buildIdLength)) {
+            ReportOutOfMemory(xdr->cx());
+            return false;
+        }
+
+        if (!xdr->codeBytes(decodedBuildId.begin(), buildIdLength))
+            return false;
+
+        if (!PodEqual(decodedBuildId.begin(), buildId.begin(), buildIdLength)) {
+            // We do not provide binary compatibility with older scripts.
+            JS_ReportErrorNumber(xdr->cx(), GetErrorMessage, nullptr, JSMSG_BAD_BUILD_ID);
+            return false;
+        }
     }
 
     return true;
@@ -114,12 +146,14 @@ XDRState<mode>::codeFunction(MutableHandleFunction objp)
 {
     if (mode == XDR_DECODE)
         objp.set(nullptr);
+    else
+        MOZ_ASSERT(objp->nonLazyScript()->enclosingScope()->is<GlobalScope>());
 
     if (!VersionCheck(this))
         return false;
 
-    RootedObject staticLexical(cx(), &cx()->global()->lexicalScope().staticBlock());
-    return XDRInterpretedFunction(this, staticLexical, nullptr, objp);
+    RootedScope scope(cx(), &cx()->global()->emptyGlobalScope());
+    return XDRInterpretedFunction(this, scope, nullptr, objp);
 }
 
 template<XDRMode mode>
@@ -128,15 +162,13 @@ XDRState<mode>::codeScript(MutableHandleScript scriptp)
 {
     if (mode == XDR_DECODE)
         scriptp.set(nullptr);
+    else
+        MOZ_ASSERT(!scriptp->enclosingScope());
 
     if (!VersionCheck(this))
         return false;
 
-    RootedObject staticLexical(cx(), &cx()->global()->lexicalScope().staticBlock());
-    if (!XDRScript(this, staticLexical, nullptr, nullptr, scriptp))
-        return false;
-
-    return true;
+    return XDRScript(this, nullptr, nullptr, nullptr, scriptp);
 }
 
 template<XDRMode mode>

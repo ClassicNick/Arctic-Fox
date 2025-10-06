@@ -1,5 +1,5 @@
 Cu.import("resource://testing-common/httpd.js");
-Cu.import("resource://gre/modules/Services.jsm");
+Cu.import("resource://gre/modules/NetUtil.jsm");
 
 var httpserver = new HttpServer();
 var index = 0;
@@ -48,22 +48,14 @@ var tests = [
      body: [0x0B, 0x02, 0x80, 0x74, 0x65, 0x73, 0x74, 0x0A, 0x03],
 
      datalen: 9
-    },	
+    },
 ];
 
 function setupChannel(url) {
-    var ios = Components.classes["@mozilla.org/network/io-service;1"].
-                         getService(Ci.nsIIOService);
-    var chan = ios.newChannel2("http://localhost:" +
-                               httpserver.identity.primaryPort + url,
-                               "",
-                               null,
-                               null,      // aLoadingNode
-                               Services.scriptSecurityManager.getSystemPrincipal(),
-                               null,      // aTriggeringPrincipal
-                               Ci.nsILoadInfo.SEC_NORMAL,
-                               Ci.nsIContentPolicy.TYPE_OTHER);
-    return chan;
+    return NetUtil.newChannel({
+        uri: "http://localhost:" + httpserver.identity.primaryPort + url,
+        loadUsingSystemPrincipal: true
+    });
 }
 
 function startIter() {
@@ -72,18 +64,18 @@ function startIter() {
       prefs.setCharPref("network.http.accept-encoding", "gzip, deflate");
     }
     var channel = setupChannel(tests[index].url);
-    channel.asyncOpen(new ChannelListener(completeIter, channel, tests[index].flags), null);
+    channel.asyncOpen2(new ChannelListener(completeIter, channel, tests[index].flags));
 }
 
 function completeIter(request, data, ctx) {
     if (!(tests[index].flags & CL_EXPECT_FAILURE)) {
-	    do_check_eq(data.length, tests[index].datalen);
+	do_check_eq(data.length, tests[index].datalen);
     }
     if (++index < tests.length) {
 	startIter();
     } else {
         httpserver.stop(do_test_finished);
-        prefs.setCharPref("network.http.accept-encoding", cePref);
+	prefs.setCharPref("network.http.accept-encoding", cePref);
     }
 }
 

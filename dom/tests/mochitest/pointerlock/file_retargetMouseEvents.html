@@ -171,36 +171,34 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=633602
         child.removeEventListener("mousemove", childMoveTest);
         SimpleTest.executeSoon(function () {
           info("Exit fullscreen");
+          addFullscreenChangeContinuation("exit", function() {
+            info("Got fullscreenchange for exiting");
+            runTests();
+            SimpleTest.finish();
+          });
           document.exitFullscreen();
         });
       }
 
-      document.addEventListener("mozpointerlockchange", function (e) {
-        if (document.mozPointerLockElement === parent) {
-          info("Got mozpointerlockchange for entering");
+      document.addEventListener("pointerlockchange", function (e) {
+        if (document.pointerLockElement === parent) {
+          info("Got pointerlockchange for entering");
           parent.addEventListener("mousemove", startMouseTests);
           child.addEventListener("mousemove", childMoveTest);
           SimpleTest.executeSoon(function () {
             synthesizeMouseAtCenter(parent, {type: "mousemove"}, window);
           });
         } else {
-          info("Got mozpointerlockchange for exiting");
-        }
-      }, false);
-
-      document.addEventListener("fullscreenchange", function (e)  {
-        if (document.fullscreenElement === parent) {
-          info("Got fullscreenchange for entering");
-          parent.mozRequestPointerLock();
-        } else {
-          info("Got fullscreenchange for exiting");
-          runTests();
-          SimpleTest.finish();
+          info("Got pointerlockchange for exiting");
         }
       }, false);
 
       function start() {
         info("Requesting fullscreen on parent");
+        addFullscreenChangeContinuation("enter", function() {
+          info("Got fullscreenchange for entering");
+          parent.requestPointerLock();
+        });
         parent.requestFullscreen();
       }
     </script>

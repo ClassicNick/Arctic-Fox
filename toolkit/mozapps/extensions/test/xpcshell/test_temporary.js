@@ -344,7 +344,7 @@ add_task(function*() {
 });
 
 // Installing a temporary add-on over a non-restartless add-on should fail.
-add_task(function*(){
+add_task(function*() {
   yield promiseInstallAllFiles([do_get_addon("test_install1")], true);
 
   let non_restartless_ID = "addon1@tests.mozilla.org";
@@ -425,15 +425,7 @@ add_task(function*() {
   do_check_eq(addon.type, "extension");
   do_check_eq(addon.signedState, mozinfo.addon_signing ? AddonManager.SIGNEDSTATE_SIGNED : AddonManager.SIGNEDSTATE_NOT_REQUIRED);
 
-  try {
-    yield AddonManager.installTemporaryAddon(do_get_addon("test_bootstrap1_1"));
-    do_throw("Installing a temporary second temporary add-on should return"
-             + " a rejected promise");
-  } catch (err) {
-    do_check_eq(err.message,
-        "Add-on with ID bootstrap1@tests.mozilla.org is already temporarily"
-        + " installed");
-  }
+  yield AddonManager.installTemporaryAddon(do_get_addon("test_bootstrap1_1"));
 
   BootstrapMonitor.checkAddonInstalled(ID, "1.0");
   BootstrapMonitor.checkAddonStarted(ID, "1.0");

@@ -115,7 +115,7 @@ nsSHEntryShared::Duplicate(nsSHEntryShared* aEntry)
 
   newEntry->mDocShellID = aEntry->mDocShellID;
   newEntry->mChildShells.AppendObjects(aEntry->mChildShells);
-  newEntry->mOwner = aEntry->mOwner;
+  newEntry->mTriggeringPrincipal = aEntry->mTriggeringPrincipal;
   newEntry->mContentType.Assign(aEntry->mContentType);
   newEntry->mIsFrameNavigation = aEntry->mIsFrameNavigation;
   newEntry->mSaveLayoutState = aEntry->mSaveLayoutState;
@@ -248,7 +248,7 @@ nsSHEntryShared::RemoveFromBFCacheSync()
   return NS_OK;
 }
 
-class DestroyViewerEvent : public nsRunnable
+class DestroyViewerEvent : public mozilla::Runnable
 {
 public:
   DestroyViewerEvent(nsIContentViewer* aViewer, nsIDocument* aDocument)
@@ -257,7 +257,7 @@ public:
   {
   }
 
-  NS_IMETHOD Run()
+  NS_IMETHOD Run() override
   {
     if (mViewer) {
       mViewer->Destroy();

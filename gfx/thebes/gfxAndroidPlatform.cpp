@@ -25,13 +25,9 @@
 #include "cairo.h"
 #include "VsyncSource.h"
 
-#ifdef MOZ_WIDGET_ANDROID
-#include "AndroidBridge.h"
-#endif
-
 #ifdef MOZ_WIDGET_GONK
 #include <cutils/properties.h>
-#include "mozilla/layers/CompositorParent.h"
+#include "mozilla/layers/CompositorBridgeParent.h"
 #include "HwcComposer2D.h"
 #endif
 
@@ -71,11 +67,13 @@ public:
     }
 
     NS_IMETHOD CollectReports(nsIHandleReportCallback* aHandleReport,
-                              nsISupports* aData, bool aAnonymize)
+                              nsISupports* aData, bool aAnonymize) override
     {
-        return MOZ_COLLECT_REPORT(
+        MOZ_COLLECT_REPORT(
             "explicit/freetype", KIND_HEAP, UNITS_BYTES, MemoryAllocated(),
             "Memory used by Freetype.");
+
+        return NS_OK;
     }
 };
 
@@ -170,7 +168,7 @@ IsJapaneseLocale()
 
 void
 gfxAndroidPlatform::GetCommonFallbackFonts(uint32_t aCh, uint32_t aNextCh,
-                                           int32_t aRunScript,
+                                           Script aRunScript,
                                            nsTArray<const char*>& aFontList)
 {
     static const char kDroidSansJapanese[] = "Droid Sans Japanese";
@@ -246,35 +244,10 @@ gfxAndroidPlatform::GetCommonFallbackFonts(uint32_t aCh, uint32_t aNextCh,
     aFontList.AppendElement("Droid Sans Fallback");
 }
 
-nsresult
-gfxAndroidPlatform::GetFontList(nsIAtom *aLangGroup,
-                                const nsACString& aGenericFamily,
-                                nsTArray<nsString>& aListOfFonts)
-{
-    gfxPlatformFontList::PlatformFontList()->GetFontList(aLangGroup,
-                                                         aGenericFamily,
-                                                         aListOfFonts);
-    return NS_OK;
-}
-
 void
 gfxAndroidPlatform::GetSystemFontList(InfallibleTArray<FontListEntry>* retValue)
 {
     gfxFT2FontList::PlatformFontList()->GetSystemFontList(retValue);
-}
-
-nsresult
-gfxAndroidPlatform::UpdateFontList()
-{
-    gfxPlatformFontList::PlatformFontList()->UpdateFontList();
-    return NS_OK;
-}
-
-nsresult
-gfxAndroidPlatform::GetStandardFamilyName(const nsAString& aFontName, nsAString& aFamilyName)
-{
-    gfxPlatformFontList::PlatformFontList()->GetStandardFamilyName(aFontName, aFamilyName);
-    return NS_OK;
 }
 
 gfxPlatformFontList*
@@ -326,34 +299,6 @@ gfxAndroidPlatform::GetFTLibrary()
     return gPlatformFTLibrary;
 }
 
-gfxFontEntry*
-gfxAndroidPlatform::LookupLocalFont(const nsAString& aFontName,
-                                    uint16_t aWeight,
-                                    int16_t aStretch,
-                                    uint8_t aStyle)
-{
-    return gfxPlatformFontList::PlatformFontList()->LookupLocalFont(aFontName,
-                                                                    aWeight,
-                                                                    aStretch,
-                                                                    aStyle);
-}
-
-gfxFontEntry* 
-gfxAndroidPlatform::MakePlatformFont(const nsAString& aFontName,
-                                     uint16_t aWeight,
-                                     int16_t aStretch,
-                                     uint8_t aStyle,
-                                     const uint8_t* aFontData,
-                                     uint32_t aLength)
-{
-    return gfxPlatformFontList::PlatformFontList()->MakePlatformFont(aFontName,
-                                                                     aWeight,
-                                                                     aStretch,
-                                                                     aStyle,
-                                                                     aFontData,
-                                                                     aLength);
-}
-
 already_AddRefed<ScaledFont>
 gfxAndroidPlatform::GetScaledFontForFont(DrawTarget* aTarget, gfxFont *aFont)
 {
@@ -366,15 +311,15 @@ gfxAndroidPlatform::FontHintingEnabled()
     // In "mobile" builds, we sometimes use non-reflow-zoom, so we
     // might not want hinting.  Let's see.
 
-#ifdef MOZ_USING_ANDROID_JAVA_WIDGETS
-    // On android-java, we currently only use gecko to render web
+#ifdef MOZ_WIDGET_ANDROID
+    // On Android, we currently only use gecko to render web
     // content that can always be be non-reflow-zoomed.  So turn off
     // hinting.
     // 
     // XXX when gecko-android-java is used as an "app runtime", we may
     // want to re-enable hinting for non-browser processes there.
     return false;
-#endif //  MOZ_USING_ANDROID_JAVA_WIDGETS
+#endif //  MOZ_WIDGET_ANDROID
 
 #ifdef MOZ_WIDGET_GONK
     // On B2G, the UX preference is currently to keep hinting disabled
@@ -392,8 +337,8 @@ gfxAndroidPlatform::FontHintingEnabled()
 bool
 gfxAndroidPlatform::RequiresLinearZoom()
 {
-#ifdef MOZ_USING_ANDROID_JAVA_WIDGETS
-    // On android-java, we currently only use gecko to render web
+#ifdef MOZ_WIDGET_ANDROID
+    // On Android, we currently only use gecko to render web
     // content that can always be be non-reflow-zoomed.
     //
     // XXX when gecko-android-java is used as an "app runtime", we may
@@ -412,23 +357,6 @@ gfxAndroidPlatform::RequiresLinearZoom()
 
     NS_NOTREACHED("oops, what platform is this?");
     return gfxPlatform::RequiresLinearZoom();
-}
-
-bool
-gfxAndroidPlatform::UseAcceleratedSkiaCanvas()
-{
-    return HaveChoiceOfHWAndSWCanvas() && gfxPlatform::UseAcceleratedSkiaCanvas();
-}
-
-bool gfxAndroidPlatform::HaveChoiceOfHWAndSWCanvas()
-{
-#ifdef MOZ_WIDGET_ANDROID
-    if (!AndroidBridge::Bridge() || AndroidBridge::Bridge()->GetAPIVersion() < 11) {
-        // It's slower than software due to not having a compositing fast path
-        return false;
-    }
-#endif
-    return gfxPlatform::HaveChoiceOfHWAndSWCanvas();
 }
 
 #ifdef MOZ_WIDGET_GONK
@@ -453,6 +381,12 @@ public:
 
     ~GonkDisplay()
     {
+      MOZ_ASSERT(NS_IsMainThread());
+    }
+
+    virtual void Shutdown() override
+    {
+      MOZ_ASSERT(NS_IsMainThread());
       DisableVsync();
     }
 

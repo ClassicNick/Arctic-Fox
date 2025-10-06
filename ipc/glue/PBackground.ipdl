@@ -12,10 +12,13 @@ include protocol PCache;
 include protocol PCacheStorage;
 include protocol PCacheStreamControl;
 include protocol PFileDescriptorSet;
+include protocol PFileSystemRequest;
+include protocol PGamepadEventChannel;
+include protocol PGamepadTestChannel;
 include protocol PMessagePort;
 include protocol PCameras;
-include protocol PNuwa;
 include protocol PQuota;
+include protocol PSendStream;
 include protocol PServiceWorkerManager;
 include protocol PUDPSocket;
 include protocol PVsync;
@@ -23,6 +26,8 @@ include protocol PVsync;
 include DOMTypes;
 include PBackgroundSharedTypes;
 include PBackgroundIDBSharedTypes;
+include PFileSystemParams;
+include ProtocolTypes;
 
 include "mozilla/dom/cache/IPCUtils.h";
 
@@ -50,10 +55,13 @@ sync protocol PBackground
   manages PCacheStorage;
   manages PCacheStreamControl;
   manages PFileDescriptorSet;
+  manages PFileSystemRequest;
+  manages PGamepadEventChannel;
+  manages PGamepadTestChannel;
   manages PMessagePort;
   manages PCameras;
-  manages PNuwa;
   manages PQuota;
+  manages PSendStream;
   manages PServiceWorkerManager;
   manages PUDPSocket;
   manages PVsync;
@@ -74,8 +82,7 @@ parent:
   async PCameras();
 
   async PUDPSocket(OptionalPrincipalInfo pInfo, nsCString filter);
-  async PBroadcastChannel(PrincipalInfo pInfo, nsCString origin, nsString channel,
-                          bool privateBrowsing);
+  async PBroadcastChannel(PrincipalInfo pInfo, nsCString origin, nsString channel);
 
   async PServiceWorkerManager();
 
@@ -85,7 +92,7 @@ parent:
 
   async PMessagePort(nsID uuid, nsID destinationUuid, uint32_t sequenceId);
 
-  async PNuwa();
+  async PSendStream();
 
   async MessagePortForceClose(nsID uuid, nsID destinationUuid, uint32_t sequenceId);
 
@@ -94,6 +101,12 @@ parent:
                          PrincipalInfo principalInfo);
 
   async PQuota();
+
+  async PFileSystemRequest(FileSystemParams params);
+
+  async PGamepadEventChannel();
+
+  async PGamepadTestChannel();
 
 child:
   async PCache();

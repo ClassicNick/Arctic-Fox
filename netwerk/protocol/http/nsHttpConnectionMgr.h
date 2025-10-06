@@ -293,9 +293,9 @@ private:
         ~nsConnectionEntry();
 
         RefPtr<nsHttpConnectionInfo> mConnInfo;
-        nsTArray<nsHttpTransaction*> mPendingQ;    // pending transaction queue
-        nsTArray<nsHttpConnection*>  mActiveConns; // active connections
-        nsTArray<nsHttpConnection*>  mIdleConns;   // idle persistent connections
+        nsTArray<RefPtr<nsHttpTransaction> > mPendingQ;    // pending transaction queue
+        nsTArray<RefPtr<nsHttpConnection> >  mActiveConns; // active connections
+        nsTArray<RefPtr<nsHttpConnection> >  mIdleConns;   // idle persistent connections
         nsTArray<nsHalfOpenSocket*>  mHalfOpens;   // half open connections
 
         bool AvailableForDispatchNow();
@@ -370,12 +370,6 @@ private:
         // entry has done NPN=spdy/* at some point. It does not mean every
         // connection is currently using spdy.
         bool mUsingSpdy : 1;
-
-        // mTestedSpdy is set after NPN negotiation has occurred and we know
-        // with confidence whether a host speaks spdy or not (which is reflected
-        // in mUsingSpdy). Before mTestedSpdy is set, handshake parallelism is
-        // minimized so that we can multiplex on a single spdy connection.
-        bool mTestedSpdy : 1;
 
         bool mInPreferredHash : 1;
 
@@ -531,7 +525,7 @@ private:
     nsresult BuildPipeline(nsConnectionEntry *,
                            nsAHttpTransaction *,
                            nsHttpPipeline **);
-    bool     RestrictConnections(nsConnectionEntry *, bool = false);
+    bool     RestrictConnections(nsConnectionEntry *);
     nsresult ProcessNewTransaction(nsHttpTransaction *);
     nsresult EnsureSocketThreadTarget();
     void     ClosePersistentConnections(nsConnectionEntry *ent);

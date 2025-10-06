@@ -15,6 +15,7 @@
 #include "mozilla/Preferences.h"
 #include "mozilla/Services.h"
 #include "nsIObserverService.h"
+#include "nsPrintfCString.h"
 #include "WebGLActiveInfo.h"
 #include "WebGLBuffer.h"
 #include "WebGLContextUtils.h"
@@ -437,7 +438,7 @@ WebGLContext::ValidateUniformLocation(WebGLUniformLocation* loc, const char* fun
         return false;
     }
 
-    return loc->ValidateForProgram(mCurrentProgram, this, funcName);
+    return loc->ValidateForProgram(mCurrentProgram, funcName);
 }
 
 bool
@@ -448,8 +449,8 @@ WebGLContext::ValidateAttribArraySetter(const char* name, uint32_t setterElemSiz
         return false;
 
     if (arrayLength < setterElemSize) {
-        ErrorInvalidOperation("%s: Array must have >= %d elements.", name,
-                              setterElemSize);
+        ErrorInvalidValue("%s: Array must have >= %d elements.", name,
+                          setterElemSize);
         return false;
     }
 
@@ -459,7 +460,7 @@ WebGLContext::ValidateAttribArraySetter(const char* name, uint32_t setterElemSiz
 bool
 WebGLContext::ValidateUniformSetter(WebGLUniformLocation* loc,
                                     uint8_t setterElemSize, GLenum setterType,
-                                    const char* funcName, GLuint* out_rawLoc)
+                                    const char* funcName)
 {
     if (IsContextLost())
         return false;
@@ -467,10 +468,9 @@ WebGLContext::ValidateUniformSetter(WebGLUniformLocation* loc,
     if (!ValidateUniformLocation(loc, funcName))
         return false;
 
-    if (!loc->ValidateSizeAndType(setterElemSize, setterType, this, funcName))
+    if (!loc->ValidateSizeAndType(setterElemSize, setterType, funcName))
         return false;
 
-    *out_rawLoc = loc->mLoc;
     return true;
 }
 
@@ -478,10 +478,9 @@ bool
 WebGLContext::ValidateUniformArraySetter(WebGLUniformLocation* loc,
                                          uint8_t setterElemSize,
                                          GLenum setterType,
-                                         size_t setterArraySize,
+                                         uint32_t setterArraySize,
                                          const char* funcName,
-                                         GLuint* const out_rawLoc,
-                                         GLsizei* const out_numElementsToUpload)
+                                         uint32_t* const out_numElementsToUpload)
 {
     if (IsContextLost())
         return false;
@@ -489,14 +488,17 @@ WebGLContext::ValidateUniformArraySetter(WebGLUniformLocation* loc,
     if (!ValidateUniformLocation(loc, funcName))
         return false;
 
-    if (!loc->ValidateSizeAndType(setterElemSize, setterType, this, funcName))
+    if (!loc->ValidateSizeAndType(setterElemSize, setterType, funcName))
         return false;
 
-    if (!loc->ValidateArrayLength(setterElemSize, setterArraySize, this, funcName))
+    if (!loc->ValidateArrayLength(setterElemSize, setterArraySize, funcName))
         return false;
 
-    *out_rawLoc = loc->mLoc;
-    *out_numElementsToUpload = std::min((size_t)loc->mActiveInfo->mElemCount,
+    const auto& elemCount = loc->mInfo->mActiveInfo->mElemCount;
+    MOZ_ASSERT(elemCount > loc->mArrayIndex);
+    const uint32_t uniformElemCount = elemCount - loc->mArrayIndex;
+
+    *out_numElementsToUpload = std::min(uniformElemCount,
                                         setterArraySize / setterElemSize);
     return true;
 }
@@ -506,13 +508,12 @@ WebGLContext::ValidateUniformMatrixArraySetter(WebGLUniformLocation* loc,
                                                uint8_t setterCols,
                                                uint8_t setterRows,
                                                GLenum setterType,
-                                               size_t setterArraySize,
+                                               uint32_t setterArraySize,
                                                bool setterTranspose,
                                                const char* funcName,
-                                               GLuint* const out_rawLoc,
-                                               GLsizei* const out_numElementsToUpload)
+                                               uint32_t* const out_numElementsToUpload)
 {
-    uint8_t setterElemSize = setterCols * setterRows;
+    const uint8_t setterElemSize = setterCols * setterRows;
 
     if (IsContextLost())
         return false;
@@ -520,17 +521,20 @@ WebGLContext::ValidateUniformMatrixArraySetter(WebGLUniformLocation* loc,
     if (!ValidateUniformLocation(loc, funcName))
         return false;
 
-    if (!loc->ValidateSizeAndType(setterElemSize, setterType, this, funcName))
+    if (!loc->ValidateSizeAndType(setterElemSize, setterType, funcName))
         return false;
 
-    if (!loc->ValidateArrayLength(setterElemSize, setterArraySize, this, funcName))
+    if (!loc->ValidateArrayLength(setterElemSize, setterArraySize, funcName))
         return false;
 
     if (!ValidateUniformMatrixTranspose(setterTranspose, funcName))
         return false;
 
-    *out_rawLoc = loc->mLoc;
-    *out_numElementsToUpload = std::min((size_t)loc->mActiveInfo->mElemCount,
+    const auto& elemCount = loc->mInfo->mActiveInfo->mElemCount;
+    MOZ_ASSERT(elemCount > loc->mArrayIndex);
+    const uint32_t uniformElemCount = elemCount - loc->mArrayIndex;
+
+    *out_numElementsToUpload = std::min(uniformElemCount,
                                         setterArraySize / setterElemSize);
     return true;
 }
@@ -568,7 +572,7 @@ WebGLContext::ValidateAttribPointer(bool integerMode, GLuint index, GLint size, 
         return false;
     }
 
-    GLsizei requiredAlignment = 0;
+    uint32_t requiredAlignment = 0;
     if (!ValidateAttribPointerType(integerMode, type, &requiredAlignment, info))
         return false;
 
@@ -645,22 +649,26 @@ FloorPOT(int32_t x)
 }
 
 bool
-WebGLContext::InitAndValidateGL()
+WebGLContext::InitAndValidateGL(FailureReason* const out_failReason)
 {
-    if (!gl)
-        return false;
+    MOZ_RELEASE_ASSERT(gl, "GFX: GL not initialized");
 
     // Unconditionally create a new format usage authority. This is
     // important when restoring contexts and extensions need to add
     // formats back into the authority.
     mFormatUsage = CreateFormatUsage(gl);
-    if (!mFormatUsage)
+    if (!mFormatUsage) {
+        *out_failReason = { "FEATURE_FAILURE_WEBGL_FORMAT",
+                            "Failed to create mFormatUsage." };
         return false;
+    }
 
     GLenum error = gl->fGetError();
     if (error != LOCAL_GL_NO_ERROR) {
-        GenerateWarning("GL error 0x%x occurred during OpenGL context"
-                        " initialization, before WebGL initialization!", error);
+        const nsPrintfCString reason("GL error 0x%x occurred during OpenGL context"
+                                     " initialization, before WebGL initialization!",
+                                     error);
+        *out_failReason = { "FEATURE_FAILURE_WEBGL_GLERR_1", reason };
         return false;
     }
 
@@ -749,8 +757,9 @@ WebGLContext::InitAndValidateGL()
         gl->fGetIntegerv(LOCAL_GL_MAX_VERTEX_ATTRIBS, &mGLMaxVertexAttribs);
 
     if (mGLMaxVertexAttribs < 8) {
-        GenerateWarning("GL_MAX_VERTEX_ATTRIBS: %d is < 8!",
-                        mGLMaxVertexAttribs);
+        const nsPrintfCString reason("GL_MAX_VERTEX_ATTRIBS: %d is < 8!",
+                                     mGLMaxVertexAttribs);
+        *out_failReason = { "FEATURE_FAILURE_WEBGL_V_ATRB", reason };
         return false;
     }
 
@@ -763,8 +772,9 @@ WebGLContext::InitAndValidateGL()
         gl->fGetIntegerv(LOCAL_GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, &mGLMaxTextureUnits);
 
     if (mGLMaxTextureUnits < 8) {
-        GenerateWarning("GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS: %d is < 8!",
-                        mGLMaxTextureUnits);
+        const nsPrintfCString reason("GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS: %d is < 8!",
+                                     mGLMaxTextureUnits);
+        *out_failReason = { "FEATURE_FAILURE_WEBGL_T_UNIT", reason };
         return false;
     }
 
@@ -786,8 +796,6 @@ WebGLContext::InitAndValidateGL()
 
         mGLMaxTextureImageUnits = MINVALUE_GL_MAX_TEXTURE_IMAGE_UNITS;
         mGLMaxVertexTextureImageUnits = MINVALUE_GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS;
-
-        mGLMaxSamples = 1;
     } else {
         gl->fGetIntegerv(LOCAL_GL_MAX_TEXTURE_SIZE, (GLint*)&mImplMaxTextureSize);
         gl->fGetIntegerv(LOCAL_GL_MAX_CUBE_MAP_TEXTURE_SIZE, (GLint*)&mImplMaxCubeMapTextureSize);
@@ -800,9 +808,6 @@ WebGLContext::InitAndValidateGL()
 
         gl->fGetIntegerv(LOCAL_GL_MAX_TEXTURE_IMAGE_UNITS, &mGLMaxTextureImageUnits);
         gl->fGetIntegerv(LOCAL_GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS, &mGLMaxVertexTextureImageUnits);
-
-        if (!gl->GetPotentialInteger(LOCAL_GL_MAX_SAMPLES, (GLint*)&mGLMaxSamples))
-            mGLMaxSamples = 1;
     }
 
     // If we don't support a target, its max size is 0. We should only floor-to-POT if the
@@ -916,12 +921,17 @@ WebGLContext::InitAndValidateGL()
     }
 #endif
 
+    if (gl->IsSupported(gl::GLFeature::seamless_cube_map_opt_in)) {
+        gl->fEnable(LOCAL_GL_TEXTURE_CUBE_MAP_SEAMLESS);
+    }
+
     // Check the shader validator pref
     mBypassShaderValidation = gfxPrefs::WebGLBypassShaderValidator();
 
     // initialize shader translator
     if (!ShInitialize()) {
-        GenerateWarning("GLSL translator initialization failed!");
+        *out_failReason = { "FEATURE_FAILURE_WEBGL_GLSL",
+                            "GLSL translator initialization failed!" };
         return false;
     }
 
@@ -935,13 +945,15 @@ WebGLContext::InitAndValidateGL()
     // getError call will give the correct result.
     error = gl->fGetError();
     if (error != LOCAL_GL_NO_ERROR) {
-        GenerateWarning("GL error 0x%x occurred during WebGL context"
-                        " initialization!", error);
+        const nsPrintfCString reason("GL error 0x%x occurred during WebGL context"
+                                     " initialization!",
+                                     error);
+        *out_failReason = { "FEATURE_FAILURE_WEBGL_GLERR_2", reason };
         return false;
     }
 
     if (IsWebGL2() &&
-        !InitWebGL2())
+        !InitWebGL2(out_failReason))
     {
         // Todo: Bug 898404: Only allow WebGL2 on GL>=3.0 on desktop GL.
         return false;
@@ -988,6 +1000,8 @@ WebGLContext::InitAndValidateGL()
     mPixelStore_PackSkipRows = 0;
     mPixelStore_PackSkipPixels = 0;
     mPixelStore_PackAlignment = 4;
+
+    mPrimRestartTypeBytes = 0;
 
     return true;
 }

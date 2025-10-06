@@ -12,6 +12,8 @@ if (AppConstants.MOZ_SERVICES_CLOUDSYNC) {
 XPCOMUtils.defineLazyModuleGetter(this, "fxAccounts",
                                   "resource://gre/modules/FxAccounts.jsm");
 
+const MIN_STATUS_ANIMATION_DURATION = 1600;
+
 // gSyncUI handles updating the tools menu and displaying notifications.
 var gSyncUI = {
   _obs: ["weave:service:sync:start",
@@ -28,11 +30,14 @@ var gSyncUI = {
          "weave:ui:sync:error",
          "weave:ui:sync:finish",
          "weave:ui:clear-error",
+         "weave:engine:sync:finish"
   ],
 
   _unloaded: false,
-  // The number of "active" syncs - while this is non-zero, our button will spin
-  _numActiveSyncTasks: 0,
+  // The last sync start time. Used to calculate the leftover animation time
+  // once syncing completes (bug 1239042).
+  _syncStartTime: 0,
+  _syncAnimationTimer: 0,
 
   init: function () {
     Cu.import("resource://services-common/stringbundle.js");
@@ -51,6 +56,7 @@ var gSyncUI = {
     this.updateUI();
 
     Services.obs.addObserver(this, "weave:service:ready", true);
+    Services.obs.addObserver(this, "quit-application", true);
 
     // Remove the observer if the window is closed before the observer
     // was triggered.
@@ -58,6 +64,7 @@ var gSyncUI = {
       gSyncUI._unloaded = true;
       window.removeEventListener("unload", onUnload, false);
       Services.obs.removeObserver(gSyncUI, "weave:service:ready");
+      Services.obs.removeObserver(gSyncUI, "quit-application");
 
       if (Weave.Status.ready) {
         gSyncUI._obs.forEach(function(topic) {
@@ -167,6 +174,9 @@ var gSyncUI = {
   // Updates the UI - returns a promise.
   _promiseUpdateUI() {
     return this._needsSetup().then(needsSetup => {
+      if (!gBrowser)
+        return Promise.resolve();
+
       let loginFailed = this._loginFailed();
 
       // Start off with a clean slate
@@ -194,38 +204,43 @@ var gSyncUI = {
     if (!gBrowser)
       return;
 
-    this.log.debug("onActivityStart with numActive", this._numActiveSyncTasks);
-    if (++this._numActiveSyncTasks == 1) {
-      let button = document.getElementById("sync-button");
-      if (button) {
-        button.setAttribute("status", "active");
-      }
-      button = document.getElementById("PanelUI-fxa-status");
-      if (button) {
-        button.setAttribute("syncstatus", "active");
-      }
-    }
+    this.log.debug("onActivityStart");
+
+    clearTimeout(this._syncAnimationTimer);
+    this._syncStartTime = Date.now();
+
+    let broadcaster = document.getElementById("sync-status");
+    broadcaster.setAttribute("syncstatus", "active");
+    broadcaster.setAttribute("label", this._stringBundle.GetStringFromName("syncing2.label"));
+    broadcaster.setAttribute("disabled", "true");
+
+    this.updateUI();
+  },
+
+  _updateSyncStatus() {
+    if (!gBrowser)
+      return;
+    let broadcaster = document.getElementById("sync-status");
+    broadcaster.removeAttribute("syncstatus");
+    broadcaster.removeAttribute("disabled");
+    broadcaster.setAttribute("label", this._stringBundle.GetStringFromName("syncnow.label"));
     this.updateUI();
   },
 
   onActivityStop() {
     if (!gBrowser)
       return;
-    this.log.debug("onActivityStop with numActive", this._numActiveSyncTasks);
-    if (--this._numActiveSyncTasks) {
-      if (this._numActiveSyncTasks < 0) {
-        // This isn't particularly useful (it seems more likely we'll set a
-        // "start" without a "stop" meaning it forever remains > 0) but it
-        // might offer some value...
-        this.log.error("mismatched onActivityStart/Stop calls",
-                       new Error("active=" + this._numActiveSyncTasks));
-      }
-      return; // active tasks are still ongoing...
-    }
+    this.log.debug("onActivityStop");
 
-    let syncButton = document.getElementById("sync-button");
-    if (syncButton) {
-      syncButton.removeAttribute("status");
+    let now = Date.now();
+    let syncDuration = now - this._syncStartTime;
+
+    if (syncDuration < MIN_STATUS_ANIMATION_DURATION) {
+      let animationTime = MIN_STATUS_ANIMATION_DURATION - syncDuration;
+      clearTimeout(this._syncAnimationTimer);
+      this._syncAnimationTimer = setTimeout(() => this._updateSyncStatus(), animationTime);
+    } else {
+      this._updateSyncStatus();
     }
     let fxaContainer = document.getElementById("PanelUI-footer-fxa");
     if (fxaContainer) {
@@ -278,7 +293,7 @@ var gSyncUI = {
       if (needsSetup || this._loginFailed()) {
         this.openSetup();
       } else {
-        return this.doSync();
+        this.doSync();
       }
     }).catch(err => {
       this.log.error("Failed to handle toolbar button command", err);
@@ -335,8 +350,8 @@ var gSyncUI = {
   },
 
 
-  /* Update the tooltip for the Sync Toolbar button and the Sync spinner in the
-     FxA hamburger area.
+  /* Update the tooltip for the sync-status broadcaster (which will update the
+     Sync Toolbar button and the Sync spinner in the FxA hamburger area.)
      If Sync is configured, the tooltip is when the last sync occurred,
      otherwise the tooltip reflects the fact that Sync needs to be
      (re-)configured.
@@ -386,16 +401,13 @@ var gSyncUI = {
     // sure it hasn't been torn down since we started.
     if (!gBrowser)
       return;
-    let syncButton = document.getElementById("sync-button");
-    let statusButton = document.getElementById("PanelUI-fxa-icon");
 
-    for (let button of [syncButton, statusButton]) {
-      if (button) {
-        if (tooltiptext) {
-          button.setAttribute("tooltiptext", tooltiptext);
-        } else {
-          button.removeAttribute("tooltiptext");
-        }
+    let broadcaster = document.getElementById("sync-status");
+    if (broadcaster) {
+      if (tooltiptext) {
+        broadcaster.setAttribute("tooltiptext", tooltiptext);
+      } else {
+        broadcaster.removeAttribute("tooltiptext");
       }
     }
   }),
@@ -415,6 +427,17 @@ var gSyncUI = {
       title = this._stringBundle.GetStringFromName("error.sync.no_node_found.title");
       this.clearError(title);
       this._wasDelayed = false;
+    }
+  },
+
+  onClientsSynced: function() {
+    let broadcaster = document.getElementById("sync-syncnow-state");
+    if (broadcaster) {
+      if (Weave.Service.clientsEngine.stats.numClients > 1) {
+        broadcaster.setAttribute("devices-status", "multi");
+      } else {
+        broadcaster.setAttribute("devices-status", "single");
+      }
     }
   },
 
@@ -478,6 +501,17 @@ var gSyncUI = {
         break;
       case "weave:ui:clear-error":
         this.clearError();
+        break;
+      case "quit-application":
+        // Stop the animation timer on shutdown, since we can't update the UI
+        // after this.
+        clearTimeout(this._syncAnimationTimer);
+        break;
+      case "weave:engine:sync:finish":
+        if (data != "clients") {
+          return;
+        }
+        this.onClientsSynced();
         break;
     }
   },

@@ -362,9 +362,8 @@ nsMathMLmoFrame::ProcessOperatorData()
       // Cache the default values of lspace and rspace.
       // since these values are relative to the 'em' unit, convert to twips now
       nscoord em;
-      RefPtr<nsFontMetrics> fm;
-      nsLayoutUtils::GetFontMetricsForFrame(this, getter_AddRefs(fm),
-                                            fontSizeInflation);
+      RefPtr<nsFontMetrics> fm =
+        nsLayoutUtils::GetFontMetricsForFrame(this, fontSizeInflation);
       GetEmHeight(fm, em);
 
       mEmbellishData.leadingSpace = NSToCoordRound(lspace * em);
@@ -607,7 +606,7 @@ NS_IMETHODIMP
 nsMathMLmoFrame::Stretch(DrawTarget*          aDrawTarget,
                          nsStretchDirection   aStretchDirection,
                          nsBoundingMetrics&   aContainerSize,
-                         nsHTMLReflowMetrics& aDesiredStretchSize)
+                         ReflowOutput& aDesiredStretchSize)
 {
   if (NS_MATHML_STRETCH_WAS_DONE(mPresentationData.flags)) {
     NS_WARNING("it is wrong to fire stretch more than once on a frame");
@@ -619,9 +618,8 @@ nsMathMLmoFrame::Stretch(DrawTarget*          aDrawTarget,
 
   // get the axis height;
   float fontSizeInflation = nsLayoutUtils::FontSizeInflationFor(this);
-  RefPtr<nsFontMetrics> fm;
-  nsLayoutUtils::GetFontMetricsForFrame(this, getter_AddRefs(fm),
-                                        fontSizeInflation);
+  RefPtr<nsFontMetrics> fm =
+    nsLayoutUtils::GetFontMetricsForFrame(this, fontSizeInflation);
   nscoord axisHeight, height;
   GetAxisHeight(aDrawTarget, fm, axisHeight);
 
@@ -946,8 +944,8 @@ nsMathMLmoFrame::SetInitialChildList(ChildListID     aListID,
 
 void
 nsMathMLmoFrame::Reflow(nsPresContext*          aPresContext,
-                        nsHTMLReflowMetrics&     aDesiredSize,
-                        const nsHTMLReflowState& aReflowState,
+                        ReflowOutput&     aDesiredSize,
+                        const ReflowInput& aReflowInput,
                         nsReflowStatus&          aStatus)
 {
   // certain values use units that depend on our style context, so
@@ -955,13 +953,13 @@ nsMathMLmoFrame::Reflow(nsPresContext*          aPresContext,
   ProcessOperatorData();
 
   nsMathMLTokenFrame::Reflow(aPresContext, aDesiredSize,
-                             aReflowState, aStatus);
+                             aReflowInput, aStatus);
 }
 
 nsresult
 nsMathMLmoFrame::Place(DrawTarget*          aDrawTarget,
                        bool                 aPlaceOrigin,
-                       nsHTMLReflowMetrics& aDesiredSize)
+                       ReflowOutput& aDesiredSize)
 {
   nsresult rv = nsMathMLTokenFrame::Place(aDrawTarget, aPlaceOrigin, aDesiredSize);
 
@@ -1038,7 +1036,7 @@ nsMathMLmoFrame::MarkIntrinsicISizesDirty()
 
 /* virtual */ void
 nsMathMLmoFrame::GetIntrinsicISizeMetrics(nsRenderingContext* aRenderingContext,
-                                          nsHTMLReflowMetrics& aDesiredSize)
+                                          ReflowOutput& aDesiredSize)
 {
   ProcessOperatorData();
   if (UseMathMLChar()) {

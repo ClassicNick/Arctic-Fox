@@ -22,27 +22,18 @@ using namespace mozilla;
 using namespace mozilla::gfx;
 using namespace mozilla::image;
 
-
-TEST(ImageDecodeToSurface, ImageModuleAvailable)
-{
-  // We can run into problems if XPCOM modules get initialized in the wrong
-  // order. It's important that this test run first, both as a sanity check and
-  // to ensure we get the module initialization order we want.
-  nsCOMPtr<imgITools> imgTools =
-    do_CreateInstance("@mozilla.org/image/tools;1");
-  EXPECT_TRUE(imgTools != nullptr);
-}
-
-class DecodeToSurfaceRunnable : public nsRunnable
+class DecodeToSurfaceRunnable : public Runnable
 {
 public:
-  DecodeToSurfaceRunnable(nsIInputStream* aInputStream,
+  DecodeToSurfaceRunnable(RefPtr<SourceSurface>& aSurface,
+                          nsIInputStream* aInputStream,
                           const ImageTestCase& aTestCase)
-    : mInputStream(aInputStream)
+    : mSurface(aSurface)
+    , mInputStream(aInputStream)
     , mTestCase(aTestCase)
   { }
 
-  NS_IMETHOD Run()
+  NS_IMETHOD Run() override
   {
     Go();
     return NS_OK;
@@ -50,22 +41,23 @@ public:
 
   void Go()
   {
-    RefPtr<SourceSurface> surface =
+    mSurface =
       ImageOps::DecodeToSurface(mInputStream,
-                                nsAutoCString(mTestCase.mMimeType),
+                                nsDependentCString(mTestCase.mMimeType),
                                 imgIContainer::DECODE_FLAGS_DEFAULT);
-    ASSERT_TRUE(surface != nullptr);
+    ASSERT_TRUE(mSurface != nullptr);
 
-    EXPECT_EQ(SurfaceType::DATA, surface->GetType());
-    EXPECT_TRUE(surface->GetFormat() == SurfaceFormat::B8G8R8X8 ||
-                surface->GetFormat() == SurfaceFormat::B8G8R8A8);
-    EXPECT_EQ(mTestCase.mSize, surface->GetSize());
+    EXPECT_EQ(SurfaceType::DATA, mSurface->GetType());
+    EXPECT_TRUE(mSurface->GetFormat() == SurfaceFormat::B8G8R8X8 ||
+                mSurface->GetFormat() == SurfaceFormat::B8G8R8A8);
+    EXPECT_EQ(mTestCase.mSize, mSurface->GetSize());
 
-    EXPECT_TRUE(IsSolidColor(surface, BGRAColor::Green(),
-                             mTestCase.mFlags & TEST_CASE_IS_FUZZY));
+    EXPECT_TRUE(IsSolidColor(mSurface, BGRAColor::Green(),
+                             mTestCase.mFlags & TEST_CASE_IS_FUZZY ? 1 : 0));
   }
 
 private:
+  RefPtr<SourceSurface>& mSurface;
   nsCOMPtr<nsIInputStream> mInputStream;
   ImageTestCase mTestCase;
 };
@@ -82,31 +74,46 @@ RunDecodeToSurface(const ImageTestCase& aTestCase)
 
   // We run the DecodeToSurface tests off-main-thread to ensure that
   // DecodeToSurface doesn't require any main-thread-only code.
+  RefPtr<SourceSurface> surface;
   nsCOMPtr<nsIRunnable> runnable =
-    new DecodeToSurfaceRunnable(inputStream, aTestCase);
+    new DecodeToSurfaceRunnable(surface, inputStream, aTestCase);
   thread->Dispatch(runnable, nsIThread::DISPATCH_SYNC);
 
   thread->Shutdown();
+
+  // Explicitly release the SourceSurface on the main thread.
+  surface = nullptr;
 }
 
-TEST(ImageDecodeToSurface, PNG) { RunDecodeToSurface(GreenPNGTestCase()); }
-TEST(ImageDecodeToSurface, GIF) { RunDecodeToSurface(GreenGIFTestCase()); }
-TEST(ImageDecodeToSurface, JPG) { RunDecodeToSurface(GreenJPGTestCase()); }
-TEST(ImageDecodeToSurface, BMP) { RunDecodeToSurface(GreenBMPTestCase()); }
-TEST(ImageDecodeToSurface, ICO) { RunDecodeToSurface(GreenICOTestCase()); }
-TEST(ImageDecodeToSurface, Icon) { RunDecodeToSurface(GreenIconTestCase()); }
+class ImageDecodeToSurface : public ::testing::Test
+{
+  protected:
+  static void SetUpTestCase()
+  {
+    // Ensure that ImageLib services are initialized.
+    nsCOMPtr<imgITools> imgTools = do_CreateInstance("@mozilla.org/image/tools;1");
+    EXPECT_TRUE(imgTools != nullptr);
+  }
+};
 
-TEST(ImageDecodeToSurface, AnimatedGIF)
+TEST_F(ImageDecodeToSurface, PNG) { RunDecodeToSurface(GreenPNGTestCase()); }
+TEST_F(ImageDecodeToSurface, GIF) { RunDecodeToSurface(GreenGIFTestCase()); }
+TEST_F(ImageDecodeToSurface, JPG) { RunDecodeToSurface(GreenJPGTestCase()); }
+TEST_F(ImageDecodeToSurface, BMP) { RunDecodeToSurface(GreenBMPTestCase()); }
+TEST_F(ImageDecodeToSurface, ICO) { RunDecodeToSurface(GreenICOTestCase()); }
+TEST_F(ImageDecodeToSurface, Icon) { RunDecodeToSurface(GreenIconTestCase()); }
+
+TEST_F(ImageDecodeToSurface, AnimatedGIF)
 {
   RunDecodeToSurface(GreenFirstFrameAnimatedGIFTestCase());
 }
 
-TEST(ImageDecodeToSurface, AnimatedPNG)
+TEST_F(ImageDecodeToSurface, AnimatedPNG)
 {
   RunDecodeToSurface(GreenFirstFrameAnimatedPNGTestCase());
 }
 
-TEST(ImageDecodeToSurface, Corrupt)
+TEST_F(ImageDecodeToSurface, Corrupt)
 {
   ImageTestCase testCase = CorruptTestCase();
 
@@ -115,7 +122,7 @@ TEST(ImageDecodeToSurface, Corrupt)
 
   RefPtr<SourceSurface> surface =
     ImageOps::DecodeToSurface(inputStream,
-                              nsAutoCString(testCase.mMimeType),
+                              nsDependentCString(testCase.mMimeType),
                               imgIContainer::DECODE_FLAGS_DEFAULT);
   EXPECT_TRUE(surface == nullptr);
 }

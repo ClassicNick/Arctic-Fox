@@ -163,20 +163,9 @@ nsDOMAttributeMap::NamedGetter(const nsAString& aAttrName, bool& aFound)
   return GetAttribute(ni);
 }
 
-bool
-nsDOMAttributeMap::NameIsEnumerable(const nsAString& aName)
-{
-  return false;
-}
-
 void
-nsDOMAttributeMap::GetSupportedNames(unsigned aFlags,
-                                     nsTArray<nsString>& aNames)
+nsDOMAttributeMap::GetSupportedNames(nsTArray<nsString>& aNames)
 {
-  if (!(aFlags & JSITER_HIDDEN)) {
-    return;
-  }
-
   // For HTML elements in HTML documents, only include names that are still the
   // same after ASCII-lowercasing, since our named getter will end up
   // ASCII-lowercasing the given string.
@@ -457,7 +446,8 @@ nsDOMAttributeMap::GetAttrNodeInfo(const nsAString& aNamespaceURI,
 
   if (!aNamespaceURI.IsEmpty()) {
     nameSpaceID =
-      nsContentUtils::NameSpaceManager()->GetNameSpaceID(aNamespaceURI);
+      nsContentUtils::NameSpaceManager()->GetNameSpaceID(aNamespaceURI,
+                                                         nsContentUtils::IsChromeDoc(mContent->OwnerDoc()));
 
     if (nameSpaceID == kNameSpaceID_Unknown) {
       return nullptr;

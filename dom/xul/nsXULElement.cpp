@@ -30,11 +30,11 @@
 #include "nsIDOMNodeList.h"
 #include "nsIDOMXULCommandDispatcher.h"
 #include "nsIDOMXULElement.h"
-#include "nsIDOMElementCSSInlineStyle.h"
 #include "nsIDOMXULSelectCntrlItemEl.h"
 #include "nsIDocument.h"
 #include "nsLayoutStylesheetCache.h"
 #include "mozilla/AsyncEventDispatcher.h"
+#include "mozilla/ClearOnShutdown.h"
 #include "mozilla/EventListenerManager.h"
 #include "mozilla/EventStateManager.h"
 #include "mozilla/EventStates.h"
@@ -110,6 +110,7 @@
 
 #include "mozilla/dom/XULElementBinding.h"
 #include "mozilla/dom/BoxObject.h"
+#include "mozilla/dom/HTMLIFrameElement.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
@@ -123,27 +124,19 @@ uint32_t             nsXULPrototypeAttribute::gNumCacheSets;
 uint32_t             nsXULPrototypeAttribute::gNumCacheFills;
 #endif
 
-class nsXULElementTearoff final : public nsIDOMElementCSSInlineStyle,
-                                  public nsIFrameLoaderOwner
+class nsXULElementTearoff final : public nsIFrameLoaderOwner
 {
   ~nsXULElementTearoff() {}
 
 public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_CLASS_AMBIGUOUS(nsXULElementTearoff,
-                                           nsIDOMElementCSSInlineStyle)
+  NS_DECL_CYCLE_COLLECTION_CLASS(nsXULElementTearoff)
 
   explicit nsXULElementTearoff(nsXULElement* aElement)
     : mElement(aElement)
   {
   }
 
-  NS_IMETHOD GetStyle(nsIDOMCSSStyleDeclaration** aStyle) override
-  {
-    nsXULElement* element = static_cast<nsXULElement*>(mElement.get());
-    NS_ADDREF(*aStyle = element->Style());
-    return NS_OK;
-  }
   NS_FORWARD_NSIFRAMELOADEROWNER(static_cast<nsXULElement*>(mElement.get())->)
 private:
   nsCOMPtr<nsIDOMXULElement> mElement;
@@ -156,7 +149,6 @@ NS_IMPL_CYCLE_COLLECTING_RELEASE(nsXULElementTearoff)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(nsXULElementTearoff)
   NS_INTERFACE_MAP_ENTRY(nsIFrameLoaderOwner)
-  NS_INTERFACE_MAP_ENTRY(nsIDOMElementCSSInlineStyle)
 NS_INTERFACE_MAP_END_AGGREGATED(mElement)
 
 //----------------------------------------------------------------------
@@ -352,8 +344,6 @@ NS_INTERFACE_TABLE_HEAD_CYCLE_COLLECTION_INHERITED(nsXULElement)
     NS_INTERFACE_TABLE_INHERITED(nsXULElement, nsIDOMNode, nsIDOMElement,
                                  nsIDOMXULElement)
     NS_ELEMENT_INTERFACE_TABLE_TO_MAP_SEGUE
-    NS_INTERFACE_MAP_ENTRY_TEAROFF(nsIDOMElementCSSInlineStyle,
-                                   new nsXULElementTearoff(this))
     NS_INTERFACE_MAP_ENTRY_TEAROFF(nsIFrameLoaderOwner,
                                    new nsXULElementTearoff(this))
 NS_INTERFACE_MAP_END_INHERITING(nsStyledElement)
@@ -384,9 +374,9 @@ nsXULElement::Clone(mozilla::dom::NodeInfo *aNodeInfo, nsINode **aResult) const
         nsAttrValue attrValue;
 
         // Style rules need to be cloned.
-        if (originalValue->Type() == nsAttrValue::eCSSDeclaration) {
-            RefPtr<css::Declaration> declClone =
-              new css::Declaration(*originalValue->GetCSSDeclarationValue());
+        if (originalValue->Type() == nsAttrValue::eGeckoCSSDeclaration) {
+            RefPtr<css::Declaration> declClone = new css::Declaration(
+                *originalValue->GetGeckoCSSDeclarationValue());
 
             nsString stringValue;
             originalValue->ToString(stringValue);
@@ -436,7 +426,7 @@ already_AddRefed<nsINodeList>
 nsXULElement::GetElementsByAttribute(const nsAString& aAttribute,
                                      const nsAString& aValue)
 {
-    nsCOMPtr<nsIAtom> attrAtom(do_GetAtom(aAttribute));
+    nsCOMPtr<nsIAtom> attrAtom(NS_Atomize(aAttribute));
     void* attrValue = new nsString(aValue);
     RefPtr<nsContentList> list =
         new nsContentList(this,
@@ -467,7 +457,7 @@ nsXULElement::GetElementsByAttributeNS(const nsAString& aNamespaceURI,
                                        const nsAString& aValue,
                                        ErrorResult& rv)
 {
-    nsCOMPtr<nsIAtom> attrAtom(do_GetAtom(aAttribute));
+    nsCOMPtr<nsIAtom> attrAtom(NS_Atomize(aAttribute));
 
     int32_t nameSpaceId = kNameSpaceID_Wildcard;
     if (!aNamespaceURI.EqualsLiteral("*")) {
@@ -808,12 +798,12 @@ IsInFeedSubscribeLine(nsXULElement* aElement)
 }
 #endif
 
-class XULInContentErrorReporter : public nsRunnable
+class XULInContentErrorReporter : public Runnable
 {
 public:
   explicit XULInContentErrorReporter(nsIDocument* aDocument) : mDocument(aDocument) {}
 
-  NS_IMETHOD Run()
+  NS_IMETHOD Run() override
   {
     mDocument->WarnOnceAbout(nsIDocument::eImportXULIntoContent, false);
     return NS_OK;
@@ -858,7 +848,8 @@ nsXULElement::BindToTree(nsIDocument* aDocument,
     // can be moved from the document that creates them to another document.
 
     if (!XULElementsRulesInMinimalXULSheet(NodeInfo()->NameAtom())) {
-      doc->EnsureOnDemandBuiltInUASheet(nsLayoutStylesheetCache::XULSheet());
+      auto cache = nsLayoutStylesheetCache::For(doc->GetStyleBackendType());
+      doc->EnsureOnDemandBuiltInUASheet(cache->XULSheet());
       // To keep memory usage down it is important that we try and avoid
       // pulling xul.css into non-XUL documents. That should be very rare, and
       // for HTML we currently should only pull it in if the document contains
@@ -1048,14 +1039,14 @@ nsXULElement::BeforeSetAttr(int32_t aNamespaceID, nsIAtom* aName,
                             nsAttrValueOrString* aValue, bool aNotify)
 {
     if (aNamespaceID == kNameSpaceID_None && aName == nsGkAtoms::accesskey &&
-        IsInDoc()) {
+        IsInUncomposedDoc()) {
         nsAutoString oldValue;
         if (GetAttr(aNamespaceID, aName, oldValue)) {
             UnregisterAccessKey(oldValue);
         }
     } else if (aNamespaceID == kNameSpaceID_None &&
                (aName == nsGkAtoms::command || aName == nsGkAtoms::observes) &&
-               IsInDoc()) {
+               IsInUncomposedDoc()) {
 //         XXX sXBL/XBL2 issue! Owner or current document?
         nsAutoString oldValue;
         GetAttr(kNameSpaceID_None, nsGkAtoms::observes, oldValue);
@@ -1277,8 +1268,7 @@ nsXULElement::PreHandleEvent(EventChainPreVisitor& aVisitor)
          aVisitor.mEvent->mMessage == eMouseDoubleClick ||
          aVisitor.mEvent->mMessage == eXULCommand ||
          aVisitor.mEvent->mMessage == eContextMenu ||
-         aVisitor.mEvent->mMessage == eDragStart ||
-         aVisitor.mEvent->mMessage == eLegacyDragGesture)) {
+         aVisitor.mEvent->mMessage == eDragStart)) {
         // Don't propagate these events from native anonymous scrollbar.
         aVisitor.mCanHandle = true;
         aVisitor.mParentTarget = nullptr;
@@ -1286,7 +1276,7 @@ nsXULElement::PreHandleEvent(EventChainPreVisitor& aVisitor)
     }
     if (aVisitor.mEvent->mMessage == eXULCommand &&
         aVisitor.mEvent->mClass == eInputEventClass &&
-        aVisitor.mEvent->originalTarget == static_cast<nsIContent*>(this) &&
+        aVisitor.mEvent->mOriginalTarget == static_cast<nsIContent*>(this) &&
         !IsXULElement(nsGkAtoms::command)) {
         // Check that we really have an xul command event. That will be handled
         // in a special way.
@@ -1330,7 +1320,7 @@ nsXULElement::PreHandleEvent(EventChainPreVisitor& aVisitor)
                 WidgetInputEvent* orig = aVisitor.mEvent->AsInputEvent();
                 nsContentUtils::DispatchXULCommand(
                   commandContent,
-                  aVisitor.mEvent->mFlags.mIsTrusted,
+                  aVisitor.mEvent->IsTrusted(),
                   aVisitor.mDOMEvent,
                   nullptr,
                   orig->IsControl(),
@@ -1430,7 +1420,7 @@ nsChangeHint
 nsXULElement::GetAttributeChangeHint(const nsIAtom* aAttribute,
                                      int32_t aModType) const
 {
-    nsChangeHint retval(NS_STYLE_HINT_NONE);
+    nsChangeHint retval(nsChangeHint(0));
 
     if (aAttribute == nsGkAtoms::value &&
         (aModType == nsIDOMMutationEvent::REMOVAL ||
@@ -1441,7 +1431,7 @@ nsXULElement::GetAttributeChangeHint(const nsIAtom* aAttribute,
         // value attribute is being added or removed, then we need to
         // return a hint of frame change.  (See bugzilla bug 95475 for
         // details.)
-        retval = NS_STYLE_HINT_FRAMECHANGE;
+        retval = nsChangeHint_ReconstructFrame;
     } else {
         // if left or top changes we reflow. This will happen in xul
         // containers that manage positioned children such as a stack.
@@ -1569,7 +1559,7 @@ nsXULElement::LoadSrc()
                             nsGkAtoms::iframe)) {
         return NS_OK;
     }
-    if (!IsInDoc() ||
+    if (!IsInUncomposedDoc() ||
         !OwnerDoc()->GetRootElement() ||
         OwnerDoc()->GetRootElement()->
             NodeInfo()->Equals(nsGkAtoms::overlay, kNameSpaceID_XUL)) {
@@ -1599,7 +1589,7 @@ nsXULElement::LoadSrc()
 }
 
 nsresult
-nsXULElement::GetFrameLoader(nsIFrameLoader **aFrameLoader)
+nsXULElement::GetFrameLoaderXPCOM(nsIFrameLoader **aFrameLoader)
 {
     *aFrameLoader = GetFrameLoader().take();
     return NS_OK;
@@ -1634,41 +1624,51 @@ nsXULElement::SetIsPrerendered()
                  NS_LITERAL_STRING("true"), true);
 }
 
-nsresult
-nsXULElement::SwapFrameLoaders(nsIFrameLoaderOwner* aOtherOwner)
-{
-    nsCOMPtr<nsIContent> otherContent(do_QueryInterface(aOtherOwner));
-    NS_ENSURE_TRUE(otherContent, NS_ERROR_NOT_IMPLEMENTED);
-
-    nsXULElement* otherEl = FromContent(otherContent);
-    NS_ENSURE_TRUE(otherEl, NS_ERROR_NOT_IMPLEMENTED);
-
-    ErrorResult rv;
-    SwapFrameLoaders(*otherEl, rv);
-    return rv.StealNSResult();
-}
-
 void
-nsXULElement::SwapFrameLoaders(nsXULElement& aOtherElement, ErrorResult& rv)
+nsXULElement::SwapFrameLoaders(HTMLIFrameElement& aOtherLoaderOwner,
+                               ErrorResult& rv)
 {
-    if (&aOtherElement == this) {
-        // nothing to do
-        return;
-    }
-
     nsXULSlots *ourSlots = static_cast<nsXULSlots*>(GetExistingDOMSlots());
-    nsXULSlots *otherSlots =
-        static_cast<nsXULSlots*>(aOtherElement.GetExistingDOMSlots());
-    if (!ourSlots || !ourSlots->mFrameLoader ||
-        !otherSlots || !otherSlots->mFrameLoader) {
-        // Can't handle swapping when there is nothing to swap... yet.
+    if (!ourSlots) {
         rv.Throw(NS_ERROR_NOT_IMPLEMENTED);
         return;
     }
 
-    rv = ourSlots->mFrameLoader->SwapWithOtherLoader(otherSlots->mFrameLoader,
+    aOtherLoaderOwner.SwapFrameLoaders(ourSlots->mFrameLoader, rv);
+}
+
+void
+nsXULElement::SwapFrameLoaders(nsXULElement& aOtherLoaderOwner,
+                               ErrorResult& rv)
+{
+    if (&aOtherLoaderOwner == this) {
+        // nothing to do
+        return;
+    }
+
+    nsXULSlots *otherSlots =
+        static_cast<nsXULSlots*>(aOtherLoaderOwner.GetExistingDOMSlots());
+    if (!otherSlots) {
+        rv.Throw(NS_ERROR_NOT_IMPLEMENTED);
+        return;
+    }
+
+    SwapFrameLoaders(otherSlots->mFrameLoader, rv);
+}
+
+void
+nsXULElement::SwapFrameLoaders(RefPtr<nsFrameLoader>& aOtherLoader,
+                               mozilla::ErrorResult& rv)
+{
+    nsXULSlots *ourSlots = static_cast<nsXULSlots*>(GetExistingDOMSlots());
+    if (!ourSlots || !ourSlots->mFrameLoader || !aOtherLoader) {
+        rv.Throw(NS_ERROR_NOT_IMPLEMENTED);
+        return;
+    }
+
+    rv = ourSlots->mFrameLoader->SwapWithOtherLoader(aOtherLoader,
                                                      ourSlots->mFrameLoader,
-                                                     otherSlots->mFrameLoader);
+                                                     aOtherLoader);
 }
 
 NS_IMETHODIMP
@@ -1697,39 +1697,12 @@ nsXULElement::Focus()
     return rv.StealNSResult();
 }
 
-void
-nsXULElement::Focus(ErrorResult& rv)
-{
-    nsIFocusManager* fm = nsFocusManager::GetFocusManager();
-    nsCOMPtr<nsIDOMElement> elem = do_QueryObject(this);
-    if (fm) {
-        rv = fm->SetFocus(this, 0);
-    }
-}
-
 NS_IMETHODIMP
 nsXULElement::Blur()
 {
     ErrorResult rv;
     Blur(rv);
     return rv.StealNSResult();
-}
-
-void
-nsXULElement::Blur(ErrorResult& rv)
-{
-    if (!ShouldBlur(this))
-      return;
-
-    nsIDocument* doc = GetComposedDoc();
-    if (!doc)
-      return;
-
-    nsPIDOMWindowOuter* win = doc->GetWindow();
-    nsIFocusManager* fm = nsFocusManager::GetFocusManager();
-    if (win && fm) {
-      rv = fm->ClearFocus(win);
-    }
 }
 
 NS_IMETHODIMP
@@ -1872,9 +1845,9 @@ nsXULElement::MakeHeavyweight(nsXULPrototypeElement* aPrototype)
         nsAttrValue attrValue;
 
         // Style rules need to be cloned.
-        if (protoattr->mValue.Type() == nsAttrValue::eCSSDeclaration) {
+        if (protoattr->mValue.Type() == nsAttrValue::eGeckoCSSDeclaration) {
             RefPtr<css::Declaration> declClone = new css::Declaration(
-              *protoattr->mValue.GetCSSDeclarationValue());
+              *protoattr->mValue.GetGeckoCSSDeclarationValue());
 
             nsString stringValue;
             protoattr->mValue.ToString(stringValue);
@@ -1955,7 +1928,7 @@ nsXULElement::SetTitlebarColor(nscolor aColor, bool aActive)
     }
 }
 
-class SetDrawInTitleBarEvent : public nsRunnable
+class SetDrawInTitleBarEvent : public Runnable
 {
 public:
   SetDrawInTitleBarEvent(nsIWidget* aWidget, bool aState)
@@ -1963,7 +1936,7 @@ public:
     , mState(aState)
   {}
 
-  NS_IMETHOD Run() {
+  NS_IMETHOD Run() override {
     NS_ASSERTION(mWidget, "You shouldn't call this runnable with a null widget!");
 
     mWidget->SetDrawsInTitlebar(mState);
@@ -2011,7 +1984,7 @@ nsXULElement::UpdateBrightTitlebarForeground(nsIDocument* aDoc)
     }
 }
 
-class MarginSetter : public nsRunnable
+class MarginSetter : public Runnable
 {
 public:
     explicit MarginSetter(nsIWidget* aWidget) :
@@ -2021,7 +1994,7 @@ public:
         mWidget(aWidget), mMargin(aMargin)
     {}
 
-    NS_IMETHOD Run()
+    NS_IMETHOD Run() override
     {
         // SetNonClientMargins can dispatch native events, hence doing
         // it off a script runner.
@@ -2524,10 +2497,11 @@ nsXULPrototypeScript::Serialize(nsIObjectOutputStream* aStream,
                                 const nsTArray<RefPtr<mozilla::dom::NodeInfo>> *aNodeInfos)
 {
     NS_ENSURE_TRUE(aProtoDoc, NS_ERROR_UNEXPECTED);
-    AutoSafeJSContext cx;
-    JS::Rooted<JSObject*> global(cx, xpc::CompilationScope());
-    NS_ENSURE_TRUE(global, NS_ERROR_UNEXPECTED);
-    JSAutoCompartment ac(cx, global);
+
+    AutoJSAPI jsapi;
+    if (!jsapi.Init(xpc::CompilationScope())) {
+        return NS_ERROR_UNEXPECTED;
+    }
 
     NS_ASSERTION(!mSrcLoading || mSrcLoadWaiters != nullptr ||
                  !mScriptObject,
@@ -2547,6 +2521,7 @@ nsXULPrototypeScript::Serialize(nsIObjectOutputStream* aStream,
     // been set.
     JS::Handle<JSScript*> script =
         JS::Handle<JSScript*>::fromMarkedLocation(mScriptObject.address());
+    JSContext* cx = jsapi.cx();
     MOZ_ASSERT(xpc::CompilationScope() == JS::CurrentGlobalOrNull(cx));
     return nsContentUtils::XPConnect()->WriteScript(aStream, cx,
                                                     xpc_UnmarkGrayScript(script));
@@ -2616,10 +2591,11 @@ nsXULPrototypeScript::Deserialize(nsIObjectInputStream* aStream,
     rv = aStream->Read32(&mLangVersion);
     if (NS_FAILED(rv)) return rv;
 
-    AutoSafeJSContext cx;
-    JS::Rooted<JSObject*> global(cx, xpc::CompilationScope());
-    NS_ENSURE_TRUE(global, NS_ERROR_UNEXPECTED);
-    JSAutoCompartment ac(cx, global);
+    AutoJSAPI jsapi;
+    if (!jsapi.Init(xpc::CompilationScope())) {
+        return NS_ERROR_UNEXPECTED;
+    }
+    JSContext* cx = jsapi.cx();
 
     JS::Rooted<JSScript*> newScriptObject(cx);
     rv = nsContentUtils::XPConnect()->ReadScript(aStream, cx,
@@ -2699,36 +2675,74 @@ nsXULPrototypeScript::DeserializeOutOfLine(nsIObjectInputStream* aInput,
     return rv;
 }
 
-class NotifyOffThreadScriptCompletedRunnable : public nsRunnable
+class NotifyOffThreadScriptCompletedRunnable : public Runnable
 {
-    RefPtr<nsIOffThreadScriptReceiver> mReceiver;
+    // An array of all outstanding script receivers. All reference counting of
+    // these objects happens on the main thread. When we return to the main
+    // thread from script compilation we make sure our receiver is still in
+    // this array (still alive) before proceeding. This array is cleared during
+    // shutdown, potentially before all outstanding script compilations have
+    // finished. We do not need to worry about pointer replay here, because
+    // a) we should not be starting script compilation after clearing this
+    // array and b) in all other cases the receiver will still be alive.
+    static StaticAutoPtr<nsTArray<nsCOMPtr<nsIOffThreadScriptReceiver>>> sReceivers;
+    static bool sSetupClearOnShutdown;
+
+    nsIOffThreadScriptReceiver* mReceiver;
     void *mToken;
 
 public:
-    NotifyOffThreadScriptCompletedRunnable(already_AddRefed<nsIOffThreadScriptReceiver> aReceiver,
+    NotifyOffThreadScriptCompletedRunnable(nsIOffThreadScriptReceiver* aReceiver,
                                            void *aToken)
       : mReceiver(aReceiver), mToken(aToken)
     {}
 
+    static void NoteReceiver(nsIOffThreadScriptReceiver* aReceiver) {
+        if (!sSetupClearOnShutdown) {
+            ClearOnShutdown(&sReceivers);
+            sSetupClearOnShutdown = true;
+            sReceivers = new nsTArray<nsCOMPtr<nsIOffThreadScriptReceiver>>();
+        }
+
+        // If we ever crash here, it's because we tried to lazy compile script
+        // too late in shutdown.
+        sReceivers->AppendElement(aReceiver);
+    }
+
     NS_DECL_NSIRUNNABLE
 };
+
+StaticAutoPtr<nsTArray<nsCOMPtr<nsIOffThreadScriptReceiver>>> NotifyOffThreadScriptCompletedRunnable::sReceivers;
+bool NotifyOffThreadScriptCompletedRunnable::sSetupClearOnShutdown = false;
 
 NS_IMETHODIMP
 NotifyOffThreadScriptCompletedRunnable::Run()
 {
     MOZ_ASSERT(NS_IsMainThread());
 
-    // Note: this unroots mScript so that it is available to be collected by the
-    // JS GC. The receiver needs to root the script before performing a call that
-    // could GC.
-    JSScript *script;
+    JS::Rooted<JSScript*> script(RootingCx());
     {
-        AutoSafeJSContext cx;
-        JSAutoCompartment ac(cx, xpc::CompilationScope());
-        script = JS::FinishOffThreadScript(cx, JS_GetRuntime(cx), mToken);
+        AutoJSAPI jsapi;
+        if (!jsapi.Init(xpc::CompilationScope())) {
+            // Now what?  I guess we just leak... this should probably never
+            // happen.
+            return NS_ERROR_UNEXPECTED;
+        }
+        JSContext* cx = jsapi.cx();
+        script = JS::FinishOffThreadScript(cx, mToken);
     }
 
-    return mReceiver->OnScriptCompileComplete(script, script ? NS_OK : NS_ERROR_FAILURE);
+    if (!sReceivers) {
+        // We've already shut down.
+        return NS_OK;
+    }
+
+    auto index = sReceivers->IndexOf(mReceiver);
+    MOZ_RELEASE_ASSERT(index != sReceivers->NoIndex);
+    nsCOMPtr<nsIOffThreadScriptReceiver> receiver = (*sReceivers)[index].forget();
+    sReceivers->RemoveElementAt(index);
+
+    return receiver->OnScriptCompileComplete(script, script ? NS_OK : NS_ERROR_FAILURE);
 }
 
 static void
@@ -2738,8 +2752,7 @@ OffThreadScriptReceiverCallback(void *aToken, void *aCallbackData)
     // may be invoked off the main thread.
     nsIOffThreadScriptReceiver* aReceiver = static_cast<nsIOffThreadScriptReceiver*>(aCallbackData);
     RefPtr<NotifyOffThreadScriptCompletedRunnable> notify =
-        new NotifyOffThreadScriptCompletedRunnable(
-            already_AddRefed<nsIOffThreadScriptReceiver>(aReceiver), aToken);
+        new NotifyOffThreadScriptCompletedRunnable(aReceiver, aToken);
     NS_DispatchToMainThread(notify);
 }
 
@@ -2750,8 +2763,11 @@ nsXULPrototypeScript::Compile(JS::SourceBufferHolder& aSrcBuf,
                               nsIOffThreadScriptReceiver *aOffThreadReceiver /* = nullptr */)
 {
     // We'll compile the script in the compilation scope.
-    AutoSafeJSContext cx;
-    JSAutoCompartment ac(cx, xpc::CompilationScope());
+    AutoJSAPI jsapi;
+    if (!jsapi.Init(xpc::CompilationScope())) {
+        return NS_ERROR_UNEXPECTED;
+    }
+    JSContext* cx = jsapi.cx();
 
     nsAutoCString urlspec;
     nsContentUtils::GetWrapperSafeScriptFilename(aDocument, aURI, urlspec);
@@ -2778,8 +2794,7 @@ nsXULPrototypeScript::Compile(JS::SourceBufferHolder& aSrcBuf,
                                   static_cast<void*>(aOffThreadReceiver))) {
             return NS_ERROR_OUT_OF_MEMORY;
         }
-        // This reference will be consumed by the NotifyOffThreadScriptCompletedRunnable.
-        NS_ADDREF(aOffThreadReceiver);
+        NotifyOffThreadScriptCompletedRunnable::NoteReceiver(aOffThreadReceiver);
     } else {
         JS::Rooted<JSScript*> script(cx);
         if (!JS::Compile(cx, options, aSrcBuf, &script))

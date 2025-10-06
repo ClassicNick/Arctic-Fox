@@ -60,9 +60,6 @@ DocManager::GetDocAccessible(nsIDocument* aDocument)
   if (!aDocument)
     return nullptr;
 
-  // Ensure CacheChildren is called before we query cache.
-  ApplicationAcc()->EnsureChildren();
-
   DocAccessible* docAcc = GetExistingDocAccessible(aDocument);
   if (docAcc)
     return docAcc;
@@ -92,6 +89,16 @@ void
 DocManager::NotifyOfDocumentShutdown(DocAccessible* aDocument,
                                      nsIDocument* aDOMDocument)
 {
+  // We need to remove listeners in both cases, when document is being shutdown
+  // or when accessibility service is being shut down as well.
+  RemoveListeners(aDOMDocument);
+
+  // Document will already be removed when accessibility service is shutting
+  // down so we do not need to remove it twice.
+  if (nsAccessibilityService::IsShutdown()) {
+    return;
+  }
+
   xpcAccessibleDocument* xpcDoc = mXPCDocumentCache.GetWeak(aDocument);
   if (xpcDoc) {
     xpcDoc->Shutdown();
@@ -99,7 +106,6 @@ DocManager::NotifyOfDocumentShutdown(DocAccessible* aDocument,
   }
 
   mDocAccessibleCache.Remove(aDOMDocument);
-  RemoveListeners(aDOMDocument);
 }
 
 void
@@ -470,17 +476,15 @@ DocManager::CreateDocOrRootAccessible(nsIDocument* aDocument)
 
   // We only create root accessibles for the true root, otherwise create a
   // doc accessible.
-  nsIContent *rootElm = nsCoreUtils::GetRoleContent(aDocument);
   RefPtr<DocAccessible> docAcc = isRootDoc ?
-    new RootAccessibleWrap(aDocument, rootElm, presShell) :
-    new DocAccessibleWrap(aDocument, rootElm, presShell);
+    new RootAccessibleWrap(aDocument, presShell) :
+    new DocAccessibleWrap(aDocument, presShell);
 
   // Cache the document accessible into document cache.
   mDocAccessibleCache.Put(aDocument, docAcc);
 
   // Initialize the document accessible.
   docAcc->Init();
-  docAcc->SetRoleMapEntry(aria::GetRoleMap(aDocument));
 
   // Bind the document to the tree.
   if (isRootDoc) {
@@ -501,7 +505,7 @@ DocManager::CreateDocOrRootAccessible(nsIDocument* aDocument)
     if (IPCAccessibilityActive()) {
       nsIDocShell* docShell = aDocument->GetDocShell();
       if (docShell) {
-        nsCOMPtr<nsITabChild> tabChild = do_GetInterface(docShell);
+        nsCOMPtr<nsITabChild> tabChild = docShell->GetTabChild();
 
         // XXX We may need to handle the case that we don't have a tab child
         // differently.  It may be that this will cause us to fail to notify
@@ -511,6 +515,11 @@ DocManager::CreateDocOrRootAccessible(nsIDocument* aDocument)
           docAcc->SetIPCDoc(ipcDoc);
           static_cast<TabChild*>(tabChild.get())->
             SendPDocAccessibleConstructor(ipcDoc, nullptr, 0);
+
+#if defined(XP_WIN)
+          IAccessibleHolder holder(CreateHolderFromAccessible(docAcc));
+          ipcDoc->SendCOMProxy(holder);
+#endif
         }
       }
     }
@@ -535,9 +544,6 @@ DocManager::CreateDocOrRootAccessible(nsIDocument* aDocument)
 void
 DocManager::ClearDocCache()
 {
-  // This unusual do-one-element-per-iterator approach is required because each
-  // DocAccessible is removed elsewhere upon its Shutdown() method being
-  // called, which invalidates the existing iterator.
   while (mDocAccessibleCache.Count() > 0) {
     auto iter = mDocAccessibleCache.Iter();
     MOZ_ASSERT(!iter.Done());
@@ -547,7 +553,23 @@ DocManager::ClearDocCache()
     if (docAcc) {
       docAcc->Shutdown();
     }
+
+    iter.Remove();
   }
+
+  // Ensure that all xpcom accessible documents are shut down as well.
+  while (mXPCDocumentCache.Count() > 0) {
+    auto iter = mXPCDocumentCache.Iter();
+    MOZ_ASSERT(!iter.Done());
+    xpcAccessibleDocument* xpcDoc = iter.UserData();
+    NS_ASSERTION(xpcDoc, "No xpc doc for the object in xpc doc cache!");
+
+    if (xpcDoc) {
+      xpcDoc->Shutdown();
+    }
+
+    iter.Remove();
+   }
 }
 
 void

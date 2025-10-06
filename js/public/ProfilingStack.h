@@ -14,6 +14,7 @@
 #include "js/Utility.h"
 
 struct JSRuntime;
+class JSTracer;
 
 namespace js {
 
@@ -49,7 +50,7 @@ class ProfileEntry
 
   public:
     // These traits are bit masks. Make sure they're powers of 2.
-    enum Flags {
+    enum Flags : uint32_t {
         // Indicate whether a profile entry represents a CPP frame. If not set,
         // a JS frame is assumed by default. You're not allowed to publicly
         // change the frame type. Instead, initialize the ProfileEntry as either
@@ -75,7 +76,7 @@ class ProfileEntry
         CATEGORY_MASK = ~ALL
     };
 
-    // Keep these in sync with devtools/client/performance/modules/global.js
+    // Keep these in sync with devtools/client/performance/modules/categories.js
     enum class Category : uint32_t {
         OTHER    = 0x10,
         CSS      = 0x20,
@@ -173,6 +174,8 @@ class ProfileEntry
     JS_FRIEND_API(jsbytecode*) pc() const volatile;
     JS_FRIEND_API(void) setPC(jsbytecode* pc) volatile;
 
+    void trace(JSTracer* trc);
+
     // The offset of a pc into a script's code can actually be 0, so to
     // signify a nullptr pc, use a -1 index. This is checked against in
     // pc() and setPC() to set/get the right pc.
@@ -185,17 +188,17 @@ class ProfileEntry
 };
 
 JS_FRIEND_API(void)
-SetRuntimeProfilingStack(JSRuntime* rt, ProfileEntry* stack, uint32_t* size,
+SetContextProfilingStack(JSContext* cx, ProfileEntry* stack, uint32_t* size,
                          uint32_t max);
 
 JS_FRIEND_API(void)
-EnableRuntimeProfilingStack(JSRuntime* rt, bool enabled);
+EnableContextProfilingStack(JSContext* cx, bool enabled);
 
 JS_FRIEND_API(void)
-RegisterRuntimeProfilingEventMarker(JSRuntime* rt, void (*fn)(const char*));
+RegisterContextProfilingEventMarker(JSContext* cx, void (*fn)(const char*));
 
 JS_FRIEND_API(jsbytecode*)
-ProfilingGetPC(JSRuntime* rt, JSScript* script, void* ip);
+ProfilingGetPC(JSContext* cx, JSScript* script, void* ip);
 
 } // namespace js
 

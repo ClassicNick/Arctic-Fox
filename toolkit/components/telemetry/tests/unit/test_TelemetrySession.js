@@ -92,10 +92,9 @@ function sendPing() {
   if (PingServer.started) {
     TelemetrySend.setServer("http://localhost:" + PingServer.port);
     return TelemetrySession.testPing();
-  } else {
-    TelemetrySend.setServer("http://doesnotexist");
-    return TelemetrySession.testPing();
   }
+  TelemetrySend.setServer("http://doesnotexist");
+  return TelemetrySession.testPing();
 }
 
 var clearPendingPings = Task.async(function*() {
@@ -156,7 +155,7 @@ function checkPingFormat(aPing, aType, aHasClientId, aHasEnvironment) {
   ];
 
   const APPLICATION_TEST_DATA = {
-    buildId: "2007010101",
+    buildId: gAppInfo.appBuildID,
     name: APP_NAME,
     version: APP_VERSION,
     vendor: "Mozilla",
@@ -307,9 +306,7 @@ function checkPayload(payload, reason, successfulPings, savedPings) {
     bucket_count: 3,
     histogram_type: 3,
     values: {0:1, 1:0},
-    sum: 0,
-    sum_squares_lo: 0,
-    sum_squares_hi: 0
+    sum: 0
   };
   let flag = payload.histograms[TELEMETRY_TEST_FLAG];
   Assert.equal(uneval(flag), uneval(expected_flag));
@@ -321,8 +318,6 @@ function checkPayload(payload, reason, successfulPings, savedPings) {
     histogram_type: 4,
     values: {0:1, 1:0},
     sum: 1,
-    sum_squares_lo: 1,
-    sum_squares_hi: 0,
   };
   let count = payload.histograms[TELEMETRY_TEST_COUNT];
   Assert.equal(uneval(count), uneval(expected_count));
@@ -334,9 +329,7 @@ function checkPayload(payload, reason, successfulPings, savedPings) {
       bucket_count: 3,
       histogram_type: 2,
       values: {0:2, 1:successfulPings, 2:0},
-      sum: successfulPings,
-      sum_squares_lo: successfulPings,
-      sum_squares_hi: 0
+      sum: successfulPings
     };
     let tc = payload.histograms[TELEMETRY_SUCCESS];
     Assert.equal(uneval(tc), uneval(expected_tc));
@@ -371,10 +364,8 @@ function checkPayload(payload, reason, successfulPings, savedPings) {
 
   Assert.ok("keyedHistograms" in payload);
   let keyedHistograms = payload.keyedHistograms;
-  Assert.ok(TELEMETRY_TEST_KEYED_FLAG in keyedHistograms);
+  Assert.ok(!(TELEMETRY_TEST_KEYED_FLAG in keyedHistograms));
   Assert.ok(TELEMETRY_TEST_KEYED_COUNT in keyedHistograms);
-
-  Assert.deepEqual({}, keyedHistograms[TELEMETRY_TEST_KEYED_FLAG]);
 
   const expected_keyed_count = {
     "a": {
@@ -383,8 +374,6 @@ function checkPayload(payload, reason, successfulPings, savedPings) {
       histogram_type: 4,
       values: {0:2, 1:0},
       sum: 2,
-      sum_squares_lo: 2,
-      sum_squares_hi: 0,
     },
     "b": {
       range: [1, 2],
@@ -392,8 +381,6 @@ function checkPayload(payload, reason, successfulPings, savedPings) {
       histogram_type: 4,
       values: {0:1, 1:0},
       sum: 1,
-      sum_squares_lo: 1,
-      sum_squares_hi: 0,
     },
   };
   Assert.deepEqual(expected_keyed_count, keyedHistograms[TELEMETRY_TEST_KEYED_COUNT]);
@@ -653,10 +640,8 @@ add_task(function* test_checkSubsessionHistograms() {
   Assert.equal(subsession.info.reason, "environment-change");
   Assert.ok(!(COUNT_ID in classic.histograms));
   Assert.ok(!(COUNT_ID in subsession.histograms));
-  Assert.ok(KEYED_ID in classic.keyedHistograms);
-  Assert.ok(KEYED_ID in subsession.keyedHistograms);
-  Assert.deepEqual(classic.keyedHistograms[KEYED_ID], {});
-  Assert.deepEqual(subsession.keyedHistograms[KEYED_ID], {});
+  Assert.ok(!(KEYED_ID in classic.keyedHistograms));
+  Assert.ok(!(KEYED_ID in subsession.keyedHistograms));
 
   checkHistograms(classic.histograms, subsession.histograms);
   checkKeyedHistograms(classic.keyedHistograms, subsession.keyedHistograms);
@@ -687,9 +672,8 @@ add_task(function* test_checkSubsessionHistograms() {
 
   Assert.ok(!(COUNT_ID in classic.histograms));
   Assert.ok(!(COUNT_ID in subsession.histograms));
-  Assert.ok(KEYED_ID in classic.keyedHistograms);
-  Assert.ok(KEYED_ID in subsession.keyedHistograms);
-  Assert.deepEqual(classic.keyedHistograms[KEYED_ID], {});
+  Assert.ok(!(KEYED_ID in classic.keyedHistograms));
+  Assert.ok(!(KEYED_ID in subsession.keyedHistograms));
 
   checkHistograms(classic.histograms, subsession.histograms);
   checkKeyedHistograms(classic.keyedHistograms, subsession.keyedHistograms);
@@ -735,10 +719,9 @@ add_task(function* test_checkSubsessionHistograms() {
   Assert.equal(subsession.histograms[COUNT_ID].sum, 0);
 
   Assert.ok(KEYED_ID in classic.keyedHistograms);
-  Assert.ok(KEYED_ID in subsession.keyedHistograms);
+  Assert.ok(!(KEYED_ID in subsession.keyedHistograms));
   Assert.equal(classic.keyedHistograms[KEYED_ID]["a"].sum, 1);
   Assert.equal(classic.keyedHistograms[KEYED_ID]["b"].sum, 1);
-  Assert.deepEqual(subsession.keyedHistograms[KEYED_ID], {});
 
   // Adding values should get picked up in both again.
   count.add(1);
@@ -882,7 +865,7 @@ add_task(function* test_dailyCollection() {
   Assert.equal(subsessionStartDate.toISOString(), expectedDate.toISOString());
 
   Assert.equal(ping.payload.histograms[COUNT_ID].sum, 0);
-  Assert.deepEqual(ping.payload.keyedHistograms[KEYED_ID], {});
+  Assert.ok(!(KEYED_ID in ping.payload.keyedHistograms));
 
   // Trigger and collect another daily ping, with the histograms being set again.
   count.add(1);
@@ -917,6 +900,8 @@ add_task(function* test_dailyDuplication() {
     return;
   }
 
+  yield TelemetrySend.reset();
+  yield clearPendingPings();
   PingServer.clearRequests();
 
   let schedulerTickCallback = null;
@@ -959,8 +944,8 @@ add_task(function* test_dailyDuplication() {
   yield schedulerTickCallback();
 
   // Shutdown to cleanup the aborted-session if it gets created.
-  yield TelemetrySession.shutdown();
   PingServer.resetPingHandler();
+  yield TelemetrySession.shutdown();
 });
 
 add_task(function* test_dailyOverdue() {
@@ -995,7 +980,7 @@ add_task(function* test_dailyOverdue() {
 
   // Simulate an overdue ping: we're not close to midnight, but the last daily ping
   // time is too long ago.
-  let dailyOverdue = new Date(2030, 1, 2, 13, 00, 0);
+  let dailyOverdue = new Date(2030, 1, 2, 13, 0, 0);
   fakeNow(dailyOverdue);
 
   // Run a scheduler tick: it should trigger the daily ping.
@@ -1023,7 +1008,7 @@ add_task(function* test_environmentChange() {
   let timerCallback = null;
   let timerDelay = null;
 
-  clearPendingPings();
+  yield clearPendingPings();
   yield TelemetrySend.reset();
   PingServer.clearRequests();
 
@@ -1087,7 +1072,7 @@ add_task(function* test_environmentChange() {
   Assert.equal(subsessionStartDate.toISOString(), startDay.toISOString());
 
   Assert.equal(ping.payload.histograms[COUNT_ID].sum, 0);
-  Assert.deepEqual(ping.payload.keyedHistograms[KEYED_ID], {});
+  Assert.ok(!(KEYED_ID in ping.payload.keyedHistograms));
 });
 
 add_task(function* test_savedPingsOnShutdown() {
@@ -1099,6 +1084,8 @@ add_task(function* test_savedPingsOnShutdown() {
   const dir = TelemetryStorage.pingDirectoryPath;
   yield OS.File.removeDir(dir, {ignoreAbsent: true});
   yield OS.File.makeDir(dir);
+  // TODO: Remove the TelemetrySend manual shutdown when bug 1145188 lands.
+  yield TelemetrySend.shutdown();
   yield TelemetrySession.shutdown();
 
   PingServer.clearRequests();
@@ -1172,6 +1159,9 @@ add_task(function* test_savedSessionData() {
   let payload = TelemetrySession.getPayload();
   Assert.equal(payload.info.profileSubsessionCounter, expectedSubsessions);
   yield TelemetrySession.shutdown();
+
+  // Restore the UUID generator so we don't mess with other tests.
+  fakeGenerateUUID(generateUUID, generateUUID);
 
   // Load back the serialised session data.
   let data = yield CommonUtils.readJSON(dataFilePath);
@@ -1271,66 +1261,14 @@ add_task(function* test_invalidSessionData() {
 
   yield TelemetrySession.shutdown();
 
+  // Restore the UUID generator so we don't mess with other tests.
+  fakeGenerateUUID(generateUUID, generateUUID);
+
   // Load back the serialised session data.
   let data = yield CommonUtils.readJSON(dataFilePath);
   Assert.equal(data.profileSubsessionCounter, expectedSubsessions);
   Assert.equal(data.sessionId, expectedSessionUUID);
   Assert.equal(data.subsessionId, expectedSubsessionUUID);
-});
-
-add_task(function* test_pingExtendedStats() {
-  const EXTENDED_PAYLOAD_FIELDS = [
-    "chromeHangs", "threadHangStats", "log", "slowSQL", "fileIOReports", "lateWrites",
-    "addonHistograms", "addonDetails", "UIMeasurements",
-  ];
-
-  // Disable sending extended statistics.
-  Telemetry.canRecordExtended = false;
-
-  gRequestIterator = Iterator(new Request());
-  yield TelemetrySession.reset();
-  yield sendPing();
-
-  let request = yield gRequestIterator.next();
-  let ping = decodeRequestPayload(request);
-  checkPingFormat(ping, PING_TYPE_MAIN, true, true);
-
-  // Check that the payload does not contain extended statistics fields.
-  for (let f in EXTENDED_PAYLOAD_FIELDS) {
-    Assert.ok(!(EXTENDED_PAYLOAD_FIELDS[f] in ping.payload),
-              EXTENDED_PAYLOAD_FIELDS[f] + " must not be in the payload if the extended set is off.");
-  }
-
-  // We check this one separately so that we can reuse EXTENDED_PAYLOAD_FIELDS below, since
-  // slowSQLStartup might not be there.
-  Assert.ok(!("slowSQLStartup" in ping.payload),
-            "slowSQLStartup must not be sent if the extended set is off");
-
-  Assert.ok(!("addonManager" in ping.payload.simpleMeasurements),
-            "addonManager must not be sent if the extended set is off.");
-  Assert.ok(!("UITelemetry" in ping.payload.simpleMeasurements),
-            "UITelemetry must not be sent if the extended set is off.");
-
-  // Restore the preference.
-  Telemetry.canRecordExtended = true;
-
-  // Send a new ping that should contain the extended data.
-  yield TelemetrySession.reset();
-  yield sendPing();
-  request = yield gRequestIterator.next();
-  ping = decodeRequestPayload(request);
-  checkPingFormat(ping, PING_TYPE_MAIN, true, true);
-
-  // Check that the payload now contains extended statistics fields.
-  for (let f in EXTENDED_PAYLOAD_FIELDS) {
-    Assert.ok(EXTENDED_PAYLOAD_FIELDS[f] in ping.payload,
-              EXTENDED_PAYLOAD_FIELDS[f] + " must be in the payload if the extended set is on.");
-  }
-
-  Assert.ok("addonManager" in ping.payload.simpleMeasurements,
-            "addonManager must be sent if the extended set is on.");
-  Assert.ok("UITelemetry" in ping.payload.simpleMeasurements,
-            "UITelemetry must be sent if the extended set is on.");
 });
 
 add_task(function* test_abortedSession() {
@@ -1386,6 +1324,8 @@ add_task(function* test_abortedSession() {
   Assert.notEqual(abortedSessionPing.id, updatedAbortedSessionPing.id);
   Assert.notEqual(abortedSessionPing.creationDate, updatedAbortedSessionPing.creationDate);
 
+  // TODO: Remove the TelemetrySend manual shutdown when bug 1145188 lands.
+  yield TelemetrySend.shutdown();
   yield TelemetrySession.shutdown();
   Assert.ok(!(yield OS.File.exists(ABORTED_FILE)),
             "No aborted session ping must be available after a shutdown.");
@@ -1396,6 +1336,8 @@ add_task(function* test_abortedSession() {
 
   yield clearPendingPings();
   PingServer.clearRequests();
+  // TODO: Remove the TelemetrySend manual setup when bug 1145188 lands.
+  yield TelemetrySend.setup(true);
   yield TelemetrySession.reset();
   yield TelemetryController.reset();
 
@@ -1407,6 +1349,8 @@ add_task(function* test_abortedSession() {
   Assert.equal(receivedPing.type, PING_TYPE_MAIN, "Should have the correct type");
   Assert.equal(receivedPing.payload.info.reason, REASON_ABORTED_SESSION, "Ping should have the correct reason");
 
+  // TODO: Remove the TelemetrySend manual shutdown when bug 1145188 lands.
+  yield TelemetrySend.shutdown();
   yield TelemetrySession.shutdown();
 });
 
@@ -1422,6 +1366,9 @@ add_task(function* test_abortedSession_Shutdown() {
   let now = fakeNow(2040, 1, 1, 0, 0, 0);
   // Fake scheduler functions to control aborted-session flow in tests.
   fakeSchedulerTimer(callback => schedulerTickCallback = callback, () => {});
+  // TODO: Remove the TelemetrySend manual setup/reset when bug 1145188 lands.
+  yield TelemetrySend.setup(true);
+  yield TelemetrySend.reset();
   yield TelemetrySession.reset();
 
   Assert.ok((yield OS.File.exists(DATAREPORTING_PATH)),
@@ -1440,6 +1387,8 @@ add_task(function* test_abortedSession_Shutdown() {
   // not found) do not compromise the shutdown.
   yield OS.File.remove(ABORTED_FILE);
 
+  // TODO: Remove the TelemetrySend manual shutdown when bug 1145188 lands.
+  yield TelemetrySend.shutdown();
   yield TelemetrySession.shutdown();
 });
 
@@ -1457,11 +1406,14 @@ add_task(function* test_abortedDailyCoalescing() {
   let schedulerTickCallback = null;
   PingServer.clearRequests();
 
-  let nowDate = new Date(2009, 10, 18, 00, 00, 0);
+  let nowDate = new Date(2009, 10, 18, 0, 0, 0);
   fakeNow(nowDate);
 
   // Fake scheduler functions to control aborted-session flow in tests.
   fakeSchedulerTimer(callback => schedulerTickCallback = callback, () => {});
+  // TODO: Remove the TelemetrySend manual setup/reset when bug 1145188 lands.
+  yield TelemetrySend.setup(true);
+  yield TelemetrySend.reset();
   yield TelemetrySession.reset();
 
   Assert.ok((yield OS.File.exists(DATAREPORTING_PATH)),
@@ -1491,6 +1443,8 @@ add_task(function* test_abortedDailyCoalescing() {
   Assert.equal(abortedSessionPing.payload.info.sessionId, dailyPing.payload.info.sessionId);
   Assert.equal(abortedSessionPing.payload.info.subsessionId, dailyPing.payload.info.subsessionId);
 
+  // TODO: Remove the TelemetrySend manual shutdown when bug 1145188 lands.
+  yield TelemetrySend.shutdown();
   yield TelemetrySession.shutdown();
 });
 
@@ -1502,31 +1456,56 @@ add_task(function* test_schedulerComputerSleep() {
 
   const ABORTED_FILE = OS.Path.join(DATAREPORTING_PATH, ABORTED_PING_FILE_NAME);
 
+  clearPendingPings();
+  // TODO: Remove the TelemetrySend manual setup when bug 1145188 lands.
+  yield TelemetrySend.setup(true);
+  yield TelemetrySend.reset();
   PingServer.clearRequests();
 
   // Remove any aborted-session ping from the previous tests.
   yield OS.File.removeDir(DATAREPORTING_PATH, { ignoreAbsent: true });
 
   // Set a fake current date and start Telemetry.
-  let nowDate = new Date(2060, 10, 18, 0, 00, 0);
-  fakeNow(nowDate);
+  let nowDate = fakeNow(2009, 10, 18, 0, 0, 0);
   let schedulerTickCallback = null;
   fakeSchedulerTimer(callback => schedulerTickCallback = callback, () => {});
   yield TelemetrySession.reset();
 
   // Set the current time 3 days in the future at midnight, before running the callback.
-  let future = futureDate(nowDate, MS_IN_ONE_DAY * 3);
-  fakeNow(future);
+  nowDate = fakeNow(futureDate(nowDate, 3 * MS_IN_ONE_DAY));
   Assert.ok(!!schedulerTickCallback);
   // Execute one scheduler tick.
   yield schedulerTickCallback();
 
   let dailyPing = yield PingServer.promiseNextPing();
-  Assert.equal(dailyPing.payload.info.reason, REASON_DAILY);
+  Assert.equal(dailyPing.payload.info.reason, REASON_DAILY,
+               "The wake notification should have triggered a daily ping.");
+  Assert.equal(dailyPing.creationDate, nowDate.toISOString(),
+               "The daily ping date should be correct.");
 
   Assert.ok((yield OS.File.exists(ABORTED_FILE)),
             "There must be an aborted session ping.");
 
+  // Now also test if we are sending a daily ping if we wake up on the next
+  // day even when the timer doesn't trigger.
+  // This can happen due to timeouts not running out during sleep times,
+  // see bug 1262386, bug 1204823 et al.
+  // Note that we don't get wake notifications on Linux due to bug 758848.
+  nowDate = fakeNow(futureDate(nowDate, 1 * MS_IN_ONE_DAY));
+
+  // We emulate the mentioned timeout behavior by sending the wake notification
+  // instead of triggering the timeout callback.
+  // This should trigger a daily ping, because we passed midnight.
+  Services.obs.notifyObservers(null, "wake_notification", null);
+
+  dailyPing = yield PingServer.promiseNextPing();
+  Assert.equal(dailyPing.payload.info.reason, REASON_DAILY,
+               "The wake notification should have triggered a daily ping.");
+  Assert.equal(dailyPing.creationDate, nowDate.toISOString(),
+               "The daily ping date should be correct.");
+
+  // TODO: Remove the TelemetrySend manual shutdown when bug 1145188 lands.
+  yield TelemetrySend.shutdown();
   yield TelemetrySession.shutdown();
 });
 
@@ -1545,9 +1524,12 @@ add_task(function* test_schedulerEnvironmentReschedules() {
 
   yield clearPendingPings();
   PingServer.clearRequests();
+  // TODO: Remove the TelemetrySend manual setup/reset when bug 1145188 lands.
+  yield TelemetrySend.setup(true);
+  yield TelemetrySend.reset();
 
   // Set a fake current date and start Telemetry.
-  let nowDate = new Date(2009, 10, 18, 0, 00, 0);
+  let nowDate = new Date(2060, 10, 18, 0, 0, 0);
   fakeNow(nowDate);
   let schedulerTickCallback = null;
   fakeSchedulerTimer(callback => schedulerTickCallback = callback, () => {});
@@ -1573,6 +1555,8 @@ add_task(function* test_schedulerEnvironmentReschedules() {
   Assert.ok(!!schedulerTickCallback);
   yield schedulerTickCallback();
 
+  // TODO: Remove the TelemetrySend manual shutdown when bug 1145188 lands.
+  yield TelemetrySend.shutdown();
   yield TelemetrySession.shutdown();
 });
 
@@ -1587,6 +1571,9 @@ add_task(function* test_schedulerNothingDue() {
   // Remove any aborted-session ping from the previous tests.
   yield OS.File.removeDir(DATAREPORTING_PATH, { ignoreAbsent: true });
   yield clearPendingPings();
+  // TODO: Remove the TelemetrySend manual setup/reset when bug 1145188 lands.
+  yield TelemetrySend.setup(true);
+  yield TelemetrySend.reset();
 
   // We don't expect to receive any ping in this test, so assert if we do.
   PingServer.registerPingHandler((req, res) => {
@@ -1611,12 +1598,8 @@ add_task(function* test_schedulerNothingDue() {
   // Check that no aborted session ping was written to disk.
   Assert.ok(!(yield OS.File.exists(ABORTED_FILE)));
 
-  // We should not miss midnight when going to idle.
-  now.setHours(23);
-  now.setMinutes(50);
-  fakeIdleNotification("idle");
-  Assert.equal(schedulerTimeout, 10 * 60 * 1000);
-
+  // TODO: Remove the TelemetrySend manual shutdown when bug 1145188 lands.
+  yield TelemetrySend.shutdown();
   yield TelemetrySession.shutdown();
   PingServer.resetPingHandler();
 });
@@ -1632,6 +1615,9 @@ add_task(function* test_pingExtendedStats() {
 
   yield clearPendingPings();
   PingServer.clearRequests();
+  // TODO: Remove the TelemetrySend manual setup/reset when bug 1145188 lands.
+  yield TelemetrySend.setup(true);
+  yield TelemetrySend.reset();
   yield TelemetrySession.reset();
   yield sendPing();
 
@@ -1713,13 +1699,126 @@ add_task(function* test_schedulerUserIdle() {
   // We should not miss midnight when going to idle.
   now.setHours(23);
   now.setMinutes(50);
+  fakeNow(now);
   fakeIdleNotification("idle");
   Assert.equal(schedulerTimeout, 10 * 60 * 1000);
 
+  // TODO: Remove the TelemetrySend manual shutdown when bug 1145188 lands.
+  yield TelemetrySend.shutdown();
   yield TelemetrySession.shutdown();
 });
 
-add_task(function* stopServer(){
+add_task(function* test_DailyDueAndIdle() {
+  if (gIsAndroid || gIsGonk) {
+    // We don't have the aborted session or the daily ping here.
+    return;
+  }
+
+  yield TelemetrySession.reset();
+  yield clearPendingPings();
+  PingServer.clearRequests();
+  // TODO: Remove the TelemetrySend setup when bug 1145188 lands.
+  yield TelemetrySend.setup(true);
+  yield TelemetrySend.reset();
+
+  let receivedPingRequest = null;
+  // Register a ping handler that will assert when receiving multiple daily pings.
+  PingServer.registerPingHandler(req => {
+    Assert.ok(!receivedPingRequest, "Telemetry must only send one daily ping.");
+    receivedPingRequest = req;
+  });
+
+  let schedulerTickCallback = null;
+  let now = new Date(2030, 1, 1, 0, 0, 0);
+  fakeNow(now);
+  // Fake scheduler functions to control daily collection flow in tests.
+  fakeSchedulerTimer(callback => schedulerTickCallback = callback, () => {});
+  yield TelemetrySession.setup();
+
+  // Trigger the daily ping.
+  let firstDailyDue = new Date(2030, 1, 2, 0, 0, 0);
+  fakeNow(firstDailyDue);
+
+  // Run a scheduler tick: it should trigger the daily ping.
+  Assert.ok(!!schedulerTickCallback);
+  let tickPromise = schedulerTickCallback();
+
+  // Send an idle and then an active user notification.
+  fakeIdleNotification("idle");
+  fakeIdleNotification("active");
+
+  // Wait on the tick promise.
+  yield tickPromise;
+
+  yield TelemetrySend.testWaitOnOutgoingPings();
+
+  // Decode the ping contained in the request and check that's a daily ping.
+  Assert.ok(receivedPingRequest, "Telemetry must send one daily ping.");
+  const receivedPing = decodeRequestPayload(receivedPingRequest);
+  checkPingFormat(receivedPing, PING_TYPE_MAIN, true, true);
+  Assert.equal(receivedPing.payload.info.reason, REASON_DAILY);
+
+  // TODO: Remove the TelemetrySend manual shutdown when bug 1145188 lands.
+  yield TelemetrySend.shutdown();
+  yield TelemetrySession.shutdown();
+});
+
+add_task(function* test_userIdleAndSchedlerTick() {
+  if (gIsAndroid || gIsGonk) {
+    // We don't have the aborted session or the daily ping here.
+    return;
+  }
+
+  yield TelemetrySession.reset();
+  yield clearPendingPings();
+  PingServer.clearRequests();
+  // TODO: Remove the TelemetrySend setup when bug 1145188 lands.
+  yield TelemetrySend.setup(true);
+  yield TelemetrySend.reset();
+
+  let receivedPingRequest = null;
+  // Register a ping handler that will assert when receiving multiple daily pings.
+  PingServer.registerPingHandler(req => {
+    Assert.ok(!receivedPingRequest, "Telemetry must only send one daily ping.");
+    receivedPingRequest = req;
+  });
+
+  let schedulerTickCallback = null;
+  let now = new Date(2030, 1, 1, 0, 0, 0);
+  fakeNow(now);
+  // Fake scheduler functions to control daily collection flow in tests.
+  fakeSchedulerTimer(callback => schedulerTickCallback = callback, () => {});
+  yield TelemetrySession.setup();
+
+  // Move the current date/time to midnight.
+  let firstDailyDue = new Date(2030, 1, 2, 0, 0, 0);
+  fakeNow(firstDailyDue);
+
+  // The active notification should trigger a scheduler tick. The latter will send the
+  // due daily ping.
+  fakeIdleNotification("active");
+
+  // Immediately running another tick should not send a daily ping again.
+  Assert.ok(!!schedulerTickCallback);
+  yield schedulerTickCallback();
+
+  // A new "idle" notification should not send a new daily ping.
+  fakeIdleNotification("idle");
+
+  yield TelemetrySend.testWaitOnOutgoingPings();
+
+  // Decode the ping contained in the request and check that's a daily ping.
+  Assert.ok(receivedPingRequest, "Telemetry must send one daily ping.");
+  const receivedPing = decodeRequestPayload(receivedPingRequest);
+  checkPingFormat(receivedPing, PING_TYPE_MAIN, true, true);
+  Assert.equal(receivedPing.payload.info.reason, REASON_DAILY);
+
+  // TODO: Remove the TelemetrySend manual shutdown when bug 1145188 lands.
+  yield TelemetrySend.shutdown();
+  yield TelemetrySession.shutdown();
+});
+
+add_task(function* stopServer() {
   yield PingServer.stop();
   do_test_finished();
 });

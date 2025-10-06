@@ -3,7 +3,6 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
-const promise = require("promise");
 const EventEmitter = require("devtools/shared/event-emitter");
 
 /**
@@ -12,7 +11,7 @@ const EventEmitter = require("devtools/shared/event-emitter");
  * @param array blueprint
  *        A list of [funcName, retVal] describing the class.
  */
-function MockFront (blueprint) {
+function MockFront(blueprint) {
   EventEmitter.decorate(this);
 
   for (let [funcName, retVal] of blueprint) {
@@ -20,7 +19,7 @@ function MockFront (blueprint) {
   }
 }
 
-function MockTimelineFront () {
+function MockTimelineFront() {
   MockFront.call(this, [
     ["destroy"],
     ["start", 0],
@@ -49,14 +48,14 @@ function timelineActorSupported(target) {
  * Returns a function to be used as a method on an "Front" in ./actors.
  * Calls the underlying actor's method.
  */
-function callFrontMethod (method) {
+function callFrontMethod(method) {
   return function () {
     // If there's no target or client on this actor facade,
     // abort silently -- this occurs in tests when polling occurs
     // after the test ends, when tests do not wait for toolbox destruction
     // (which will destroy the actor facade, turning off the polling).
     if (!this._target || !this._target.client) {
-      return;
+      return undefined;
     }
     return this._front[method].apply(this._front, arguments);
   };

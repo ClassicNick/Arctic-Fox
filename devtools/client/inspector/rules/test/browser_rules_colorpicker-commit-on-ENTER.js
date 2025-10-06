@@ -16,7 +16,7 @@ const TEST_URI = `
   Testing the color picker tooltip!
 `;
 
-add_task(function*() {
+add_task(function* () {
   yield addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
   let {view} = yield openRuleView();
 
@@ -28,13 +28,13 @@ add_task(function*() {
 function* testPressingEnterCommitsChanges(swatch, ruleView) {
   let cPicker = ruleView.tooltips.colorPicker;
 
-  let onShown = cPicker.tooltip.once("shown");
+  let onColorPickerReady = cPicker.once("ready");
   swatch.click();
-  yield onShown;
+  yield onColorPickerReady;
 
   yield simulateColorPickerChange(ruleView, cPicker, [0, 255, 0, .5], {
-    element: content.document.body,
-    name: "borderLeftColor",
+    selector: "body",
+    name: "border-left-color",
     value: "rgba(0, 255, 0, 0.5)"
   });
 
@@ -44,12 +44,14 @@ function* testPressingEnterCommitsChanges(swatch, ruleView) {
     "2em solid rgba(0, 255, 0, 0.5)",
     "The text of the border css property was updated");
 
-  let spectrum = yield cPicker.spectrum;
+  let onModified = ruleView.once("ruleview-changed");
+  let spectrum = cPicker.spectrum;
   let onHidden = cPicker.tooltip.once("hidden");
   EventUtils.sendKey("RETURN", spectrum.element.ownerDocument.defaultView);
   yield onHidden;
+  yield onModified;
 
-  is(content.getComputedStyle(content.document.body).borderLeftColor,
+  is((yield getComputedStyleProperty("body", null, "border-left-color")),
     "rgba(0, 255, 0, 0.5)", "The element's border was kept after RETURN");
   is(swatch.style.backgroundColor, "rgba(0, 255, 0, 0.5)",
     "The color swatch's background was kept after RETURN");

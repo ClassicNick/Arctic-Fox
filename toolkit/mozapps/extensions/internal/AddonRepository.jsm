@@ -139,7 +139,7 @@ function getAddonsToCache(aIds, aCallback) {
       try {
         if (!Services.prefs.getBoolPref(preference))
           continue;
-      } catch(e) {
+      } catch (e) {
         // If the preference doesn't exist caching is enabled by default
       }
 
@@ -490,7 +490,7 @@ this.AddonRepository = {
     let enabled = false;
     try {
       enabled = Services.prefs.getBoolPref(preference);
-    } catch(e) {
+    } catch (e) {
       logger.warn("cacheEnabled: Couldn't get pref: " + preference);
     }
 
@@ -632,7 +632,8 @@ this.AddonRepository = {
     // Completely remove cache if caching is not enabled
     if (!this.cacheEnabled) {
       logger.debug("Clearing cache because it is disabled");
-      return this._clearCache();
+      yield this._clearCache();
+      return;
     }
 
     let ids = allAddons.map(a => a.id);
@@ -644,7 +645,8 @@ this.AddonRepository = {
     // Completely remove cache if there are no add-ons to cache
     if (addonsToCache.length == 0) {
       logger.debug("Clearing cache because 0 add-ons were requested");
-      return this._clearCache();
+      yield this._clearCache();
+      return;
     }
 
     yield new Promise((resolve, reject) =>
@@ -1517,7 +1519,7 @@ this.AddonRepository = {
     let url = null;
     try {
       url = Services.prefs.getCharPref(aPreference);
-    } catch(e) {
+    } catch (e) {
       logger.warn("_formatURLPref: Couldn't get pref: " + aPreference);
       return null;
     }
@@ -1679,9 +1681,8 @@ var AddonDatabase = {
 
     if (aSkipFlush) {
       return Promise.resolve();
-    } else {
-      return this.Writer.flush();
     }
+    return this.Writer.flush();
   },
 
   /**
@@ -1752,7 +1753,7 @@ var AddonDatabase = {
    * @return: Promise{Map}
    *          Resolves when the add-ons are retrieved from the database
    */
-  retrieveStoredData: function(){
+  retrieveStoredData: function() {
     return this.openConnection().then(db => db.addons);
   },
 

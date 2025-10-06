@@ -3,14 +3,11 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsISupports.idl"
+#include "nsICache.idl"
 
 interface nsIInputStream;
 interface nsIOutputStream;
 interface nsICacheEntryDoomCallback;
-
-// ************************ REMOVE **********************
-typedef long nsCacheAccessMode;
-typedef long nsCacheStoragePolicy;
 
 interface nsICacheListener;
 interface nsIFile;
@@ -70,6 +67,10 @@ interface nsICacheEntry : nsISupports
    * will not be evicted from the cache for the duration of forced validity.
    * This means that there is a potential problem if the number of forced valid
    * entries grows to take up more space than the cache size allows.
+   *
+   * NOTE: entries that have been forced valid will STILL be ignored by HTTP
+   * channels if they have expired AND the resource in question requires
+   * validation after expiring. This is to avoid using known-stale content.
    *
    * @param aSecondsToTheFuture
    *        the number of seconds the default cache validation behavior will be

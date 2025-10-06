@@ -12,7 +12,9 @@
 #include "mozilla/dom/ContentChild.h"
 #include "mozilla/camera/PCamerasChild.h"
 #include "mozilla/camera/PCamerasParent.h"
+#include "mozilla/media/DeviceChangeCallback.h"
 #include "mozilla/Mutex.h"
+#include "base/singleton.h"
 #include "nsCOMPtr.h"
 
 // conflicts with #include of scoped_ptr.h
@@ -79,24 +81,21 @@ public:
   ~CamerasSingleton();
 
   static OffTheBooksMutex& Mutex() {
-    return GetInstance().mCamerasMutex;
+    return gTheInstance.get()->mCamerasMutex;
   }
 
   static CamerasChild*& Child() {
     Mutex().AssertCurrentThreadOwns();
-    return GetInstance().mCameras;
+    return gTheInstance.get()->mCameras;
   }
 
   static nsCOMPtr<nsIThread>& Thread() {
     Mutex().AssertCurrentThreadOwns();
-    return GetInstance().mCamerasChildThread;
+    return gTheInstance.get()->mCamerasChildThread;
   }
 
 private:
-  static CamerasSingleton& GetInstance() {
-    static CamerasSingleton instance;
-    return instance;
-  }
+  static Singleton<CamerasSingleton> gTheInstance;
 
   // Reinitializing CamerasChild will change the pointers below.
   // We don't want this to happen in the middle of preparing IPC.
@@ -120,6 +119,8 @@ private:
 // it will set up the CamerasSingleton.
 CamerasChild* GetCamerasChild();
 
+CamerasChild* GetCamerasChildIfExists();
+
 // Shut down the IPC channel and everything associated, like WebRTC.
 // This is a static call because the CamerasChild object may not even
 // be alive when we're called.
@@ -140,6 +141,7 @@ int GetChildAndCall(MEM_FUN&& f, ARGS&&... args)
 }
 
 class CamerasChild final : public PCamerasChild
+                          ,public DeviceChangeCallback
 {
   friend class mozilla::ipc::BackgroundChildImpl;
   template <class T> friend class mozilla::camera::LockAndDispatch;
@@ -156,6 +158,9 @@ public:
                                 const int64_t&) override;
   virtual bool RecvFrameSizeChange(const int&, const int&,
                                    const int& w, const int& h) override;
+
+  virtual bool RecvDeviceChange() override;
+  int SetFakeDeviceChangeEvents();
 
   // these are response messages to our outgoing requests
   virtual bool RecvReplyNumberOfCaptureDevices(const int&) override;

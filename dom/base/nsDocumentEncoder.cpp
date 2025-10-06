@@ -1412,7 +1412,7 @@ nsHTMLCopyEncoder::SetSelection(nsISelection* aSelection)
   
   nsCOMPtr<nsIDOMRange> range;
   nsCOMPtr<nsIDOMNode> commonParent;
-  Selection* selection = static_cast<Selection*>(aSelection);
+  Selection* selection = aSelection->AsSelection();
   uint32_t rangeCount = selection->RangeCount();
 
   // if selection is uninitialized return
@@ -1438,7 +1438,7 @@ nsHTMLCopyEncoder::SetSelection(nsISelection* aSelection)
       mIsTextWidget = true;
       break;
     }
-#ifdef MOZ_THUNDERBIRD
+#if defined(MOZ_THUNDERBIRD) || defined(MOZ_SUITE)
     else if (selContent->IsHTMLElement(nsGkAtoms::body)) {
       // Currently, setting mIsTextWidget to 'true' will result in the selection
       // being encoded/copied as pre-formatted plain text.

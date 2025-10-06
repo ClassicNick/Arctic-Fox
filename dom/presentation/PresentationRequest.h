@@ -9,6 +9,8 @@
 
 #include "mozilla/DOMEventTargetHelper.h"
 
+class nsIDocument;
+
 namespace mozilla {
 namespace dom {
 
@@ -33,6 +35,12 @@ public:
   // WebIDL (public APIs)
   already_AddRefed<Promise> Start(ErrorResult& aRv);
 
+  already_AddRefed<Promise> StartWithDevice(const nsAString& aDeviceId,
+                                            ErrorResult& aRv);
+
+  already_AddRefed<Promise> Reconnect(const nsAString& aPresentationId,
+                                      ErrorResult& aRv);
+
   already_AddRefed<Promise> GetAvailability(ErrorResult& aRv);
 
   IMPL_EVENT_HANDLER(connectionavailable);
@@ -46,6 +54,15 @@ private:
   ~PresentationRequest();
 
   bool Init();
+
+  void FindOrCreatePresentationConnection(const nsAString& aPresentationId,
+                                          Promise* aPromise);
+
+  // Implement https://w3c.github.io/webappsec-mixed-content/#categorize-settings-object
+  bool IsProhibitMixedSecurityContexts(nsIDocument* aDocument);
+
+  // Implement https://w3c.github.io/webappsec-mixed-content/#a-priori-authenticated-url
+  bool IsPrioriAuthenticatedURL(const nsAString& aUrl);
 
   nsString mUrl;
   RefPtr<PresentationAvailability> mAvailability;

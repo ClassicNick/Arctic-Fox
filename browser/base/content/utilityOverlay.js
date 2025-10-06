@@ -5,6 +5,7 @@
 
 // Services = object with smart getters for common XPCOM services
 Components.utils.import("resource://gre/modules/AppConstants.jsm");
+Components.utils.import("resource://gre/modules/ContextualIdentityService.jsm");
 Components.utils.import("resource://gre/modules/Services.jsm");
 Components.utils.import("resource://gre/modules/XPCOMUtils.jsm");
 Components.utils.import("resource://gre/modules/PrivateBrowsingUtils.jsm");
@@ -68,7 +69,7 @@ function getBoolPref(prefname, def)
   try {
     return Services.prefs.getBoolPref(prefname);
   }
-  catch(er) {
+  catch (er) {
     return def;
   }
 }
@@ -143,11 +144,8 @@ function whereToOpenLink( e, ignoreButton, ignoreAlt )
 
   // Don't do anything special with right-mouse clicks.  They're probably clicks on context menu items.
 
-#ifdef XP_MACOSX
-  if (meta || (middle && middleUsesTabs))
-#else
-  if (ctrl || (middle && middleUsesTabs))
-#endif
+  var metaKey = AppConstants.platform == "macosx" ? meta : ctrl;
+  if (metaKey || (middle && middleUsesTabs))
     return shift ? "tabshifted" : "tab";
 
   if (alt && getBoolPref("browser.altClickSave", false))
@@ -181,6 +179,7 @@ function whereToOpenLink( e, ignoreButton, ignoreAlt )
  *   skipTabAnimation     (boolean)
  *   allowPinnedTabHostChange (boolean)
  *   allowPopups          (boolean)
+ *   userContextId        (unsigned int)
  */
 function openUILinkIn(url, where, aAllowThirdPartyFixup, aPostData, aReferrerURI) {
   var params;
@@ -283,12 +282,17 @@ function openLinkIn(url, where, params) {
                                  createInstance(Ci.nsISupportsPRUint32);
     referrerPolicySupports.data = aReferrerPolicy;
 
+    var userContextIdSupports = Cc["@mozilla.org/supports-PRUint32;1"].
+                                 createInstance(Ci.nsISupportsPRUint32);
+    userContextIdSupports.data = aUserContextId;
+
     sa.AppendElement(wuri);
     sa.AppendElement(charset);
     sa.AppendElement(referrerURISupports);
     sa.AppendElement(aPostData);
     sa.AppendElement(allowThirdPartyFixupSupports);
     sa.AppendElement(referrerPolicySupports);
+    sa.AppendElement(userContextIdSupports);
 
     let features = "chrome,dialog=no,all";
     if (aIsPrivate) {
@@ -341,12 +345,12 @@ function openLinkIn(url, where, params) {
       flags |= Ci.nsIWebNavigation.LOAD_FLAGS_FIXUP_SCHEME_TYPOS;
     }
 
-    // LOAD_FLAGS_DISALLOW_INHERIT_OWNER isn't supported for javascript URIs,
+    // LOAD_FLAGS_DISALLOW_INHERIT_PRINCIPAL isn't supported for javascript URIs,
     // i.e. it causes them not to load at all. Callers should strip
     // "javascript:" from pasted strings to protect users from malicious URIs
     // (see stripUnsafeProtocolOnPaste).
     if (aDisallowInheritPrincipal && !(uriObj && uriObj.schemeIs("javascript"))) {
-      flags |= Ci.nsIWebNavigation.LOAD_FLAGS_DISALLOW_INHERIT_OWNER;
+      flags |= Ci.nsIWebNavigation.LOAD_FLAGS_DISALLOW_INHERIT_PRINCIPAL;
     }
 
     if (aAllowPopups) {
@@ -361,6 +365,7 @@ function openLinkIn(url, where, params) {
       referrerURI: aNoReferrer ? null : aReferrerURI,
       referrerPolicy: aReferrerPolicy,
       postData: aPostData,
+      userContextId: aUserContextId
     });
     break;
   case "tabshifted":
@@ -415,6 +420,62 @@ function checkForMiddleClick(node, event) {
   }
 }
 
+// Populate a menu with user-context menu items. This method should be called
+// by onpopupshowing passing the event as first argument. addCommandAttribute
+// param is used to set the 'command' attribute in the new menuitem elements.
+function createUserContextMenu(event, addCommandAttribute = true, excludeUserContextId = 0) {
+  while (event.target.hasChildNodes()) {
+    event.target.removeChild(event.target.firstChild);
+  }
+
+  let bundle = document.getElementById("bundle_browser");
+  let docfrag = document.createDocumentFragment();
+
+  // If we are excluding a userContextId, we want to add a 'no-container' item.
+  if (excludeUserContextId) {
+    let menuitem = document.createElement("menuitem");
+    menuitem.setAttribute("usercontextid", "0");
+    menuitem.setAttribute("label", bundle.getString("userContextNone.label"));
+    menuitem.setAttribute("accesskey", bundle.getString("userContextNone.accesskey"));
+
+    // We don't set an oncommand/command attribute attribute because if we have
+    // to exclude a userContextId we are generating the contextMenu and
+    // addCommandAttribute will be false.
+
+    docfrag.appendChild(menuitem);
+
+    let menuseparator = document.createElement("menuseparator");
+    docfrag.appendChild(menuseparator);
+  }
+
+  ContextualIdentityService.getIdentities().forEach(identity => {
+    if (identity.userContextId == excludeUserContextId) {
+      return;
+    }
+
+    let menuitem = document.createElement("menuitem");
+    menuitem.setAttribute("usercontextid", identity.userContextId);
+    menuitem.setAttribute("label", ContextualIdentityService.getUserContextLabel(identity.userContextId));
+
+    if (identity.accessKey) {
+      menuitem.setAttribute("accesskey", bundle.getString(identity.accessKey));
+    }
+
+    menuitem.classList.add("menuitem-iconic");
+
+    if (addCommandAttribute) {
+      menuitem.setAttribute("command", "Browser:NewUserContextTab");
+    }
+
+    menuitem.setAttribute("image", identity.icon);
+
+    docfrag.appendChild(menuitem);
+  });
+
+  event.target.appendChild(docfrag);
+  return true;
+}
+
 // Closes all popups that are ancestors of the node.
 function closeMenus(node)
 {
@@ -425,6 +486,46 @@ function closeMenus(node)
 
     closeMenus(node.parentNode);
   }
+}
+
+/** This function takes in a key element and compares it to the keys pressed during an event.
+ *
+ * @param aEvent
+ *        The KeyboardEvent event you want to compare against your key.
+ *
+ * @param aKey
+ *        The <key> element checked to see if it was called in aEvent.
+ *        For example, aKey can be a variable set to document.getElementById("key_close")
+ *        to check if the close command key was pressed in aEvent.
+*/
+function eventMatchesKey(aEvent, aKey)
+{
+  let keyPressed = aKey.getAttribute("key").toLowerCase();
+  let keyModifiers = aKey.getAttribute("modifiers");
+  let modifiers = ["Alt", "Control", "Meta", "Shift"];
+
+  if (aEvent.key != keyPressed) {
+    return false;
+  }
+  let eventModifiers = modifiers.filter(modifier => aEvent.getModifierState(modifier));
+  // Check if aEvent has a modifier and aKey doesn't
+  if (eventModifiers.length > 0 && keyModifiers.length == 0) {
+     return false;
+  }
+  // Check whether aKey's modifiers match aEvent's modifiers
+  if (keyModifiers) {
+    keyModifiers = keyModifiers.split(/[\s,]+/);
+    // Capitalize first letter of aKey's modifers to compare to aEvent's modifier
+    keyModifiers.forEach(function(modifier, index) {
+      if (modifier == "accel") {
+        keyModifiers[index] = AppConstants.platform == "macosx" ?  "Meta" : "Control";
+      } else {
+        keyModifiers[index] = modifier[0].toUpperCase() + modifier.slice(1);
+      }
+    });
+    return modifiers.every(modifier => keyModifiers.includes(modifier) == aEvent.getModifierState(modifier));
+  }
+  return true;
 }
 
 // Gather all descendent text under given document node.
@@ -521,13 +622,15 @@ function openAboutDialog() {
     return;
   }
 
-#ifdef XP_WIN
-  var features = "chrome,centerscreen,dependent";
-#elifdef XP_MACOSX
-  var features = "chrome,resizable=no,minimizable=no";
-#else
-  var features = "chrome,centerscreen,dependent,dialog=no";
-#endif
+  var features = "chrome,";
+  if (AppConstants.platform == "win") {
+    features += "centerscreen,dependent";
+  } else if (AppConstants.platform == "macosx") {
+    features += "resizable=no,minimizable=no";
+  } else {
+    features += "centerscreen,dependent,dialog=no";
+  }
+
   window.openDialog("chrome://browser/content/aboutDialog.xul", "", features);
 }
 
@@ -568,6 +671,15 @@ function openAdvancedPreferences(tabID)
 function openTroubleshootingPage()
 {
   openUILinkIn("about:support", "tab");
+}
+
+/**
+ * Opens the troubleshooting information (about:support) page for this version
+ * of the application.
+ */
+function openHealthReport()
+{
+  openUILinkIn("about:healthreport", "tab");
 }
 
 /**
@@ -664,13 +776,16 @@ function openNewWindowWith(aURL, aDocument, aPostData, aAllowThirdPartyFixup,
 }
 
 // aCalledFromModal is optional
-function openHelpLink(aHelpTopic, aCalledFromModal) {
+function openHelpLink(aHelpTopic, aCalledFromModal, aWhere) {
   var url = Components.classes["@mozilla.org/toolkit/URLFormatterService;1"]
                       .getService(Components.interfaces.nsIURLFormatter)
                       .formatURLPref("app.support.baseURL");
   url += aHelpTopic;
 
-  var where = aCalledFromModal ? "window" : "tab";
+  var where = aWhere;
+  if (!aWhere)
+    where = aCalledFromModal ? "window" : "tab";
+
   openUILinkIn(url, where);
 }
 
@@ -686,8 +801,27 @@ function openPrefsHelp() {
 function trimURL(aURL) {
   // This function must not modify the given URL such that calling
   // nsIURIFixup::createFixupURI with the result will produce a different URI.
-  return aURL /* remove single trailing slash for http/https/ftp URLs */
-             .replace(/^((?:http|https|ftp):\/\/[^/]+)\/$/, "$1")
-              /* remove http:// unless the host starts with "ftp\d*\." or contains "@" */
-             .replace(/^http:\/\/((?!ftp\d*\.)[^\/@]+(?:\/|$))/, "$1");
+
+  // remove single trailing slash for http/https/ftp URLs
+  let url = aURL.replace(/^((?:http|https|ftp):\/\/[^/]+)\/$/, "$1");
+
+  // remove http://
+  if (!url.startsWith("http://")) {
+    return url;
+  }
+  let urlWithoutProtocol = url.substring(7);
+
+  let flags = Services.uriFixup.FIXUP_FLAG_ALLOW_KEYWORD_LOOKUP |
+              Services.uriFixup.FIXUP_FLAG_FIX_SCHEME_TYPOS;
+  let fixedUpURL, expectedURLSpec;
+  try {
+    fixedUpURL = Services.uriFixup.createFixupURI(urlWithoutProtocol, flags);
+    expectedURLSpec = makeURI(aURL).spec;
+  } catch (ex) {
+    return url;
+  }
+  if (fixedUpURL.spec == expectedURLSpec) {
+    return urlWithoutProtocol;
+  }
+  return url;
 }

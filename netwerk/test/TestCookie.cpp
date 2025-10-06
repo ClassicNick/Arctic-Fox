@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "TestCommon.h"
+#include "TestHarness.h"
 #include "nsIServiceManager.h"
 #include "nsICookieService.h"
 #include "nsICookieManager.h"
@@ -31,6 +32,36 @@ static const char kCookiesLifetimeCurrentSession[] = "network.cookie.lifetime.be
 static const char kCookiesMaxPerHost[] = "network.cookie.maxPerHost";
 
 static char *sBuffer;
+
+#define OFFSET_ONE_WEEK int64_t(604800) * PR_USEC_PER_SEC
+#define OFFSET_ONE_DAY int64_t(86400) * PR_USEC_PER_SEC
+
+//Set server time or expiry time
+void
+SetTime(PRTime offsetTime,nsAutoCString& serverString,nsAutoCString& cookieString,bool expiry)
+{
+    char timeStringPreset[40];
+    PRTime CurrentTime = PR_Now();
+    PRTime SetCookieTime = CurrentTime + offsetTime;
+    PRTime SetExpiryTime;
+    if (expiry) {
+      SetExpiryTime = SetCookieTime - OFFSET_ONE_DAY;
+    } else {
+      SetExpiryTime = SetCookieTime + OFFSET_ONE_DAY;
+    }
+
+    // Set server time string
+    PRExplodedTime explodedTime;
+    PR_ExplodeTime(SetCookieTime , PR_GMTParameters, &explodedTime);
+    PR_FormatTimeUSEnglish(timeStringPreset, 40, "%c GMT", &explodedTime);
+    serverString.Assign(timeStringPreset);
+
+    // Set cookie string
+    PR_ExplodeTime(SetExpiryTime , PR_GMTParameters, &explodedTime);
+    PR_FormatTimeUSEnglish(timeStringPreset, 40, "%c GMT", &explodedTime);
+    cookieString.Replace(0, strlen("test=expiry; expires=") + strlen(timeStringPreset) + 1, "test=expiry; expires=");
+    cookieString.Append(timeStringPreset);
+}
 
 nsresult
 SetACookie(nsICookieService *aCookieService, const char *aSpec1, const char *aSpec2, const char* aCookieString, const char *aServerTime)
@@ -186,18 +217,6 @@ InitPrefs(nsIPrefBranch *aPrefBranch)
     aPrefBranch->SetIntPref(kCookiesMaxPerHost, 50);
 }
 
-class ScopedXPCOM
-{
-public:
-  ScopedXPCOM() : rv(NS_InitXPCOM2(nullptr, nullptr, nullptr)) { }
-  ~ScopedXPCOM()
-  {
-    if (NS_SUCCEEDED(rv))
-      NS_ShutdownXPCOM(nullptr);
-  }
-
-  nsresult rv;
-};
 
 int
 main(int32_t argc, char *argv[])
@@ -207,9 +226,7 @@ main(int32_t argc, char *argv[])
 
     bool allTestsPassed = true;
 
-    ScopedXPCOM xpcom;
-    if (NS_FAILED(xpcom.rv))
-      return -1;
+    ScopedXPCOM xpcom("TestCookie");
 
     {
       nsresult rv0;
@@ -476,8 +493,29 @@ main(int32_t argc, char *argv[])
       GetACookie(cookieService, "http://expireme.org/", nullptr, getter_Copies(cookie));
       rv[15] = CheckResult(cookie.get(), MUST_BE_NULL);
 
-      allTestsPassed = PrintResult(rv, 16) && allTestsPassed;
+      nsAutoCString ServerTime;
+      nsAutoCString CookieString;
 
+      SetTime(-OFFSET_ONE_WEEK, ServerTime, CookieString, true);
+      SetACookie(cookieService, "http://expireme.org/", nullptr, CookieString.get(), ServerTime.get());
+      GetACookie(cookieService, "http://expireme.org/", nullptr, getter_Copies(cookie));
+      rv[16] = CheckResult(cookie.get(), MUST_BE_NULL);
+      // Set server time earlier than client time for one year + one day, and expirty time earlier than server time for one day.
+      SetTime(-(OFFSET_ONE_DAY + OFFSET_ONE_WEEK), ServerTime, CookieString, false);
+      SetACookie(cookieService, "http://expireme.org/", nullptr, CookieString.get(), ServerTime.get());
+      GetACookie(cookieService, "http://expireme.org/", nullptr, getter_Copies(cookie));
+      rv[17] = CheckResult(cookie.get(), MUST_BE_NULL);
+      // Set server time later than client time for one year, and expiry time later than server time for one day.
+      SetTime(OFFSET_ONE_WEEK, ServerTime, CookieString, false);
+      SetACookie(cookieService, "http://expireme.org/", nullptr, CookieString.get(), ServerTime.get());
+      GetACookie(cookieService, "http://expireme.org/", nullptr, getter_Copies(cookie));
+      rv[18] = CheckResult(cookie.get(), MUST_EQUAL, "test=expiry");
+      // Set server time later than client time for one year + one day, and expiry time earlier than server time for one day.
+      SetTime((OFFSET_ONE_DAY + OFFSET_ONE_WEEK), ServerTime, CookieString, true);
+      SetACookie(cookieService, "http://expireme.org/", nullptr, CookieString.get(), ServerTime.get());
+      GetACookie(cookieService, "http://expireme.org/", nullptr, getter_Copies(cookie));
+      rv[19] = CheckResult(cookie.get(), MUST_EQUAL, "test=expiry");
+      allTestsPassed = PrintResult(rv, 20) && allTestsPassed;
 
       // *** multiple cookie tests
       sBuffer = PR_sprintf_append(sBuffer, "*** Beginning multiple cookie tests...\n");
@@ -558,7 +596,7 @@ main(int32_t argc, char *argv[])
       allTestsPassed = PrintResult(rv, 1) && allTestsPassed;
 
 
-      // *** httponly tests 
+      // *** httponly tests
       sBuffer = PR_sprintf_append(sBuffer, "*** Beginning httponly tests...\n");
 
       // Since this cookie is NOT set via http, setting it fails
@@ -603,40 +641,91 @@ main(int32_t argc, char *argv[])
       allTestsPassed = PrintResult(rv, 9) && allTestsPassed;
 
 
+      // *** Cookie prefix tests
+      sBuffer = PR_sprintf_append(sBuffer, "*** Beginning cookie prefix tests...\n");
+
+      // prefixed cookies can't be set from insecure HTTP
+      SetACookie(cookieService, "http://prefixed.test/", nullptr, "__Secure-test1=test", nullptr);
+      SetACookie(cookieService, "http://prefixed.test/", nullptr, "__Secure-test2=test; secure", nullptr);
+      SetACookie(cookieService, "http://prefixed.test/", nullptr, "__Host-test1=test", nullptr);
+      SetACookie(cookieService, "http://prefixed.test/", nullptr, "__Host-test2=test; secure", nullptr);
+      GetACookie(cookieService, "http://prefixed.test/", nullptr, getter_Copies(cookie));
+      rv[0] = CheckResult(cookie.get(), MUST_BE_NULL);
+
+      // prefixed cookies won't be set without the secure flag
+      SetACookie(cookieService, "https://prefixed.test/", nullptr, "__Secure-test=test", nullptr);
+      SetACookie(cookieService, "https://prefixed.test/", nullptr, "__Host-test=test", nullptr);
+      GetACookie(cookieService, "https://prefixed.test/", nullptr, getter_Copies(cookie));
+      rv[1] = CheckResult(cookie.get(), MUST_BE_NULL);
+
+      // prefixed cookies can be set when done correctly
+      SetACookie(cookieService, "https://prefixed.test/", nullptr, "__Secure-test=test; secure", nullptr);
+      SetACookie(cookieService, "https://prefixed.test/", nullptr, "__Host-test=test; secure", nullptr);
+      GetACookie(cookieService, "https://prefixed.test/", nullptr, getter_Copies(cookie));
+      rv[2] = CheckResult(cookie.get(), MUST_CONTAIN, "__Secure-test=test");
+      rv[3] = CheckResult(cookie.get(), MUST_CONTAIN, "__Host-test=test");
+
+      // but when set must not be returned to the host insecurely
+      GetACookie(cookieService, "http://prefixed.test/", nullptr, getter_Copies(cookie));
+      rv[4] = CheckResult(cookie.get(), MUST_BE_NULL);
+
+      // Host-prefixed cookies cannot specify a domain
+      SetACookie(cookieService, "https://host.prefixed.test/", nullptr, "__Host-a=test; secure; domain=prefixed.test", nullptr);
+      SetACookie(cookieService, "https://host.prefixed.test/", nullptr, "__Host-b=test; secure; domain=.prefixed.test", nullptr);
+      SetACookie(cookieService, "https://host.prefixed.test/", nullptr, "__Host-c=test; secure; domain=host.prefixed.test", nullptr);
+      SetACookie(cookieService, "https://host.prefixed.test/", nullptr, "__Host-d=test; secure; domain=.host.prefixed.test", nullptr);
+      GetACookie(cookieService, "https://host.prefixed.test/", nullptr, getter_Copies(cookie));
+      rv[5] = CheckResult(cookie.get(), MUST_BE_NULL);
+
+      // Host-prefixed cookies can only have a path of "/"
+      SetACookie(cookieService, "https://host.prefixed.test/some/path", nullptr, "__Host-e=test; secure", nullptr);
+      SetACookie(cookieService, "https://host.prefixed.test/some/path", nullptr, "__Host-f=test; secure; path=/", nullptr);
+      SetACookie(cookieService, "https://host.prefixed.test/some/path", nullptr, "__Host-g=test; secure; path=/some", nullptr);
+      GetACookie(cookieService, "https://host.prefixed.test/", nullptr, getter_Copies(cookie));
+      rv[6] = CheckResult(cookie.get(), MUST_EQUAL, "__Host-f=test");
+
+      allTestsPassed = PrintResult(rv, 7) && allTestsPassed;
+
+
       // *** nsICookieManager{2} interface tests
       sBuffer = PR_sprintf_append(sBuffer, "*** Beginning nsICookieManager{2} interface tests...\n");
       nsCOMPtr<nsICookieManager> cookieMgr = do_GetService(NS_COOKIEMANAGER_CONTRACTID, &rv0);
       if (NS_FAILED(rv0)) return -1;
       nsCOMPtr<nsICookieManager2> cookieMgr2 = do_QueryInterface(cookieMgr);
       if (!cookieMgr2) return -1;
-      
+
+      mozilla::NeckoOriginAttributes attrs;
+
       // first, ensure a clean slate
       rv[0] = NS_SUCCEEDED(cookieMgr->RemoveAll());
       // add some cookies
-      rv[1] = NS_SUCCEEDED(cookieMgr2->Add(NS_LITERAL_CSTRING("cookiemgr.test"), // domain
+      rv[1] = NS_SUCCEEDED(cookieMgr2->AddNative(NS_LITERAL_CSTRING("cookiemgr.test"), // domain
                                            NS_LITERAL_CSTRING("/foo"),           // path
                                            NS_LITERAL_CSTRING("test1"),          // name
                                            NS_LITERAL_CSTRING("yes"),            // value
                                            false,                             // is secure
                                            false,                             // is httponly
                                            true,                              // is session
-                                           INT64_MAX));                          // expiry time
-      rv[2] = NS_SUCCEEDED(cookieMgr2->Add(NS_LITERAL_CSTRING("cookiemgr.test"), // domain
+                                           INT64_MAX,                            // expiry time
+                                           &attrs));                         // originAttributes
+      rv[2] = NS_SUCCEEDED(cookieMgr2->AddNative(NS_LITERAL_CSTRING("cookiemgr.test"), // domain
                                            NS_LITERAL_CSTRING("/foo"),           // path
                                            NS_LITERAL_CSTRING("test2"),          // name
                                            NS_LITERAL_CSTRING("yes"),            // value
                                            false,                             // is secure
                                            true,                              // is httponly
                                            true,                              // is session
-                                           PR_Now() / PR_USEC_PER_SEC + 2));     // expiry time
-      rv[3] = NS_SUCCEEDED(cookieMgr2->Add(NS_LITERAL_CSTRING("new.domain"),     // domain
+                                           PR_Now() / PR_USEC_PER_SEC + 2,       // expiry time
+                                           &attrs));                         // originAttributes
+      rv[3] = NS_SUCCEEDED(cookieMgr2->AddNative(NS_LITERAL_CSTRING("new.domain"),     // domain
                                            NS_LITERAL_CSTRING("/rabbit"),        // path
                                            NS_LITERAL_CSTRING("test3"),          // name
                                            NS_LITERAL_CSTRING("yes"),            // value
                                            false,                             // is secure
                                            false,                             // is httponly
                                            true,                              // is session
-                                           INT64_MAX));                          // expiry time
+                                           INT64_MAX,                            // expiry time
+                                           &attrs));                         // originAttributes
       // confirm using enumerator
       nsCOMPtr<nsISimpleEnumerator> enumerator;
       rv[4] = NS_SUCCEEDED(cookieMgr->GetEnumerator(getter_AddRefs(enumerator)));
@@ -647,7 +736,7 @@ main(int32_t argc, char *argv[])
         nsCOMPtr<nsISupports> cookie;
         if (NS_FAILED(enumerator->GetNext(getter_AddRefs(cookie)))) break;
         ++i;
-        
+
         // keep tabs on the second and third cookies, so we can check them later
         nsCOMPtr<nsICookie2> cookie2(do_QueryInterface(cookie));
         if (!cookie2) break;
@@ -671,20 +760,24 @@ main(int32_t argc, char *argv[])
       // check CookieExists() using the third cookie
       bool found;
       rv[9] = NS_SUCCEEDED(cookieMgr2->CookieExists(newDomainCookie, &found)) && found;
+
+
       // remove the cookie, block it, and ensure it can't be added again
-      rv[10] = NS_SUCCEEDED(cookieMgr->Remove(NS_LITERAL_CSTRING("new.domain"), // domain
-                                              NS_LITERAL_CSTRING("test3"),      // name
-                                              NS_LITERAL_CSTRING("/rabbit"),    // path
-                                              true));                        // is blocked
+      rv[10] = NS_SUCCEEDED(cookieMgr->RemoveNative(NS_LITERAL_CSTRING("new.domain"), // domain
+                                                    NS_LITERAL_CSTRING("test3"),      // name
+                                                    NS_LITERAL_CSTRING("/rabbit"),    // path
+                                                    true,                             // is blocked
+                                                    &attrs));                         // originAttributes
       rv[11] = NS_SUCCEEDED(cookieMgr2->CookieExists(newDomainCookie, &found)) && !found;
-      rv[12] = NS_SUCCEEDED(cookieMgr2->Add(NS_LITERAL_CSTRING("new.domain"),     // domain
+      rv[12] = NS_SUCCEEDED(cookieMgr2->AddNative(NS_LITERAL_CSTRING("new.domain"),     // domain
                                             NS_LITERAL_CSTRING("/rabbit"),        // path
                                             NS_LITERAL_CSTRING("test3"),          // name
                                             NS_LITERAL_CSTRING("yes"),            // value
                                             false,                             // is secure
                                             false,                             // is httponly
                                             true,                              // is session
-                                            INT64_MIN));                          // expiry time
+                                            INT64_MIN,                            // expiry time
+                                            &attrs));                         // originAttributes
       rv[13] = NS_SUCCEEDED(cookieMgr2->CookieExists(newDomainCookie, &found)) && !found;
       // sleep four seconds, to make sure the second cookie has expired
       PR_Sleep(4 * PR_TicksPerSecond());
@@ -748,3 +841,12 @@ main(int32_t argc, char *argv[])
 
     return 0;
 }
+
+// Stubs to make this test happy
+
+mozilla::dom::OriginAttributesDictionary::OriginAttributesDictionary()
+  : mAppId(0),
+    mInIsolatedMozBrowser(false),
+    mPrivateBrowsingId(0),
+    mUserContextId(0)
+{}

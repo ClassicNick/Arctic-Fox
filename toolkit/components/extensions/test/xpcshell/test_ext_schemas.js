@@ -216,6 +216,20 @@ let json = [
      },
 
      {
+       name: "formatDate",
+       type: "function",
+       parameters: [
+         {
+           name: "arg",
+           type: "object",
+           properties: {
+             date: {type: "string", format: "date", optional: true},
+           },
+         },
+       ],
+     },
+
+     {
        name: "deep",
        type: "function",
        parameters: [
@@ -243,6 +257,52 @@ let json = [
                  },
                },
              },
+           },
+         },
+       ],
+     },
+
+     {
+       name: "errors",
+       type: "function",
+       parameters: [
+         {
+           name: "arg",
+           type: "object",
+           properties: {
+             warn: {
+               type: "string",
+               pattern: "^\\d+$",
+               optional: true,
+               onError: "warn",
+             },
+             ignore: {
+               type: "string",
+               pattern: "^\\d+$",
+               optional: true,
+               onError: "ignore",
+             },
+             default: {
+               type: "string",
+               pattern: "^\\d+$",
+               optional: true,
+             },
+           },
+         },
+       ],
+     },
+
+     {
+       name: "localize",
+       type: "function",
+       parameters: [
+         {
+           name: "arg",
+           type: "object",
+           properties: {
+             foo: {type: "string", "preprocess": "localize", "optional": true},
+             bar: {type: "string", "optional": true},
+             url: {type: "string", "preprocess": "localize", "format": "url", "optional": true},
            },
          },
        ],
@@ -281,6 +341,18 @@ let json = [
      },
    ],
   },
+  {
+    namespace: "inject",
+    properties: {
+      PROP1: {value: "should inject"},
+    },
+  },
+  {
+    namespace: "do-not-inject",
+    properties: {
+      PROP1: {value: "should not inject"},
+    },
+  },
 ];
 
 let tallied = null;
@@ -306,6 +378,8 @@ function checkErrors(errors) {
   talliedErrors.length = 0;
 }
 
+let permissions = new Set();
+
 let wrapper = {
   url: "moz-extension://b66e3509-cdb3-44f6-8eb8-c8b39b3a1d27/",
 
@@ -313,13 +387,32 @@ let wrapper = {
     return !url.startsWith("chrome:");
   },
 
+  preprocessors: {
+    localize(value, context) {
+      return value.replace(/__MSG_(.*?)__/g, (m0, m1) => `${m1.toUpperCase()}`);
+    },
+  },
+
   logError(message) {
     talliedErrors.push(message);
+  },
+
+  hasPermission(permission) {
+    return permissions.has(permission);
   },
 
   callFunction(path, name, args) {
     let ns = path.join(".");
     tally("call", ns, name, args);
+  },
+
+  callFunctionNoReturn(path, name, args) {
+    let ns = path.join(".");
+    tally("call", ns, name, args);
+  },
+
+  shouldInject(ns) {
+    return ns != "do-not-inject";
   },
 
   getProperty(path, name) {
@@ -348,8 +441,7 @@ let wrapper = {
 
 add_task(function* () {
   let url = "data:," + JSON.stringify(json);
-  let uri = BrowserUtils.makeURI(url);
-  yield Schemas.load(uri);
+  yield Schemas.load(url);
 
   let root = {};
   Schemas.inject(root, wrapper);
@@ -357,6 +449,9 @@ add_task(function* () {
   do_check_eq(root.testing.PROP1, 20, "simple value property");
   do_check_eq(root.testing.type1.VALUE1, "value1", "enum type");
   do_check_eq(root.testing.type1.VALUE2, "value2", "enum type");
+
+  do_check_eq("inject" in root, true, "namespace 'inject' should be injected");
+  do_check_eq("do-not-inject" in root, false, "namespace 'do-not-inject' should not be injected");
 
   root.testing.foo(11, true);
   verify("call", "testing", "foo", [11, true]);
@@ -527,6 +622,43 @@ add_task(function* () {
                   "should throw for non-relative URL");
   }
 
+  const dates = [
+    "2016-03-04",
+    "2016-03-04T08:00:00Z",
+    "2016-03-04T08:00:00.000Z",
+    "2016-03-04T08:00:00-08:00",
+    "2016-03-04T08:00:00.000-08:00",
+    "2016-03-04T08:00:00+08:00",
+    "2016-03-04T08:00:00.000+08:00",
+    "2016-03-04T08:00:00+0800",
+    "2016-03-04T08:00:00-0800",
+  ];
+  dates.forEach(str => {
+    root.testing.formatDate({date: str});
+    verify("call", "testing", "formatDate", [{date: str}]);
+  });
+
+  // Make sure that a trivial change to a valid date invalidates it.
+  dates.forEach(str => {
+    Assert.throws(() => root.testing.formatDate({date: "0" + str}),
+                  /Invalid date string/,
+                  "should throw for invalid iso date string");
+    Assert.throws(() => root.testing.formatDate({date: str + "0"}),
+                  /Invalid date string/,
+                  "should throw for invalid iso date string");
+  });
+
+  const badDates = [
+    "I do not look anything like a date string",
+    "2016-99-99",
+    "2016-03-04T25:00:00Z",
+  ];
+  badDates.forEach(str => {
+    Assert.throws(() => root.testing.formatDate({date: str}),
+                  /Invalid date string/,
+                  "should throw for invalid iso date string");
+  });
+
   root.testing.deep({foo: {bar: [{baz: {required: 12, optional: "42"}}]}});
   verify("call", "testing", "deep", [{foo: {bar: [{baz: {required: 12, optional: "42"}}]}}]);
   tallied = null;
@@ -538,6 +670,24 @@ add_task(function* () {
   Assert.throws(() => root.testing.deep({foo: {bar: [{baz: {required: 12, optional: 42}}]}}),
                 /Type error for parameter arg \(Error processing foo\.bar\.0\.baz\.optional: Expected string instead of 42\) for testing\.deep/,
                 "should throw with the correct object path");
+
+
+  talliedErrors.length = 0;
+
+  root.testing.errors({warn: "0123", ignore: "0123", default: "0123"});
+  verify("call", "testing", "errors", [{warn: "0123", ignore: "0123", default: "0123"}]);
+  checkErrors([]);
+
+  root.testing.errors({warn: "0123", ignore: "x123", default: "0123"});
+  verify("call", "testing", "errors", [{warn: "0123", ignore: null, default: "0123"}]);
+  checkErrors([]);
+
+  root.testing.errors({warn: "x123", ignore: "0123", default: "0123"});
+  verify("call", "testing", "errors", [{warn: null, ignore: "0123", default: "0123"}]);
+  checkErrors([
+    'String "x123" must match /^\\d+$/',
+  ]);
+
 
   root.testing.onFoo.addListener(f);
   do_check_eq(JSON.stringify(tallied.slice(0, -1)), JSON.stringify(["addListener", "testing", "onFoo"]));
@@ -583,6 +733,16 @@ add_task(function* () {
                   /Expected a plain JavaScript object, got a Proxy/,
                   "should throw when passing a Proxy");
   }
+
+
+  root.testing.localize({foo: "__MSG_foo__", bar: "__MSG_foo__", url: "__MSG_http://example.com/__"});
+  verify("call", "testing", "localize", [{foo: "FOO", bar: "__MSG_foo__", url: "http://example.com/"}]);
+  tallied = null;
+
+
+  Assert.throws(() => root.testing.localize({url: "__MSG_/foo/bar__"}),
+                /\/FOO\/BAR is not a valid URL\./,
+                "should throw for invalid URL");
 
 
   root.testing.extended1({prop1: "foo", prop2: "bar"});
@@ -734,8 +894,7 @@ let deprecatedJson = [
 
 add_task(function* testDeprecation() {
   let url = "data:," + JSON.stringify(deprecatedJson);
-  let uri = BrowserUtils.makeURI(url);
-  yield Schemas.load(uri);
+  yield Schemas.load(url);
 
   let root = {};
   Schemas.inject(root, wrapper);
@@ -788,4 +947,319 @@ add_task(function* testDeprecation() {
 
   root.deprecated.onDeprecated.hasListener(() => {});
   checkErrors(["This event does not work"]);
+});
+
+
+let choicesJson = [
+  {namespace: "choices",
+
+   types: [
+   ],
+
+   functions: [
+     {
+       name: "meh",
+       type: "function",
+       parameters: [
+         {
+           name: "arg",
+           choices: [
+             {
+               type: "string",
+               enum: ["foo", "bar", "baz"],
+             },
+             {
+               type: "string",
+               pattern: "florg.*meh",
+             },
+             {
+               type: "integer",
+               minimum: 12,
+               maximum: 42,
+             },
+           ],
+         },
+       ],
+     },
+
+     {
+       name: "foo",
+       type: "function",
+       parameters: [
+         {
+           name: "arg",
+           choices: [
+             {
+               type: "object",
+               properties: {
+                 blurg: {
+                   type: "string",
+                   unsupported: true,
+                   optional: true,
+                 },
+               },
+               additionalProperties: {
+                 type: "string",
+               },
+             },
+             {
+               type: "string",
+             },
+             {
+               type: "array",
+               minItems: 2,
+               maxItems: 3,
+               items: {
+                 type: "integer",
+               },
+             },
+           ],
+         },
+       ],
+     },
+
+     {
+       name: "bar",
+       type: "function",
+       parameters: [
+         {
+           name: "arg",
+           choices: [
+             {
+               type: "object",
+               properties: {
+                 baz: {
+                   type: "string",
+                 },
+               },
+             },
+             {
+               type: "array",
+               items: {
+                 type: "integer",
+               },
+             },
+           ],
+         },
+       ],
+     },
+   ]},
+];
+
+add_task(function* testChoices() {
+  let url = "data:," + JSON.stringify(choicesJson);
+  yield Schemas.load(url);
+
+  let root = {};
+  Schemas.inject(root, wrapper);
+
+  talliedErrors.length = 0;
+
+  Assert.throws(() => root.choices.meh("frog"),
+                /Value must either: be one of \["foo", "bar", "baz"\], match the pattern \/florg\.\*meh\/, or be an integer value/);
+
+  Assert.throws(() => root.choices.meh(4),
+                /be a string value, or be at least 12/);
+
+  Assert.throws(() => root.choices.meh(43),
+                /be a string value, or be no greater than 42/);
+
+
+  Assert.throws(() => root.choices.foo([]),
+                /be an object value, be a string value, or have at least 2 items/);
+
+  Assert.throws(() => root.choices.foo([1, 2, 3, 4]),
+                /be an object value, be a string value, or have at most 3 items/);
+
+  Assert.throws(() => root.choices.foo({foo: 12}),
+                /.foo must be a string value, be a string value, or be an array value/);
+
+  Assert.throws(() => root.choices.foo({blurg: "foo"}),
+                /not contain an unsupported "blurg" property, be a string value, or be an array value/);
+
+
+  Assert.throws(() => root.choices.bar({}),
+                /contain the required "baz" property, or be an array value/);
+
+  Assert.throws(() => root.choices.bar({baz: "x", quux: "y"}),
+                /not contain an unexpected "quux" property, or be an array value/);
+
+  Assert.throws(() => root.choices.bar({baz: "x", quux: "y", foo: "z"}),
+                /not contain the unexpected properties \[foo, quux\], or be an array value/);
+});
+
+
+let permissionsJson = [
+  {namespace: "noPerms",
+
+   types: [],
+
+   functions: [
+     {
+       name: "noPerms",
+       type: "function",
+       parameters: [],
+     },
+
+     {
+       name: "fooPerm",
+       type: "function",
+       permissions: ["foo"],
+       parameters: [],
+     },
+   ]},
+
+  {namespace: "fooPerm",
+
+   permissions: ["foo"],
+
+   types: [],
+
+   functions: [
+     {
+       name: "noPerms",
+       type: "function",
+       parameters: [],
+     },
+
+     {
+       name: "fooBarPerm",
+       type: "function",
+       permissions: ["foo.bar"],
+       parameters: [],
+     },
+   ]},
+];
+
+add_task(function* testPermissions() {
+  let url = "data:," + JSON.stringify(permissionsJson);
+  yield Schemas.load(url);
+
+  let root = {};
+  Schemas.inject(root, wrapper);
+
+  equal(typeof root.noPerms, "object", "noPerms namespace should exist");
+  equal(typeof root.noPerms.noPerms, "function", "noPerms.noPerms method should exist");
+
+  ok(!("fooPerm" in root.noPerms), "noPerms.fooPerm should not method exist");
+
+  ok(!("fooPerm" in root), "fooPerm namespace should not exist");
+
+
+  do_print('Add "foo" permission');
+  permissions.add("foo");
+
+  root = {};
+  Schemas.inject(root, wrapper);
+
+  equal(typeof root.noPerms, "object", "noPerms namespace should exist");
+  equal(typeof root.noPerms.noPerms, "function", "noPerms.noPerms method should exist");
+  equal(typeof root.noPerms.fooPerm, "function", "noPerms.fooPerm method should exist");
+
+  equal(typeof root.fooPerm, "object", "fooPerm namespace should exist");
+  equal(typeof root.fooPerm.noPerms, "function", "noPerms.noPerms method should exist");
+
+  ok(!("fooBarPerm" in root.fooPerm), "fooPerm.fooBarPerm method should not exist");
+
+
+  do_print('Add "foo.bar" permission');
+  permissions.add("foo.bar");
+
+  root = {};
+  Schemas.inject(root, wrapper);
+
+  equal(typeof root.noPerms, "object", "noPerms namespace should exist");
+  equal(typeof root.noPerms.noPerms, "function", "noPerms.noPerms method should exist");
+  equal(typeof root.noPerms.fooPerm, "function", "noPerms.fooPerm method should exist");
+
+  equal(typeof root.fooPerm, "object", "fooPerm namespace should exist");
+  equal(typeof root.fooPerm.noPerms, "function", "noPerms.noPerms method should exist");
+  equal(typeof root.fooPerm.fooBarPerm, "function", "noPerms.fooBarPerm method should exist");
+});
+
+let nestedNamespaceJson = [
+  {
+    "namespace": "nested.namespace",
+    "types": [
+      {
+        "id": "CustomType",
+        "type": "object",
+        "events": [
+          {
+            "name": "onEvent",
+          },
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+          },
+        },
+        "functions": [
+          {
+            "name": "functionOnCustomType",
+            "type": "function",
+            "parameters": [
+              {
+                "name": "title",
+                "type": "string",
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    "properties": {
+      "instanceOfCustomType": {
+        "$ref": "CustomType",
+      },
+    },
+    "functions": [
+      {
+        "name": "create",
+        "type": "function",
+        "parameters": [
+          {
+            "name": "title",
+            "type": "string",
+          },
+        ],
+      },
+    ],
+  },
+];
+
+add_task(function* testNestedNamespace() {
+  let url = "data:," + JSON.stringify(nestedNamespaceJson);
+
+  yield Schemas.load(url);
+
+  let root = {};
+  Schemas.inject(root, wrapper);
+
+  talliedErrors.length = 0;
+
+  ok(root.nested, "The root object contains the first namespace level");
+  ok(root.nested.namespace, "The first level object contains the second namespace level");
+
+  ok(root.nested.namespace.create, "Got the expected function in the nested namespace");
+  do_check_eq(typeof root.nested.namespace.create, "function",
+     "The property is a function as expected");
+
+  let {instanceOfCustomType} = root.nested.namespace;
+
+  ok(instanceOfCustomType,
+     "Got the expected instance of the CustomType defined in the schema");
+  ok(instanceOfCustomType.functionOnCustomType,
+     "Got the expected method in the CustomType instance");
+
+  // TODO: test support events and properties in a SubModuleType defined in the schema,
+  // once implemented, e.g.:
+  //
+  // ok(instanceOfCustomType.url,
+  //    "Got the expected property defined in the CustomType instance)
+  //
+  // ok(instanceOfCustomType.onEvent &&
+  //    instanceOfCustomType.onEvent.addListener &&
+  //    typeof instanceOfCustomType.onEvent.addListener == "function",
+  //    "Got the expected event defined in the CustomType instance");
 });

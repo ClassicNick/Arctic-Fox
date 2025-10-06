@@ -29,17 +29,12 @@ function serializeServiceWorkerInfo(aServiceWorkerInfo) {
 
   let result = {};
 
-  Object.keys(aServiceWorkerInfo).forEach(property => {
-    if (typeof aServiceWorkerInfo[property] == "function") {
-      return;
-    }
-    if (property === "principal") {
-      result.principal = {
-        origin: aServiceWorkerInfo.principal.origin,
-        originAttributes: aServiceWorkerInfo.principal.originAttributes
-      };
-      return;
-    }
+  result.principal = {
+    origin: aServiceWorkerInfo.principal.originNoSuffix,
+    originAttributes: aServiceWorkerInfo.principal.originAttributes
+  };
+
+  ["scope", "scriptSpec"].forEach(property => {
     result[property] = aServiceWorkerInfo[property];
   });
 
@@ -149,7 +144,7 @@ this.AboutServiceWorkers = {
             !message.principal.origin ||
             !message.principal.originAttributes ||
             !message.principal.originAttributes.appId ||
-            (message.principal.originAttributes.inBrowser == null)) {
+            (message.principal.originAttributes.inIsolatedMozBrowser == null)) {
           self.sendError(message.id, "MissingPrincipal");
           return;
         }

@@ -50,16 +50,6 @@ nsBackdropFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
     return;
   }
 
-  // The WebVR specific render path in nsContainerLayerComposite
-  // results in an alternating frame strobing effect when an nsBackdropFrame is
-  // rendered.
-  // Currently, VR content is composed of a fullscreen canvas element that
-  // is expected to cover the entire viewport so a backdrop should not
-  // be necessary.
-  if (GetStateBits() & NS_FRAME_HAS_VR_CONTENT) {
-    return;
-  }
-
   DisplayBorderBackgroundOutline(aBuilder, aLists);
 }
 
@@ -86,19 +76,19 @@ nsBackdropFrame::ComputeAutoSize(nsRenderingContext *aRenderingContext,
 
 /* virtual */ void
 nsBackdropFrame::Reflow(nsPresContext* aPresContext,
-                        nsHTMLReflowMetrics& aDesiredSize,
-                        const nsHTMLReflowState& aReflowState,
+                        ReflowOutput& aDesiredSize,
+                        const ReflowInput& aReflowInput,
                         nsReflowStatus& aStatus)
 {
   MarkInReflow();
   DO_GLOBAL_REFLOW_COUNT("nsBackdropFrame");
-  DISPLAY_REFLOW(aPresContext, this, aReflowState, aDesiredSize, aStatus);
+  DISPLAY_REFLOW(aPresContext, this, aReflowInput, aDesiredSize, aStatus);
 
   // Note that this frame is a child of the viewport frame.
-  WritingMode wm = aReflowState.GetWritingMode();
-  LogicalMargin borderPadding = aReflowState.ComputedLogicalBorderPadding();
-  nscoord isize = aReflowState.ComputedISize() + borderPadding.IStartEnd(wm);
-  nscoord bsize = aReflowState.ComputedBSize() + borderPadding.BStartEnd(wm);
+  WritingMode wm = aReflowInput.GetWritingMode();
+  LogicalMargin borderPadding = aReflowInput.ComputedLogicalBorderPadding();
+  nscoord isize = aReflowInput.ComputedISize() + borderPadding.IStartEnd(wm);
+  nscoord bsize = aReflowInput.ComputedBSize() + borderPadding.BStartEnd(wm);
   aDesiredSize.SetSize(wm, LogicalSize(wm, isize, bsize));
   aStatus = NS_FRAME_COMPLETE;
 }

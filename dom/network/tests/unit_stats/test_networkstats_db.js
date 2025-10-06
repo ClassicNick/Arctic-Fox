@@ -1,7 +1,7 @@
 /* Any: copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
-const {classes: Cc, interfaces: Ci, utils: Cu, results: Cr} = Components;
+var {classes: Cc, interfaces: Ci, utils: Cu, results: Cr} = Components;
 
 Cu.import("resource://gre/modules/NetworkStatsDB.jsm");
 
@@ -41,8 +41,8 @@ function filterTimestamp(date) {
 }
 
 function getNetworks() {
-  return [{ id: '0', type: Ci.nsIDOMMozNetworkStatsManager.WIFI },
-          { id: '1234', type: Ci.nsIDOMMozNetworkStatsManager.MOBILE }];
+  return [{ id: '0', type: Ci.nsINetworkInterface.NETWORK_TYPE_WIFI },
+          { id: '1234', type: Ci.nsINetworkInterface.NETWORK_TYPE_MOBILE }];
 }
 
 function compareNetworks(networkA, networkB) {

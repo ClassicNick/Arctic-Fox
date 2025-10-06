@@ -40,7 +40,7 @@ AltSvcMapping::ProcessHeader(const nsCString &buf, const nsCString &originScheme
                              const nsCString &originHost, int32_t originPort,
                              const nsACString &username, bool privateBrowsing,
                              nsIInterfaceRequestor *callbacks, nsProxyInfo *proxyInfo,
-                             uint32_t caps)
+                             uint32_t caps, const NeckoOriginAttributes &originAttributes)
 {
   MOZ_ASSERT(NS_IsMainThread());
   LOG(("AltSvcMapping::ProcessHeader: %s\n", buf.get()));
@@ -67,9 +67,10 @@ AltSvcMapping::ProcessHeader(const nsCString &buf, const nsCString &originScheme
 
   for (uint32_t index = 0; index < parsedAltSvc.mValues.Length(); ++index) {
     uint32_t maxage = 86400; // default
-    nsAutoCString hostname; // Always empty in the header form
+    nsAutoCString hostname;
     nsAutoCString npnToken;
     int32_t portno = originPort;
+    bool clearEntry = false;
 
     for (uint32_t pairIndex = 0;
          pairIndex < parsedAltSvc.mValues[index].mValues.Length();
@@ -80,7 +81,12 @@ AltSvcMapping::ProcessHeader(const nsCString &buf, const nsCString &originScheme
         parsedAltSvc.mValues[index].mValues[pairIndex].mValue;
 
       if (!pairIndex) {
-        // h2=:443
+        if (currentName.Equals(NS_LITERAL_CSTRING("clear"))) {
+          clearEntry = true;
+          break;
+        }
+
+        // h2=[hostname]:443
         npnToken = currentName;
         int32_t colonIndex = currentValue.FindChar(':');
         if (colonIndex >= 0) {
@@ -93,7 +99,15 @@ AltSvcMapping::ProcessHeader(const nsCString &buf, const nsCString &originScheme
       } else if (currentName.Equals(NS_LITERAL_CSTRING("ma"))) {
         maxage = atoi(PromiseFlatCString(currentValue).get());
         break;
+      } else {
+        LOG(("Alt Svc ignoring parameter %s", currentName.BeginReading()));
       }
+    }
+
+    if (clearEntry) {
+      LOG(("Alt Svc clearing mapping for %s:%d", originHost.get(), originPort));
+      gHttpHandler->ConnMgr()->ClearHostMapping(originHost, originPort);
+      continue;
     }
 
     // unescape modifies a c string in place, so afterwards
@@ -121,7 +135,8 @@ AltSvcMapping::ProcessHeader(const nsCString &buf, const nsCString &originScheme
       // as that would have happened if we had accepted the parameters.
       gHttpHandler->ConnMgr()->ClearHostMapping(originHost, originPort);
     } else {
-      gHttpHandler->UpdateAltServiceMapping(mapping, proxyInfo, callbacks, caps);
+      gHttpHandler->UpdateAltServiceMapping(mapping, proxyInfo, callbacks, caps,
+                                            originAttributes);
     }
   }
 }
@@ -223,11 +238,13 @@ AltSvcMapping::RouteEquals(AltSvcMapping *map)
 
 void
 AltSvcMapping::GetConnectionInfo(nsHttpConnectionInfo **outCI,
-                                 nsProxyInfo *pi)
+                                 nsProxyInfo *pi,
+                                 const NeckoOriginAttributes &originAttributes)
 {
   RefPtr<nsHttpConnectionInfo> ci =
     new nsHttpConnectionInfo(mOriginHost, mOriginPort, mNPNToken,
-                             mUsername, pi, mAlternateHost, mAlternatePort);
+                             mUsername, pi, originAttributes,
+                             mAlternateHost, mAlternatePort);
   ci->SetInsecureScheme(!mHttps);
   ci->SetPrivate(mPrivate);
   ci.forget(outCI);
@@ -304,10 +321,10 @@ public:
       return;
     }
 
-    // insist on spdy/3* or >= http/2
+    // insist on >= http/2
     uint32_t version = mConnection->Version();
     LOG(("AltSvcTransaction::MaybeValidate() %p version %d\n", this, version));
-    if ((version < HTTP_VERSION_2) && (version != SPDY_VERSION_31)) {
+    if (version < HTTP_VERSION_2) {
       LOG(("AltSvcTransaction::MaybeValidate %p Failed due to protocol version", this));
       return;
     }
@@ -315,12 +332,9 @@ public:
     nsCOMPtr<nsISupports> secInfo;
     mConnection->GetSecurityInfo(getter_AddRefs(secInfo));
     nsCOMPtr<nsISSLSocketControl> socketControl = do_QueryInterface(secInfo);
-    bool bypassAuth = false;
-
-    if (!socketControl ||
-        NS_FAILED(socketControl->GetBypassAuthentication(&bypassAuth))) {
-      bypassAuth = false;
-    }
+    bool bypassAuth = socketControl
+                    ? socketControl->GetBypassAuthentication()
+                    : false;
 
     LOG(("AltSvcTransaction::MaybeValidate() %p socketControl=%p bypass=%d",
          this, socketControl.get(), bypassAuth));
@@ -380,7 +394,8 @@ private:
 void
 AltSvcCache::UpdateAltServiceMapping(AltSvcMapping *map, nsProxyInfo *pi,
                                      nsIInterfaceRequestor *aCallbacks,
-                                     uint32_t caps)
+                                     uint32_t caps,
+                                     const NeckoOriginAttributes &originAttributes)
 {
   MOZ_ASSERT(NS_IsMainThread());
   AltSvcMapping *existing = mHash.GetWeak(map->mHashKey);
@@ -418,7 +433,7 @@ AltSvcCache::UpdateAltServiceMapping(AltSvcMapping *map, nsProxyInfo *pi,
   mHash.Put(map->mHashKey, map);
 
   RefPtr<nsHttpConnectionInfo> ci;
-  map->GetConnectionInfo(getter_AddRefs(ci), pi);
+  map->GetConnectionInfo(getter_AddRefs(ci), pi, originAttributes);
   caps |= ci->GetAnonymous() ? NS_HTTP_LOAD_ANONYMOUS : 0;
 
   nsCOMPtr<nsIInterfaceRequestor> callbacks = new AltSvcOverride(aCallbacks);
@@ -463,14 +478,14 @@ AltSvcCache::GetAltServiceMapping(const nsACString &scheme, const nsACString &ho
   return nullptr;
 }
 
-class ProxyClearHostMapping : public nsRunnable {
+class ProxyClearHostMapping : public Runnable {
 public:
   explicit ProxyClearHostMapping(const nsACString &host, int32_t port)
     : mHost(host)
     , mPort(port)
     {}
 
-    NS_IMETHOD Run()
+    NS_IMETHOD Run() override
     {
       MOZ_ASSERT(NS_IsMainThread());
       gHttpHandler->ConnMgr()->ClearHostMapping(mHost, mPort);
@@ -547,13 +562,6 @@ NS_IMETHODIMP
 AltSvcOverride::GetIgnoreIdle(bool *ignoreIdle)
 {
   *ignoreIdle = true;
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-AltSvcOverride::GetIgnorePossibleSpdyConnections(bool *ignorePossibleSpdyConnections)
-{
-  *ignorePossibleSpdyConnections = true;
   return NS_OK;
 }
 

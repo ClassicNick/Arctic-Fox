@@ -7,32 +7,30 @@
 /*
  * Dialog services for PIP.
  */
-#include "nsCOMPtr.h"
-#include "nsString.h"
-#include "nsXPIDLString.h"
-#include "nsReadableUtils.h"
 #include "mozIDOMWindow.h"
-#include "nsIDialogParamBlock.h"
+#include "mozilla/Assertions.h"
+#include "mozilla/Casting.h"
+#include "nsArray.h"
+#include "nsDateTimeFormatCID.h"
+#include "nsEmbedCID.h"
 #include "nsIComponentManager.h"
-#include "nsIServiceManager.h"
-#include "nsIStringBundle.h"
+#include "nsIDateTimeFormat.h"
+#include "nsIDialogParamBlock.h"
 #include "nsIInterfaceRequestor.h"
 #include "nsIInterfaceRequestorUtils.h"
-#include "nsIX509Cert.h"
-#include "nsIX509CertDB.h"
-#include "nsIDateTimeFormat.h"
-#include "nsDateTimeFormatCID.h"
-#include "nsPromiseFlatString.h"
-
-#include "nsNSSDialogs.h"
 #include "nsIKeygenThread.h"
-#include "nsIProtectedAuthThread.h"
-#include "nsNSSDialogHelper.h"
-#include "nsIWindowWatcher.h"
-#include "nsIX509CertValidity.h"
-
-#include "nsEmbedCID.h"
 #include "nsIPromptService.h"
+#include "nsIProtectedAuthThread.h"
+#include "nsIServiceManager.h"
+#include "nsIWindowWatcher.h"
+#include "nsIX509CertDB.h"
+#include "nsIX509Cert.h"
+#include "nsIX509CertValidity.h"
+#include "nsNSSDialogHelper.h"
+#include "nsNSSDialogs.h"
+#include "nsPromiseFlatString.h"
+#include "nsReadableUtils.h"
+#include "nsString.h"
 
 #define PIPSTRING_BUNDLE_URL "chrome://pippki/locale/pippki.properties"
 
@@ -109,7 +107,7 @@ nsNSSDialogs::ConfirmDownloadCACert(nsIInterfaceRequestor *ctx,
 {
   nsresult rv;
 
-  nsCOMPtr<nsIMutableArray> dlgArray(do_CreateInstance(NS_ARRAY_CONTRACTID));
+  nsCOMPtr<nsIMutableArray> dlgArray = nsArrayBase::Create();
   if (!dlgArray) {
     return NS_ERROR_FAILURE;
   }
@@ -158,81 +156,79 @@ nsNSSDialogs::ConfirmDownloadCACert(nsIInterfaceRequestor *ctx,
   return rv;
 }
 
-NS_IMETHODIMP 
-nsNSSDialogs::NotifyCACertExists(nsIInterfaceRequestor *ctx)
-{
-  nsresult rv;
-
-  nsCOMPtr<nsIPromptService> promptSvc(do_GetService(NS_PROMPTSERVICE_CONTRACTID));
-  if (!promptSvc)
-    return NS_ERROR_FAILURE;
-
-  // Get the parent window for the dialog
-  nsCOMPtr<mozIDOMWindowProxy> parent = do_GetInterface(ctx);
-
-  nsAutoString title;
-  rv = mPIPStringBundle->GetStringFromName(MOZ_UTF16("caCertExistsTitle"),
-                                           getter_Copies(title));
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  nsAutoString msg;
-  rv = mPIPStringBundle->GetStringFromName(MOZ_UTF16("caCertExistsMessage"),
-                                           getter_Copies(msg));
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  rv = promptSvc->Alert(parent, title.get(), msg.get());
-
-  return rv;
-}
-
-
 NS_IMETHODIMP
-nsNSSDialogs::ChooseCertificate(nsIInterfaceRequestor *ctx, const char16_t *cn, const char16_t *organization, const char16_t *issuer, const char16_t **certNickList, const char16_t **certDetailsList, uint32_t count, int32_t *selectedIndex, bool *canceled) 
+nsNSSDialogs::ChooseCertificate(nsIInterfaceRequestor* ctx,
+                                const nsACString& hostname,
+                                int32_t port,
+                                const nsACString& organization,
+                                const nsACString& issuerOrg,
+                                nsIArray* certList,
+                        /*out*/ uint32_t* selectedIndex,
+                        /*out*/ bool* certificateChosen)
 {
-  nsresult rv;
-  uint32_t i;
+  NS_ENSURE_ARG_POINTER(ctx);
+  NS_ENSURE_ARG_POINTER(certList);
+  NS_ENSURE_ARG_POINTER(selectedIndex);
+  NS_ENSURE_ARG_POINTER(certificateChosen);
 
-  *canceled = false;
-
-  // Get the parent window for the dialog
-  nsCOMPtr<nsIDOMWindow> parent = do_GetInterface(ctx);
+  *certificateChosen = false;
 
   nsCOMPtr<nsIDialogParamBlock> block =
-           do_CreateInstance(NS_DIALOGPARAMBLOCK_CONTRACTID);
-  if (!block) return NS_ERROR_FAILURE;
-
-  block->SetNumberStrings(4+count*2);
-
-  rv = block->SetString(0, cn);
-  if (NS_FAILED(rv)) return rv;
-
-  rv = block->SetString(1, organization);
-  if (NS_FAILED(rv)) return rv;
-
-  rv = block->SetString(2, issuer);
-  if (NS_FAILED(rv)) return rv;
-
-  for (i = 0; i < count; i++) {
-    rv = block->SetString(i+3, certNickList[i]);
-    if (NS_FAILED(rv)) return rv;
+    do_CreateInstance(NS_DIALOGPARAMBLOCK_CONTRACTID);
+  if (!block) {
+    return NS_ERROR_FAILURE;
   }
 
-  for (i = 0; i < count; i++) {
-    rv = block->SetString(i+count+3, certDetailsList[i]);
-    if (NS_FAILED(rv)) return rv;
+  // SetObjects() expects an nsIMutableArray, which is why we can't directly use
+  // |certList| and have to add an extra layer of indirection.
+  nsCOMPtr<nsIMutableArray> paramBlockArray = nsArrayBase::Create();
+  if (!paramBlockArray) {
+    return NS_ERROR_FAILURE;
+  }
+  nsresult rv = paramBlockArray->AppendElement(certList, false);
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+  rv = block->SetObjects(paramBlockArray);
+  if (NS_FAILED(rv)) {
+    return rv;
   }
 
-  rv = block->SetInt(0, count);
-  if (NS_FAILED(rv)) return rv;
+  rv = block->SetNumberStrings(3);
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+
+  rv = block->SetString(0, NS_ConvertUTF8toUTF16(hostname).get());
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+  rv = block->SetString(1, NS_ConvertUTF8toUTF16(organization).get());
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+  rv = block->SetString(2, NS_ConvertUTF8toUTF16(issuerOrg).get());
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+
+  rv = block->SetInt(0, port);
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
 
   rv = nsNSSDialogHelper::openDialog(nullptr,
-                                "chrome://pippki/content/clientauthask.xul",
-                                block);
-  if (NS_FAILED(rv)) return rv;
+                                     "chrome://pippki/content/clientauthask.xul",
+                                     block);
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
 
   int32_t status;
   rv = block->GetInt(0, &status);
-  if (NS_FAILED(rv)) return rv;
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
 
   nsCOMPtr<nsIClientAuthUserDecision> extraResult = do_QueryInterface(ctx);
   if (extraResult) {
@@ -243,12 +239,23 @@ nsNSSDialogs::ChooseCertificate(nsIInterfaceRequestor *ctx, const char16_t *cn, 
     }
   }
 
-  *canceled = (status == 0)?true:false;
-  if (!*canceled) {
-    // retrieve the nickname
-    rv = block->GetInt(1, selectedIndex);
+  *certificateChosen = (status != 0);
+  if (*certificateChosen) {
+    int32_t index = 0;
+    rv = block->GetInt(1, &index);
+    if (NS_FAILED(rv)) {
+      return rv;
+    }
+
+    if (index < 0) {
+      MOZ_ASSERT_UNREACHABLE("Selected index should never be negative");
+      return NS_ERROR_FAILURE;
+    }
+
+    *selectedIndex = mozilla::AssertedCast<uint32_t>(index);
   }
-  return rv;
+
+  return NS_OK;
 }
 
 
@@ -357,7 +364,7 @@ nsNSSDialogs::GetPKCS12FilePassword(nsIInterfaceRequestor* ctx,
 
   nsAutoString msg;
   nsresult rv = mPIPStringBundle->GetStringFromName(
-    MOZ_UTF16("getPKCS12FilePasswordMessage"), getter_Copies(msg));
+    u"getPKCS12FilePasswordMessage", getter_Copies(msg));
   if (NS_FAILED(rv)) {
     return rv;
   }
@@ -383,7 +390,7 @@ nsNSSDialogs::GetPKCS12FilePassword(nsIInterfaceRequestor* ctx,
 NS_IMETHODIMP 
 nsNSSDialogs::ViewCert(nsIInterfaceRequestor* ctx, nsIX509Cert* cert)
 {
-  nsCOMPtr<nsIMutableArray> dlgArray(do_CreateInstance(NS_ARRAY_CONTRACTID));
+  nsCOMPtr<nsIMutableArray> dlgArray = nsArrayBase::Create();
   if (!dlgArray) {
     return NS_ERROR_FAILURE;
   }

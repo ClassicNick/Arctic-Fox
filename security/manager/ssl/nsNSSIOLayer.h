@@ -4,17 +4,18 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef _NSNSSIOLAYER_H
-#define _NSNSSIOLAYER_H
+#ifndef nsNSSIOLayer_h
+#define nsNSSIOLayer_h
 
 #include "TransportSecurityInfo.h"
-#include "nsISSLSocketControl.h"
+#include "mozilla/TimeStamp.h"
+#include "nsCOMPtr.h"
+#include "nsDataHashtable.h"
 #include "nsIClientAuthDialogs.h"
 #include "nsIProxyInfo.h"
+#include "nsISSLSocketControl.h"
 #include "nsNSSCertificate.h"
-#include "nsDataHashtable.h"
 #include "nsTHashtable.h"
-#include "mozilla/TimeStamp.h"
 #include "sslt.h"
 
 namespace mozilla {
@@ -113,14 +114,6 @@ public:
 
   void SetMACAlgorithmUsed(int16_t mac) { mMACAlgorithmUsed = mac; }
 
-  inline bool GetBypassAuthentication()
-  {
-    bool result = false;
-    mozilla::DebugOnly<nsresult> rv = GetBypassAuthentication(&result);
-    MOZ_ASSERT(NS_SUCCEEDED(rv));
-    return result;
-  }
-
 protected:
   virtual ~nsNSSSocketInfo();
 
@@ -218,9 +211,7 @@ public:
                                    PRErrorCode intoleranceReason);
   bool rememberStrongCiphersFailed(const nsACString& hostName, int16_t port,
                                    PRErrorCode intoleranceReason);
-  // returns the known tolerant version
-  // or 0 if there is no known tolerant version
-  uint16_t forgetIntolerance(const nsACString& hostname, int16_t port);
+  void forgetIntolerance(const nsACString& hostname, int16_t port);
   void adjustForTLSIntolerance(const nsACString& hostname, int16_t port,
                                /*in/out*/ SSLVersionRange& range,
                                /*out*/ StrongCipherStatus& strongCipherStatus);
@@ -236,10 +227,6 @@ public:
   bool isInsecureFallbackSite(const nsACString& hostname);
 
   bool mFalseStartRequireNPN;
-  // Use the static list of sites that require insecure fallback
-  // to TLS 1.0 if true, set by the pref
-  // security.tls.insecure_fallback_hosts.use_static_list.
-  bool mUseStaticFallbackList;
   bool mUnrestrictedRC4Fallback;
   uint16_t mVersionFallbackLimit;
 private:
@@ -268,4 +255,4 @@ nsresult nsSSLIOLayerAddToSocket(int32_t family,
 nsresult nsSSLIOLayerFreeTLSIntolerantSites();
 nsresult displayUnknownCertErrorAlert(nsNSSSocketInfo* infoObject, int error);
 
-#endif /* _NSNSSIOLAYER_H */
+#endif // nsNSSIOLayer_h

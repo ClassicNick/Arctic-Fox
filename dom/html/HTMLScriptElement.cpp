@@ -62,7 +62,7 @@ HTMLScriptElement::BindToTree(nsIDocument* aDocument, nsIContent* aParent,
                                                  aCompileEventHandlers);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  if (GetCrossShadowCurrentDoc()) {
+  if (GetComposedDoc()) {
     MaybeProcessScript();
   }
 
@@ -244,10 +244,10 @@ HTMLScriptElement::SetInnerHTML(const nsAString& aInnerHTML,
 // variation of this code in nsSVGScriptElement - check if changes
 // need to be transfered when modifying
 
-void
+bool
 HTMLScriptElement::GetScriptType(nsAString& type)
 {
-  GetType(type);
+  return GetAttr(kNameSpaceID_None, nsGkAtoms::type, type);
 }
 
 void

@@ -1,7 +1,7 @@
-const Cc = Components.classes;
-const Ci = Components.interfaces;
-const Cu = Components.utils;
-const Cr = Components.results;
+var Cc = Components.classes;
+var Ci = Components.interfaces;
+var Cu = Components.utils;
+var Cr = Components.results;
 
 function newCacheBackEndUsed()
 {
@@ -408,6 +408,16 @@ function MultipleCallbacks(number, goon, delayed)
   this.pending = number;
   this.goon = goon;
   this.delayed = delayed;
+}
+
+function wait_for_cache_index(continue_func)
+{
+  // This callback will not fire before the index is in the ready state.  nsICacheStorage.exists() will
+  // no longer throw after this point.
+  get_cache_service().asyncGetDiskConsumption({
+    onNetworkCacheDiskConsumption: function() { continue_func(); },
+    QueryInterface() { return this; }
+  });
 }
 
 function finish_cache2_test()

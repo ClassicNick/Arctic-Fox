@@ -76,6 +76,19 @@ public:
   bool mEngineIsRunning;
 };
 
+class InputObserver :  public webrtc::ViEInputObserver
+{
+public:
+  explicit InputObserver(CamerasParent* aParent)
+    : mParent(aParent) {};
+  virtual void DeviceChange();
+
+  friend CamerasParent;
+
+private:
+  RefPtr<CamerasParent> mParent;
+};
+
 class CamerasParent :  public PCamerasParent,
                        public nsIObserver
 {
@@ -129,7 +142,8 @@ protected:
   void CloseEngines();
   void StopIPC();
   void StopVideoCapture();
-  nsresult DispatchToVideoCaptureThread(nsRunnable *event);
+  // Can't take already_AddRefed because it can fail in stupid ways.
+  nsresult DispatchToVideoCaptureThread(Runnable* event);
 
   EngineHelper mEngines[CaptureEngine::MaxEngine];
   nsTArray<CallbackHelper*> mCallbacks;
@@ -152,6 +166,7 @@ protected:
   // Above 2 are PBackground only, but this is potentially
   // read cross-thread.
   mozilla::Atomic<bool> mWebRTCAlive;
+  nsTArray<InputObserver*> mObservers;
 };
 
 PCamerasParent* CreateCamerasParent();

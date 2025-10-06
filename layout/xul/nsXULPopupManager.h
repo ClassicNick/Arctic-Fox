@@ -112,7 +112,8 @@ enum nsIgnoreKeys {
 #define NS_DIRECTION_IS_BLOCK_TO_EDGE(dir) (dir == eNavigationDirection_First ||    \
                                             dir == eNavigationDirection_Last)
 
-PR_STATIC_ASSERT(NS_STYLE_DIRECTION_LTR == 0 && NS_STYLE_DIRECTION_RTL == 1);
+static_assert(NS_STYLE_DIRECTION_LTR == 0 && NS_STYLE_DIRECTION_RTL == 1,
+              "Left to Right should be 0 and Right to Left should be 1");
 
 /**
  * DirectionFromKeyCodeTable: two arrays, the first for left-to-right and the
@@ -183,7 +184,7 @@ public:
 };
 
 // this class is used for dispatching popupshowing events asynchronously.
-class nsXULPopupShowingEvent : public nsRunnable
+class nsXULPopupShowingEvent : public mozilla::Runnable
 {
 public:
   nsXULPopupShowingEvent(nsIContent *aPopup,
@@ -205,7 +206,7 @@ private:
 };
 
 // this class is used for dispatching popuphiding events asynchronously.
-class nsXULPopupHidingEvent : public nsRunnable
+class nsXULPopupHidingEvent : public mozilla::Runnable
 {
 public:
   nsXULPopupHidingEvent(nsIContent *aPopup,
@@ -237,7 +238,7 @@ private:
 };
 
 // this class is used for dispatching menu command events asynchronously.
-class nsXULMenuCommandEvent : public nsRunnable
+class nsXULMenuCommandEvent : public mozilla::Runnable
 {
 public:
   nsXULMenuCommandEvent(nsIContent *aMenu,
@@ -483,6 +484,14 @@ public:
    * document is hidden.
    */
   void HidePopupsInDocShell(nsIDocShellTreeItem* aDocShellToHide);
+
+  /**
+   * Enable or disable the dynamic noautohide state of a panel.
+   *
+   * aPanel - the panel whose state is to change
+   * aShouldRollup - whether the panel is no longer noautohide
+   */
+  void EnableRollup(nsIContent* aPopup, bool aShouldRollup);
 
   /**
    * Execute a menu command from the triggering event aEvent.
@@ -778,6 +787,9 @@ protected:
   // the popup that is currently being opened, stored only during the
   // popupshowing event
   nsCOMPtr<nsIContent> mOpeningPopup;
+
+  // If true, all popups won't hide automatically on blur
+  static bool sDevtoolsDisableAutoHide;
 };
 
 #endif

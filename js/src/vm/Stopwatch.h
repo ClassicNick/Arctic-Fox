@@ -19,8 +19,6 @@
 
 namespace js {
 
-typedef mozilla::Vector<RefPtr<js::PerformanceGroup>> GroupVector;
-
 /**
  * A container for performance groups.
  *
@@ -43,7 +41,7 @@ struct PerformanceGroupHolder {
      * May return `nullptr` if the embedding has not initialized
      * support for performance groups.
      */
-    const GroupVector* getGroups(JSContext*);
+    const PerformanceGroupVector* getGroups(JSContext*);
 
     explicit PerformanceGroupHolder(JSRuntime* runtime)
       : runtime_(runtime)
@@ -59,7 +57,7 @@ struct PerformanceGroupHolder {
 
     // The groups to which this compartment belongs. Filled if and only
     // if `initialized_` is `true`.
-    GroupVector groups_;
+    PerformanceGroupVector groups_;
 };
 
 /**
@@ -292,7 +290,7 @@ struct PerformanceMonitoring {
     /**
      * Groups used in the current iteration.
      */
-    GroupVector recentGroups_;
+    PerformanceGroupVector recentGroups_;
 
     /**
      * The highest value of the timestamp counter encountered
@@ -314,11 +312,9 @@ struct cpuid_t {
           number_(0)
     { }
 };
-#elif defined(__linux__)
-    typedef int cpuid_t;
 #else
     typedef struct {} cpuid_t;
-#endif // defined(WINVER >= 0x0600) || defined(__linux__)
+#endif // defined(WINVER >= 0x0600)
 
 /**
  * RAII class to start/stop measuring performance when
@@ -346,7 +342,7 @@ class AutoStopwatch final {
     // if `isMonitoringJank_` is `true`.
     cpuid_t cpuStart_;
 
-    mozilla::Vector<RefPtr<js::PerformanceGroup>> groups_;
+    PerformanceGroupVector groups_;
 
   public:
     // If the stopwatch is active, constructing an instance of

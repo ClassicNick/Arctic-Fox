@@ -10,11 +10,12 @@
 #include "mozilla/GuardObjects.h"
 
 #include "jsalloc.h"
-#include "jslock.h"
 
 #include "js/HashTable.h"
 #include "js/TypeDecls.h"
 #include "js/Vector.h"
+#include "threading/Mutex.h"
+#include "threading/Thread.h"
 #include "vm/TraceLoggingGraph.h"
 #include "vm/TraceLoggingTypes.h"
 
@@ -92,6 +93,8 @@ class TraceLoggerEvent {
     TraceLoggerEvent(TraceLoggerThread* logger, TraceLoggerTextId type,
                      const JS::ReadOnlyCompileOptions& compileOptions);
     TraceLoggerEvent(TraceLoggerThread* logger, const char* text);
+    TraceLoggerEvent(const TraceLoggerEvent& event);
+    TraceLoggerEvent& operator=(const TraceLoggerEvent& other);
     ~TraceLoggerEvent();
 #else
     TraceLoggerEvent (TraceLoggerThread* logger, TraceLoggerTextId textId) {}
@@ -99,6 +102,8 @@ class TraceLoggerEvent {
     TraceLoggerEvent (TraceLoggerThread* logger, TraceLoggerTextId type,
                       const JS::ReadOnlyCompileOptions& compileOptions) {}
     TraceLoggerEvent (TraceLoggerThread* logger, const char* text) {}
+    TraceLoggerEvent(const TraceLoggerEvent& event) {}
+    TraceLoggerEvent& operator=(const TraceLoggerEvent& other) {};
     ~TraceLoggerEvent() {}
 #endif
 
@@ -109,9 +114,6 @@ class TraceLoggerEvent {
     bool hasPayload() const {
         return !!payload_;
     }
-
-    TraceLoggerEvent& operator=(const TraceLoggerEvent& other);
-    TraceLoggerEvent(const TraceLoggerEvent& event) = delete;
 };
 
 /**
@@ -292,9 +294,9 @@ class TraceLoggerThread
 class TraceLoggerThreadState
 {
 #ifdef JS_TRACE_LOGGING
-    typedef HashMap<PRThread*,
+    typedef HashMap<Thread::Id,
                     TraceLoggerThread*,
-                    PointerHasher<PRThread*, 3>,
+                    Thread::Hasher,
                     SystemAllocPolicy> ThreadLoggerHashMap;
     typedef Vector<TraceLoggerThread*, 1, js::SystemAllocPolicy > MainThreadLoggers;
 
@@ -311,7 +313,7 @@ class TraceLoggerThreadState
 
   public:
     uint64_t startupTime;
-    PRLock* lock;
+    Mutex lock;
 
     TraceLoggerThreadState()
       :
@@ -320,8 +322,7 @@ class TraceLoggerThreadState
 #endif
         mainThreadEnabled(false),
         offThreadEnabled(false),
-        graphSpewingEnabled(false),
-        lock(nullptr)
+        graphSpewingEnabled(false)
     { }
 
     bool init();
@@ -329,7 +330,7 @@ class TraceLoggerThreadState
 
     TraceLoggerThread* forMainThread(JSRuntime* runtime);
     TraceLoggerThread* forMainThread(jit::CompileRuntime* runtime);
-    TraceLoggerThread* forThread(PRThread* thread);
+    TraceLoggerThread* forThread(const Thread::Id& thread);
 
     bool isTextIdEnabled(uint32_t textId) {
         if (textId < TraceLogger_Last)

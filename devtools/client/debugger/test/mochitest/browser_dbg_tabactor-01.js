@@ -1,11 +1,12 @@
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
+/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 /* Any copyright is dedicated to the Public Domain.
-   http://creativecommons.org/publicdomain/zero/1.0/ */
+ * http://creativecommons.org/publicdomain/zero/1.0/ */
 
 /**
  * Check extension-added tab actor lifetimes.
  */
 
-const CHROME_URL = "chrome://mochitests/content/browser/devtools/client/debugger/test/mochitest/"
 const ACTORS_URL = CHROME_URL + "testactors.js";
 const TAB_URL = EXAMPLE_URL + "doc_empty-tab-01.html";
 
@@ -65,6 +66,6 @@ function closeConnection() {
   return deferred.promise;
 }
 
-registerCleanupFunction(function() {
+registerCleanupFunction(function () {
   gClient = null;
 });

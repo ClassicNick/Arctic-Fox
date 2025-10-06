@@ -15,7 +15,6 @@
 #include "nsPIDOMWindow.h"
 #include "nsPoint.h"
 #include "nsCycleCollectionParticipant.h"
-#include "nsAutoPtr.h"
 #include "mozilla/dom/EventBinding.h"
 #include "nsIScriptGlobalObject.h"
 #include "Units.h"
@@ -187,7 +186,17 @@ public:
 
   bool DefaultPrevented() const
   {
-    return mEvent->mFlags.mDefaultPrevented;
+    return mEvent->DefaultPrevented();
+  }
+
+  bool DefaultPreventedByChrome() const
+  {
+    return mEvent->mFlags.mDefaultPreventedByChrome;
+  }
+
+  bool DefaultPreventedByContent() const
+  {
+    return mEvent->mFlags.mDefaultPreventedByContent;
   }
 
   bool MultipleActionsPrevented() const
@@ -197,7 +206,7 @@ public:
 
   bool IsTrusted() const
   {
-    return mEvent->mFlags.mIsTrusted;
+    return mEvent->IsTrusted();
   }
 
   bool IsSynthesized() const
@@ -233,6 +242,13 @@ public:
    */
   static nsIContent* GetShadowRelatedTarget(nsIContent* aCurrentTarget,
                                             nsIContent* aRelatedTarget);
+
+  void MarkUninitialized()
+  {
+    mEvent->mMessage = eVoidEvent;
+    mEvent->mSpecifiedEventTypeString.Truncate();
+    mEvent->mSpecifiedEventType = nullptr;
+  }
 
 protected:
 
@@ -293,7 +309,7 @@ public:
     MOZ_ASSERT(aOverridingMessage != eUnidentifiedEvent,
                "Only use this class with a valid overriding EventMessage");
     MOZ_ASSERT(mOrigMessage != eUnidentifiedEvent &&
-               mEvent->mEvent->typeString.IsEmpty(),
+               mEvent->mEvent->mSpecifiedEventTypeString.IsEmpty(),
                "Only use this class on events whose overridden type is "
                "known (so we can restore it properly)");
 

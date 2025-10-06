@@ -7,25 +7,40 @@
 #include "Benchmark.h"
 #include "BufferMediaResource.h"
 #include "MediaData.h"
+#include "MediaPrefs.h"
 #include "PDMFactory.h"
 #include "WebMDemuxer.h"
-#include "WebMSample.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/Telemetry.h"
+#include "mozilla/dom/ContentChild.h"
+
+#ifndef MOZ_WIDGET_ANDROID
+#include "WebMSample.h"
+#endif
 
 namespace mozilla {
 
+// Update this version number to force re-running the benchmark. Such as when
+// an improvement to FFVP9 or LIBVPX is deemed worthwhile.
+const uint32_t VP9Benchmark::sBenchmarkVersionID = 1;
+
 const char* VP9Benchmark::sBenchmarkFpsPref = "media.benchmark.vp9.fps";
+const char* VP9Benchmark::sBenchmarkFpsVersionCheck = "media.benchmark.vp9.versioncheck";
 bool VP9Benchmark::sHasRunTest = false;
 
+// static
 bool
 VP9Benchmark::IsVP9DecodeFast()
 {
   MOZ_ASSERT(NS_IsMainThread());
 
+#ifdef MOZ_WIDGET_ANDROID
+  return true;
+#else
   bool hasPref = Preferences::HasUserValue(sBenchmarkFpsPref);
+  uint32_t hadRecentUpdate = Preferences::GetUint(sBenchmarkFpsVersionCheck, 0U);
 
-  if (!sHasRunTest && !hasPref) {
+  if (!sHasRunTest && (!hasPref || hadRecentUpdate != sBenchmarkVersionID)) {
     sHasRunTest = true;
 
     RefPtr<WebMDemuxer> demuxer =
@@ -43,7 +58,16 @@ VP9Benchmark::IsVP9DecodeFast()
     estimiser->Run()->Then(
       AbstractThread::MainThread(), __func__,
       [](uint32_t aDecodeFps) {
-        Preferences::SetUint(sBenchmarkFpsPref, aDecodeFps);
+        if (XRE_IsContentProcess()) {
+          dom::ContentChild* contentChild = dom::ContentChild::GetSingleton();
+          if (contentChild) {
+            contentChild->SendNotifyBenchmarkResult(NS_LITERAL_STRING("VP9"),
+                                                    aDecodeFps);
+          }
+        } else {
+          Preferences::SetUint(sBenchmarkFpsPref, aDecodeFps);
+          Preferences::SetUint(sBenchmarkFpsVersionCheck, sBenchmarkVersionID);
+        }
         Telemetry::Accumulate(Telemetry::ID::VIDEO_VP9_BENCHMARK_FPS, aDecodeFps);
       },
       []() { });
@@ -58,16 +82,17 @@ VP9Benchmark::IsVP9DecodeFast()
     Preferences::GetUint("media.benchmark.vp9.threshold", 150);
 
   return decodeFps >= threshold;
+#endif
 }
 
 Benchmark::Benchmark(MediaDataDemuxer* aDemuxer, const Parameters& aParameters)
-  : QueueObject(AbstractThread::MainThread())
+  : QueueObject(AbstractThread::GetCurrent())
   , mParameters(aParameters)
   , mKeepAliveUntilComplete(this)
   , mPlaybackState(this, aDemuxer)
 {
   MOZ_COUNT_CTOR(Benchmark);
-  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(Thread(), "Must be run in task queue");
 }
 
 Benchmark::~Benchmark()
@@ -78,6 +103,8 @@ Benchmark::~Benchmark()
 RefPtr<Benchmark::BenchmarkPromise>
 Benchmark::Run()
 {
+  MOZ_ASSERT(OnThread());
+
   RefPtr<BenchmarkPromise> p = mPromise.Ensure(__func__);
   RefPtr<Benchmark> self = this;
   mPlaybackState.Dispatch(
@@ -88,7 +115,7 @@ Benchmark::Run()
 void
 Benchmark::ReturnResult(uint32_t aDecodeFps)
 {
-  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(OnThread());
 
   mPromise.ResolveIfExists(aDecodeFps, __func__);
 }
@@ -96,25 +123,32 @@ Benchmark::ReturnResult(uint32_t aDecodeFps)
 void
 Benchmark::Dispose()
 {
-  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(OnThread());
 
   mKeepAliveUntilComplete = nullptr;
   mPromise.RejectIfExists(false, __func__);
+}
+
+void
+Benchmark::Init()
+{
+  MOZ_ASSERT(NS_IsMainThread());
+
+  MediaPrefs::GetSingleton();
 }
 
 BenchmarkPlayback::BenchmarkPlayback(Benchmark* aMainThreadState,
                                      MediaDataDemuxer* aDemuxer)
   : QueueObject(new TaskQueue(GetMediaThreadPool(MediaThreadType::PLAYBACK)))
   , mMainThreadState(aMainThreadState)
-  , mDecoderTaskQueue(new FlushableTaskQueue(GetMediaThreadPool(
+  , mDecoderTaskQueue(new TaskQueue(GetMediaThreadPool(
                         MediaThreadType::PLATFORM_DECODER)))
   , mDemuxer(aDemuxer)
   , mSampleIndex(0)
   , mFrameCount(0)
   , mFinished(false)
 {
-  MOZ_ASSERT(NS_IsMainThread());
-  PDMFactory::Init();
+  MOZ_ASSERT(static_cast<Benchmark*>(mMainThreadState)->OnThread());
 }
 
 void
@@ -131,6 +165,7 @@ BenchmarkPlayback::DemuxSamples()
         mDemuxer->GetTrackDemuxer(TrackInfo::kVideoTrack, 0);
       if (!mTrackDemuxer) {
         MainThreadShutdown();
+        return;
       }
       DemuxNextSample();
     },
@@ -172,16 +207,16 @@ BenchmarkPlayback::InitDecoder(TrackInfo&& aInfo)
   MOZ_ASSERT(OnThread());
 
   RefPtr<PDMFactory> platform = new PDMFactory();
-  mDecoder = platform->CreateDecoder(aInfo, mDecoderTaskQueue, this);
+  mDecoder = platform->CreateDecoder({ aInfo, mDecoderTaskQueue, reinterpret_cast<MediaDataDecoderCallback*>(this) });
   if (!mDecoder) {
     MainThreadShutdown();
     return;
   }
   RefPtr<Benchmark> ref(mMainThreadState);
   mDecoder->Init()->Then(
-    ref->Thread(), __func__,
+    Thread(), __func__,
     [this, ref](TrackInfo::TrackType aTrackType) {
-      Dispatch(NS_NewRunnableFunction([this, ref]() { InputExhausted(); }));
+      InputExhausted();
     },
     [this, ref](MediaDataDecoder::DecoderFailureReason aReason) {
       MainThreadShutdown();
@@ -192,6 +227,12 @@ void
 BenchmarkPlayback::MainThreadShutdown()
 {
   MOZ_ASSERT(OnThread());
+
+  if (mFinished) {
+    // Nothing more to do.
+    return;
+  }
+  mFinished = true;
 
   if (mDecoder) {
     mDecoder->Flush();
@@ -231,7 +272,6 @@ BenchmarkPlayback::Output(MediaData* aData)
         (frames == ref->mParameters.mFramesToMeasure ||
          elapsedTime >= ref->mParameters.mTimeout)) {
       uint32_t decodeFps = frames / elapsedTime.ToSeconds();
-      mFinished = true;
       MainThreadShutdown();
       ref->Dispatch(NS_NewRunnableFunction([ref, decodeFps]() {
         ref->ReturnResult(decodeFps);
@@ -241,7 +281,7 @@ BenchmarkPlayback::Output(MediaData* aData)
 }
 
 void
-BenchmarkPlayback::Error()
+BenchmarkPlayback::Error(MediaDataDecoderError aError)
 {
   RefPtr<Benchmark> ref(mMainThreadState);
   Dispatch(NS_NewRunnableFunction([this, ref]() {  MainThreadShutdown(); }));
@@ -276,7 +316,6 @@ BenchmarkPlayback::DrainComplete()
     int32_t frames = mFrameCount - ref->mParameters.mStartupFrame;
     TimeDuration elapsedTime = TimeStamp::Now() - mDecodeStartTime;
     uint32_t decodeFps = frames / elapsedTime.ToSeconds();
-    mFinished = true;
     MainThreadShutdown();
     ref->Dispatch(NS_NewRunnableFunction([ref, decodeFps]() {
       ref->ReturnResult(decodeFps);

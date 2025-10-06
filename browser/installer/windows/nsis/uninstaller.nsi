@@ -4,7 +4,7 @@
 
 # Required Plugins:
 # AppAssocReg http://nsis.sourceforge.net/Application_Association_Registration_plug-in
-# CityHash    http://mxr.mozilla.org/mozilla-central/source/other-licenses/nsis/Contrib/CityHash
+# CityHash    http://dxr.mozilla.org/mozilla-central/source/other-licenses/nsis/Contrib/CityHash
 # ShellLink   http://nsis.sourceforge.net/ShellLink_plug-in
 # UAC         http://nsis.sourceforge.net/UAC_plug-in
 
@@ -200,7 +200,7 @@ Section "Uninstall"
   ${If} "$0" == "1"
     ${un.DeleteRelativeProfiles} "Arctic Fox Developers\Arctic Fox"
     ${un.DeleteRelativeProfiles} "Arctic Fox Developers\MetroPM"
-    RmDir "$APPDATA\Mozilla\Extensions\{8de7fcbb-c55c-4fbe-bfc5-fc555c87dbc4}"
+    RmDir "$APPDATA\Mozilla\Extensions\{ec8030f7-c20a-464f-9b0e-13a3a9e97384}"
     RmDir "$APPDATA\Mozilla\Extensions"
     RmDir "$APPDATA\Mozilla"
   ${EndIf}
@@ -243,31 +243,31 @@ Section "Uninstall"
   ${If} ${AtLeastWin8}
     ${RemoveDEHRegistration} ${DELEGATE_EXECUTE_HANDLER_ID} \
                              $AppUserModelID \
-                             "FirefoxURL" \
-                             "FirefoxHTML"
+                             "ArcticFoxURL" \
+                             "ArcticFoxHTML"
   ${EndIf}
 
-  ${un.RegCleanAppHandler} "FirefoxURL"
-  ${un.RegCleanAppHandler} "FirefoxHTML"
+  ${un.RegCleanAppHandler} "ArcticFoxURL"
+  ${un.RegCleanAppHandler} "ArcticFoxHTML"
   ${un.RegCleanProtocolHandler} "ftp"
   ${un.RegCleanProtocolHandler} "http"
   ${un.RegCleanProtocolHandler} "https"
 
   ClearErrors
-  ReadRegStr $R9 HKCR "FirefoxHTML" ""
-  ; Don't clean up the file handlers if the FirefoxHTML key still exists since
+  ReadRegStr $R9 HKCR "ArcticFoxHTML" ""
+  ; Don't clean up the file handlers if the ArcticFoxHTML key still exists since
   ; there should be a second installation that may be the default file handler
   ${If} ${Errors}
-    ${un.RegCleanFileHandler}  ".htm"   "FirefoxHTML"
-    ${un.RegCleanFileHandler}  ".html"  "FirefoxHTML"
-    ${un.RegCleanFileHandler}  ".shtml" "FirefoxHTML"
-    ${un.RegCleanFileHandler}  ".xht"   "FirefoxHTML"
-    ${un.RegCleanFileHandler}  ".xhtml" "FirefoxHTML"
-    ${un.RegCleanFileHandler}  ".oga"  "FirefoxHTML"
-    ${un.RegCleanFileHandler}  ".ogg"  "FirefoxHTML"
-    ${un.RegCleanFileHandler}  ".ogv"  "FirefoxHTML"
-    ${un.RegCleanFileHandler}  ".pdf"  "FirefoxHTML"
-    ${un.RegCleanFileHandler}  ".webm"  "FirefoxHTML"
+    ${un.RegCleanFileHandler}  ".htm"   "ArcticFoxHTML"
+    ${un.RegCleanFileHandler}  ".html"  "ArcticFoxHTML"
+    ${un.RegCleanFileHandler}  ".shtml" "ArcticFoxHTML"
+    ${un.RegCleanFileHandler}  ".xht"   "ArcticFoxHTML"
+    ${un.RegCleanFileHandler}  ".xhtml" "ArcticFoxHTML"
+    ${un.RegCleanFileHandler}  ".oga"  "ArcticFoxHTML"
+    ${un.RegCleanFileHandler}  ".ogg"  "ArcticFoxHTML"
+    ${un.RegCleanFileHandler}  ".ogv"  "ArcticFoxHTML"
+    ${un.RegCleanFileHandler}  ".pdf"  "ArcticFoxHTML"
+    ${un.RegCleanFileHandler}  ".webm"  "ArcticFoxHTML"
   ${EndIf}
 
   SetShellVarContext all  ; Set SHCTX to HKLM
@@ -405,6 +405,13 @@ Section "Uninstall"
   ; removed and other ugly things will happen like recreation of the app's
   ; clients registry key by the OS under some conditions.
   System::Call "shell32::SHChangeNotify(i ${SHCNE_ASSOCCHANGED}, i 0, i 0, i 0)"
+
+  ; Users who uninstall then reinstall expecting Firefox to use a clean profile
+  ; may be surprised during first-run. This key is checked during startup of Firefox and
+  ; subsequently deleted after checking. If the value is found during startup
+  ; the browser will offer to Reset Firefox. We use the UpdateChannel to match
+  ; uninstalls of Firefox-release with reinstalls of Firefox-release, for example.
+  WriteRegStr HKCU "Software\Mozilla\Arctic Fox" "Uninstalled-${UpdateChannel}" "True"
 
 SectionEnd
 

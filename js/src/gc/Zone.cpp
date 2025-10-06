@@ -8,6 +8,7 @@
 
 #include "jsgc.h"
 
+#include "gc/Policy.h"
 #include "jit/BaselineJIT.h"
 #include "jit/Ion.h"
 #include "jit/JitCompartment.h"
@@ -25,14 +26,19 @@ Zone * const Zone::NotOnList = reinterpret_cast<Zone*>(1);
 JS::Zone::Zone(JSRuntime* rt)
   : JS::shadow::Zone(rt, &rt->gc.marker),
     debuggers(nullptr),
+    suppressAllocationMetadataBuilder(false),
     arenas(rt),
     types(this),
     compartments(),
     gcGrayRoots(),
+    typeDescrObjects(this, SystemAllocPolicy()),
     gcMallocBytes(0),
     gcMallocGCTriggered(false),
     usage(&rt->gc.usage),
     gcDelayBytes(0),
+    propertyTree(this),
+    baseShapes(this, BaseShapeSet()),
+    initialShapes(this, InitialShapeSet()),
     data(nullptr),
     isSystem(false),
     usedByExclusiveThread(false),
@@ -61,12 +67,21 @@ Zone::~Zone()
 
     js_delete(debuggers);
     js_delete(jitZone_);
+
+#ifdef DEBUG
+    // Avoid assertion destroying the weak map list if the embedding leaked GC things.
+    if (!rt->gc.shutdownCollectedEverything())
+        gcWeakMapList.clear();
+#endif
 }
 
 bool Zone::init(bool isSystemArg)
 {
     isSystem = isSystemArg;
-    return uniqueIds_.init() && gcZoneGroupEdges.init() && gcWeakKeys.init();
+    return uniqueIds_.init() &&
+           gcZoneGroupEdges.init() &&
+           gcWeakKeys.init() &&
+           typeDescrObjects.init();
 }
 
 void
@@ -134,29 +149,6 @@ Zone::getOrCreateDebuggers(JSContext* cx)
 }
 
 void
-Zone::logPromotionsToTenured()
-{
-    auto* dbgs = getDebuggers();
-    if (MOZ_LIKELY(!dbgs))
-        return;
-
-    auto now = JS_GetCurrentEmbedderTime();
-    JSRuntime* rt = runtimeFromAnyThread();
-
-    for (auto** dbgp = dbgs->begin(); dbgp != dbgs->end(); dbgp++) {
-        if (!(*dbgp)->isEnabled() || !(*dbgp)->isTrackingTenurePromotions())
-            continue;
-
-        for (auto range = awaitingTenureLogging.all(); !range.empty(); range.popFront()) {
-            if ((*dbgp)->isDebuggeeUnbarriered(range.front()->compartment()))
-                (*dbgp)->logTenurePromotion(rt, *range.front(), now);
-        }
-    }
-
-    awaitingTenureLogging.clear();
-}
-
-void
 Zone::sweepBreakpoints(FreeOp* fop)
 {
     if (fop->runtime()->debuggerList.isEmpty())
@@ -168,13 +160,13 @@ Zone::sweepBreakpoints(FreeOp* fop)
      */
 
     MOZ_ASSERT(isGCSweepingOrCompacting());
-    for (ZoneCellIterUnderGC i(this, AllocKind::SCRIPT); !i.done(); i.next()) {
-        JSScript* script = i.get<JSScript>();
+    for (auto iter = cellIter<JSScript>(); !iter.done(); iter.next()) {
+        JSScript* script = iter;
         if (!script->hasAnyBreakpointsOrStepMode())
             continue;
 
         bool scriptGone = IsAboutToBeFinalizedUnbarriered(&script);
-        MOZ_ASSERT(script == i.get<JSScript>());
+        MOZ_ASSERT(script == iter);
         for (unsigned i = 0; i < script->length(); i++) {
             BreakpointSite* site = script->getBreakpointSite(script->offsetToPC(i));
             if (!site)
@@ -183,7 +175,7 @@ Zone::sweepBreakpoints(FreeOp* fop)
             Breakpoint* nextbp;
             for (Breakpoint* bp = site->firstBreakpoint(); bp; bp = nextbp) {
                 nextbp = bp->nextInSite();
-                HeapPtrNativeObject& dbgobj = bp->debugger->toJSObjectRef();
+                GCPtrNativeObject& dbgobj = bp->debugger->toJSObjectRef();
 
                 // If we are sweeping, then we expect the script and the
                 // debugger object to be swept in the same zone group, except if
@@ -222,10 +214,8 @@ Zone::discardJitCode(FreeOp* fop)
 
 #ifdef DEBUG
         /* Assert no baseline scripts are marked as active. */
-        for (ZoneCellIterUnderGC i(this, AllocKind::SCRIPT); !i.done(); i.next()) {
-            JSScript* script = i.get<JSScript>();
+        for (auto script = cellIter<JSScript>(); !script.done(); script.next())
             MOZ_ASSERT_IF(script->hasBaselineScript(), !script->baselineScript()->active());
-        }
 #endif
 
         /* Mark baseline scripts on the stack as active. */
@@ -234,8 +224,7 @@ Zone::discardJitCode(FreeOp* fop)
         /* Only mark OSI points if code is being discarded. */
         jit::InvalidateAll(fop, this);
 
-        for (ZoneCellIterUnderGC i(this, AllocKind::SCRIPT); !i.done(); i.next()) {
-            JSScript* script = i.get<JSScript>();
+        for (auto script = cellIter<JSScript>(); !script.done(); script.next())  {
             jit::FinishInvalidation(fop, script);
 
             /*
@@ -252,7 +241,15 @@ Zone::discardJitCode(FreeOp* fop)
             script->resetWarmUpCounter();
         }
 
-        jitZone()->optimizedStubSpace()->free();
+        /*
+         * When scripts contains pointers to nursery things, the store buffer
+         * can contain entries that point into the optimized stub space. Since
+         * this method can be called outside the context of a GC, this situation
+         * could result in us trying to mark invalid store buffer entries.
+         *
+         * Defer freeing any allocated blocks until after the next minor GC.
+         */
+        jitZone()->optimizedStubSpace()->freeAllAfterMinorGC(fop->runtime());
     }
 }
 
@@ -312,7 +309,7 @@ Zone::notifyObservingDebuggers()
 {
     for (CompartmentsInZoneIter comps(this); !comps.done(); comps.next()) {
         JSRuntime* rt = runtimeFromAnyThread();
-        RootedGlobalObject global(rt, comps->unsafeUnbarrieredMaybeGlobal());
+        RootedGlobalObject global(rt->contextFromMainThread(), comps->unsafeUnbarrieredMaybeGlobal());
         if (!global)
             continue;
 
@@ -350,6 +347,21 @@ Zone::nextZone() const
 {
     MOZ_ASSERT(isOnList());
     return listNext_;
+}
+
+void
+Zone::clearTables()
+{
+    if (baseShapes.initialized())
+        baseShapes.clear();
+    if (initialShapes.initialized())
+        initialShapes.clear();
+}
+
+void
+Zone::fixupAfterMovingGC()
+{
+    fixupInitialShapeTable();
 }
 
 ZoneList::ZoneList()
@@ -444,4 +456,10 @@ ZoneList::clear()
 {
     while (!isEmpty())
         removeFront();
+}
+
+JS_PUBLIC_API(void)
+JS::shadow::RegisterWeakCache(JS::Zone* zone, WeakCache<void*>* cachep)
+{
+    zone->registerWeakCache(cachep);
 }

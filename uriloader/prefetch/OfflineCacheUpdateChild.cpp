@@ -38,15 +38,15 @@ using mozilla::dom::TabChild;
 using mozilla::dom::ContentChild;
 
 //
-// To enable logging (see prlog.h for full details):
+// To enable logging (see mozilla/Logging.h for full details):
 //
-//    set NSPR_LOG_MODULES=nsOfflineCacheUpdate:5
-//    set NSPR_LOG_FILE=offlineupdate.log
+//    set MOZ_LOG=nsOfflineCacheUpdate:5
+//    set MOZ_LOG_FILE=offlineupdate.log
 //
 // this enables LogLevel::Debug level information and places all output in
 // the file offlineupdate.log
 //
-extern PRLogModuleInfo *gOfflineCacheUpdateLog;
+extern mozilla::LazyLogModule gOfflineCacheUpdateLog;
 
 #undef LOG
 #define LOG(args) MOZ_LOG(gOfflineCacheUpdateLog, mozilla::LogLevel::Debug, args)
@@ -379,18 +379,13 @@ OfflineCacheUpdateChild::Schedule()
     NS_ASSERTION(mWindow, "Window must be provided to the offline cache update child");
 
     nsCOMPtr<nsPIDOMWindowInner> window = mWindow.forget();
-    nsIDocShell *docshell = window->GetDocShell();
-
-    nsCOMPtr<nsIDocShellTreeItem> item = do_QueryInterface(docshell);
-    if (!item) {
+    nsCOMPtr<nsIDocShell >docshell = window->GetDocShell();
+    if (!docshell) {
       NS_WARNING("doc shell tree item is null");
       return NS_ERROR_FAILURE;
     }
 
-    nsCOMPtr<nsIDocShellTreeOwner> owner;
-    item->GetTreeOwner(getter_AddRefs(owner));
-
-    nsCOMPtr<nsITabChild> tabchild = do_GetInterface(owner);
+    nsCOMPtr<nsITabChild> tabchild = docshell->GetTabChild();
     // because owner implements nsITabChild, we can assume that it is
     // the one and only TabChild.
     TabChild* child = tabchild ? static_cast<TabChild*>(tabchild.get()) : nullptr;

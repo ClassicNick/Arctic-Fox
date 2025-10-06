@@ -9,14 +9,14 @@
 #include <sys/socket.h>
 
 #include "android/log.h"
+#include "base/task.h"
 
 #include "nsWhitespaceTokenizer.h"
 #include "nsXULAppAPI.h"
-#include "nsAutoPtr.h"
 #include "nsString.h"
 #include "nsThreadUtils.h"
 #include "mozilla/RefPtr.h"
-#include "mozilla/Snprintf.h"
+#include "mozilla/Sprintf.h"
 #include "SystemProperty.h"
 
 #define NETD_LOG(args...)  __android_log_print(ANDROID_LOG_INFO, "Gonk", args)
@@ -31,9 +31,9 @@ namespace {
 RefPtr<mozilla::ipc::NetdClient> gNetdClient;
 RefPtr<mozilla::ipc::NetdConsumer> gNetdConsumer;
 
-class StopNetdConsumer : public nsRunnable {
+class StopNetdConsumer : public mozilla::Runnable {
 public:
-  NS_IMETHOD Run()
+  NS_IMETHOD Run() override
   {
     MOZ_ASSERT(NS_IsMainThread());
 
@@ -70,9 +70,9 @@ InitRndisAddress()
     address[i % (kEthernetAddressLength - 1) + 1] ^= serialno[i];
   }
 
-  snprintf_literal(mac, "%02x:%02x:%02x:%02x:%02x:%02x",
-                   address[0], address[1], address[2],
-                   address[3], address[4], address[5]);
+  SprintfLiteral(mac, "%02x:%02x:%02x:%02x:%02x:%02x",
+                 address[0], address[1], address[2],
+                 address[3], address[4], address[5]);
   length = strlen(mac);
   ret = write(fd.get(), mac, length);
   if (ret != length) {
@@ -217,8 +217,7 @@ NetdClient::Start()
     }
 
     MessageLoopForIO::current()->
-      PostDelayedTask(FROM_HERE,
-                      NewRunnableFunction(NetdClient::Start),
+      PostDelayedTask(NewRunnableFunction(NetdClient::Start),
                       1000);
     return;
   }
@@ -334,7 +333,6 @@ StartNetd(NetdConsumer* aNetdConsumer)
 
   gNetdConsumer = aNetdConsumer;
   XRE_GetIOMessageLoop()->PostTask(
-    FROM_HERE,
     NewRunnableFunction(InitNetdIOThread));
 }
 
@@ -347,7 +345,6 @@ StopNetd()
   NS_ASSERTION(currentThread, "This should never be null!");
 
   XRE_GetIOMessageLoop()->PostTask(
-    FROM_HERE,
     NewRunnableFunction(ShutdownNetdIOThread));
 
   while (gNetdConsumer) {
@@ -370,7 +367,6 @@ SendNetdCommand(NetdCommand* aMessage)
   MOZ_ASSERT(aMessage);
 
   XRE_GetIOMessageLoop()->PostTask(
-    FROM_HERE,
     NewRunnableFunction(NetdClient::SendNetdCommandIOThread, aMessage));
 }
 

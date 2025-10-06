@@ -24,6 +24,7 @@
 #endif
 #include "nsBindingManager.h"
 #include "nsGenericHTMLElement.h"
+#include "mozilla/AnimationTarget.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/dom/Animation.h"
 #include "mozilla/dom/HTMLImageElement.h"
@@ -227,68 +228,59 @@ nsNodeUtils::ContentRemoved(nsINode* aContainer,
                               aPreviousSibling));
 }
 
-Element*
+Maybe<NonOwningAnimationTarget>
 nsNodeUtils::GetTargetForAnimation(const Animation* aAnimation)
 {
   KeyframeEffectReadOnly* effect = aAnimation->GetEffect();
-  if (!effect) {
-    return nullptr;
+  return effect ? effect->GetTarget() : Nothing();
+}
+
+void
+nsNodeUtils::AnimationMutated(Animation* aAnimation,
+                              AnimationMutationType aMutatedType)
+{
+  Maybe<NonOwningAnimationTarget> target = GetTargetForAnimation(aAnimation);
+  if (!target) {
+    return;
   }
 
-  Element* target;
-  CSSPseudoElementType pseudoType;
-  effect->GetTarget(target, pseudoType);
-
-  // If the animation targets a pseudo-element, we don't dispatch
-  // notifications for it.  (In the future we will have PseudoElement
-  // objects we can use as the target of the notifications.)
-  if (pseudoType != CSSPseudoElementType::NotPseudo) {
-    return nullptr;
+  // A pseudo element and its parent element use the same owner doc.
+  nsIDocument* doc = target->mElement->OwnerDoc();
+  if (doc->MayHaveAnimationObservers()) {
+    // we use the its parent element as the subject in DOM Mutation Observer.
+    Element* elem = target->mElement;
+    switch (aMutatedType) {
+      case AnimationMutationType::Added:
+        IMPL_ANIMATION_NOTIFICATION(AnimationAdded, elem, (aAnimation));
+        break;
+      case AnimationMutationType::Changed:
+        IMPL_ANIMATION_NOTIFICATION(AnimationChanged, elem, (aAnimation));
+        break;
+      case AnimationMutationType::Removed:
+        IMPL_ANIMATION_NOTIFICATION(AnimationRemoved, elem, (aAnimation));
+        break;
+      default:
+        MOZ_ASSERT_UNREACHABLE("unexpected mutation type");
+    }
   }
-
-  return target;
 }
 
 void
 nsNodeUtils::AnimationAdded(Animation* aAnimation)
 {
-  Element* target = GetTargetForAnimation(aAnimation);
-  if (!target) {
-    return;
-  }
-  nsIDocument* doc = target->OwnerDoc();
-
-  if (doc->MayHaveAnimationObservers()) {
-    IMPL_ANIMATION_NOTIFICATION(AnimationAdded, target, (aAnimation));
-  }
+  AnimationMutated(aAnimation, AnimationMutationType::Added);
 }
 
 void
 nsNodeUtils::AnimationChanged(Animation* aAnimation)
 {
-  Element* target = GetTargetForAnimation(aAnimation);
-  if (!target) {
-    return;
-  }
-  nsIDocument* doc = target->OwnerDoc();
-
-  if (doc->MayHaveAnimationObservers()) {
-    IMPL_ANIMATION_NOTIFICATION(AnimationChanged, target, (aAnimation));
-  }
+  AnimationMutated(aAnimation, AnimationMutationType::Changed);
 }
 
 void
 nsNodeUtils::AnimationRemoved(Animation* aAnimation)
 {
-  Element* target = GetTargetForAnimation(aAnimation);
-  if (!target) {
-    return;
-  }
-  nsIDocument* doc = target->OwnerDoc();
-
-  if (doc->MayHaveAnimationObservers()) {
-    IMPL_ANIMATION_NOTIFICATION(AnimationRemoved, target, (aAnimation));
-  }
+  AnimationMutated(aAnimation, AnimationMutationType::Removed);
 }
 
 void
@@ -408,7 +400,7 @@ nsNodeUtils::CloneNodeImpl(nsINode *aNode, bool aDeep, nsINode **aResult)
                       getter_AddRefs(newNode));
   NS_ENSURE_SUCCESS(rv, rv);
 
-  newNode.swap(*aResult);
+  newNode.forget(aResult);
   return NS_OK;
 }
 
@@ -433,7 +425,6 @@ nsNodeUtils::CloneAndAdopt(nsINode *aNode, bool aClone, bool aDeep,
   // attributes and children).
 
   nsAutoScriptBlocker scriptBlocker;
-  AutoJSContext cx;
   nsresult rv;
 
   nsNodeInfoManager *nodeInfoManager = aNewNodeInfoManager;
@@ -515,7 +506,7 @@ nsNodeUtils::CloneAndAdopt(nsINode *aNode, bool aClone, bool aDeep,
 
     aNode->mNodeInfo.swap(newNodeInfo);
     if (elem) {
-      elem->NodeInfoChanged(newNodeInfo);
+      elem->NodeInfoChanged();
     }
 
     nsIDocument* newDoc = aNode->OwnerDoc();
@@ -572,6 +563,7 @@ nsNodeUtils::CloneAndAdopt(nsINode *aNode, bool aClone, bool aDeep,
     }
 
     if (aReparentScope) {
+      AutoJSContext cx;
       JS::Rooted<JSObject*> wrapper(cx);
       if ((wrapper = aNode->GetWrapper())) {
         MOZ_ASSERT(IsDOMObject(wrapper));

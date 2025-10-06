@@ -80,7 +80,8 @@ nsTypeAheadFind::nsTypeAheadFind():
   mDidAddObservers(false),
   mLastFindLength(0),
   mIsSoundInitialized(false),
-  mCaseSensitive(false)
+  mCaseSensitive(false),
+  mEntireWord(false)
 {
 }
 
@@ -163,6 +164,26 @@ NS_IMETHODIMP
 nsTypeAheadFind::GetCaseSensitive(bool* isCaseSensitive)
 {
   *isCaseSensitive = mCaseSensitive;
+
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsTypeAheadFind::SetEntireWord(bool isEntireWord)
+{
+  mEntireWord = isEntireWord;
+
+  if (mFind) {
+    mFind->SetEntireWord(mEntireWord);
+  }
+
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsTypeAheadFind::GetEntireWord(bool* isEntireWord)
+{
+  *isEntireWord = mEntireWord;
 
   return NS_OK;
 }
@@ -314,6 +335,10 @@ nsTypeAheadFind::FindItNow(nsIPresShell *aPresShell, bool aIsLinksOnly,
     if (!presShell)
       return NS_ERROR_FAILURE;
   }
+
+  // There could be unflushed notifications which hide textareas or other
+  // elements that we don't want to find text in.
+  presShell->FlushPendingNotifications(Flush_Layout);
 
   RefPtr<nsPresContext> presContext = presShell->GetPresContext();
 
@@ -872,8 +897,8 @@ nsTypeAheadFind::RangeStartsInsideLink(nsIDOMRange *aRange,
   // We now have the correct start node for the range
   // Search for links, starting with startNode, and going up parent chain
 
-  nsCOMPtr<nsIAtom> tag, hrefAtom(do_GetAtom("href"));
-  nsCOMPtr<nsIAtom> typeAtom(do_GetAtom("type"));
+  nsCOMPtr<nsIAtom> tag, hrefAtom(NS_Atomize("href"));
+  nsCOMPtr<nsIAtom> typeAtom(NS_Atomize("type"));
 
   while (true) {
     // Keep testing while startContent is equal to something,

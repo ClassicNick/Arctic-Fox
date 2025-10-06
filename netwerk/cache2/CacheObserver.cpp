@@ -11,7 +11,9 @@
 #include "nsIObserverService.h"
 #include "mozilla/Services.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/TimeStamp.h"
 #include "nsServiceManagerUtils.h"
+#include "mozilla/net/NeckoCommon.h"
 #include "prsystem.h"
 #include <time.h>
 #include <math.h>
@@ -50,7 +52,8 @@ int32_t CacheObserver::sMemoryCacheCapacity = kDefaultMemoryCacheCapacity;
 int32_t CacheObserver::sAutoMemoryCacheCapacity = -1;
 
 static uint32_t const kDefaultDiskCacheCapacity = 250 * 1024; // 250 MB
-uint32_t CacheObserver::sDiskCacheCapacity = kDefaultDiskCacheCapacity;
+Atomic<uint32_t,Relaxed> CacheObserver::sDiskCacheCapacity
+                                           (kDefaultDiskCacheCapacity);
 
 static uint32_t const kDefaultDiskFreeSpaceSoftLimit = 5 * 1024; // 5MB
 uint32_t CacheObserver::sDiskFreeSpaceSoftLimit = kDefaultDiskFreeSpaceSoftLimit;
@@ -91,6 +94,11 @@ bool CacheObserver::sCacheFSReported = kDefaultCacheFSReported;
 static bool kDefaultHashStatsReported = false;
 bool CacheObserver::sHashStatsReported = kDefaultHashStatsReported;
 
+static uint32_t const kDefaultMaxShutdownIOLag = 2; // seconds
+Atomic<uint32_t, Relaxed> CacheObserver::sMaxShutdownIOLag(kDefaultMaxShutdownIOLag);
+
+Atomic<PRIntervalTime> CacheObserver::sShutdownDemandedTime(PR_INTERVAL_NO_TIMEOUT);
+
 NS_IMPL_ISUPPORTS(CacheObserver,
                   nsIObserver,
                   nsISupportsWeakReference)
@@ -99,6 +107,10 @@ NS_IMPL_ISUPPORTS(CacheObserver,
 nsresult
 CacheObserver::Init()
 {
+  if (IsNeckoChild()) {
+    return NS_OK;
+  }
+
   if (sSelf) {
     return NS_OK;
   }
@@ -154,7 +166,7 @@ CacheObserver::AttachToPreferences()
   mozilla::Preferences::AddUintVarCache(
     &sMetadataMemoryLimit, "browser.cache.disk.metadata_memory_limit", kDefaultMetadataMemoryLimit);
 
-  mozilla::Preferences::AddUintVarCache(
+  mozilla::Preferences::AddAtomicUintVarCache(
     &sDiskCacheCapacity, "browser.cache.disk.capacity", kDefaultDiskCacheCapacity);
   mozilla::Preferences::AddBoolVarCache(
     &sSmartCacheSizeEnabled, "browser.cache.disk.smart_size.enabled", kDefaultSmartCacheSizeEnabled);
@@ -237,6 +249,9 @@ CacheObserver::AttachToPreferences()
     &sSanitizeOnShutdown, "privacy.sanitize.sanitizeOnShutdown", kDefaultSanitizeOnShutdown);
   mozilla::Preferences::AddBoolVarCache(
     &sClearCacheOnShutdown, "privacy.clearOnShutdown.cache", kDefaultClearCacheOnShutdown);
+
+  mozilla::Preferences::AddAtomicUintVarCache(
+    &sMaxShutdownIOLag, "browser.cache.max_shutdown_io_lag", kDefaultMaxShutdownIOLag);
 }
 
 // static
@@ -310,7 +325,7 @@ CacheObserver::SetDiskCacheCapacity(uint32_t aCapacity)
     sSelf->StoreDiskCacheCapacity();
   } else {
     nsCOMPtr<nsIRunnable> event =
-      NS_NewRunnableMethod(sSelf, &CacheObserver::StoreDiskCacheCapacity);
+      NewRunnableMethod(sSelf, &CacheObserver::StoreDiskCacheCapacity);
     NS_DispatchToMainThread(event);
   }
 }
@@ -336,7 +351,7 @@ CacheObserver::SetCacheFSReported()
     sSelf->StoreCacheFSReported();
   } else {
     nsCOMPtr<nsIRunnable> event =
-      NS_NewRunnableMethod(sSelf, &CacheObserver::StoreCacheFSReported);
+      NewRunnableMethod(sSelf, &CacheObserver::StoreCacheFSReported);
     NS_DispatchToMainThread(event);
   }
 }
@@ -362,7 +377,7 @@ CacheObserver::SetHashStatsReported()
     sSelf->StoreHashStatsReported();
   } else {
     nsCOMPtr<nsIRunnable> event =
-      NS_NewRunnableMethod(sSelf, &CacheObserver::StoreHashStatsReported);
+      NewRunnableMethod(sSelf, &CacheObserver::StoreHashStatsReported);
     NS_DispatchToMainThread(event);
   }
 }
@@ -466,6 +481,28 @@ bool CacheObserver::EntryIsTooBig(int64_t aSize, bool aUsingDisk)
   return false;
 }
 
+// static
+bool CacheObserver::IsPastShutdownIOLag()
+{
+#ifdef DEBUG
+  return false;
+#endif
+
+  if (sShutdownDemandedTime == PR_INTERVAL_NO_TIMEOUT ||
+      sMaxShutdownIOLag == UINT32_MAX) {
+    return false;
+  }
+
+  static const PRIntervalTime kMaxShutdownIOLag =
+    PR_SecondsToInterval(sMaxShutdownIOLag);
+
+  if ((PR_IntervalNow() - sShutdownDemandedTime) > kMaxShutdownIOLag) {
+    return true;
+  }
+
+  return false;
+}
+
 NS_IMETHODIMP
 CacheObserver::Observe(nsISupports* aSubject,
                        const char* aTopic,
@@ -489,18 +526,17 @@ CacheObserver::Observe(nsISupports* aSubject,
     return NS_OK;
   }
 
-  if (!strcmp(aTopic, "profile-before-change")) {
-    RefPtr<CacheStorageService> service = CacheStorageService::Self();
-    if (service)
-      service->Shutdown();
+  if (!strcmp(aTopic, "profile-change-net-teardown") ||
+      !strcmp(aTopic, "profile-before-change") ||
+      !strcmp(aTopic, "xpcom-shutdown")) {
+    if (sShutdownDemandedTime == PR_INTERVAL_NO_TIMEOUT) {
+      sShutdownDemandedTime = PR_IntervalNow();
+    }
 
-    return NS_OK;
-  }
-
-  if (!strcmp(aTopic, "xpcom-shutdown")) {
     RefPtr<CacheStorageService> service = CacheStorageService::Self();
-    if (service)
+    if (service) {
       service->Shutdown();
+    }
 
     CacheFileIOManager::Shutdown();
     return NS_OK;
@@ -508,8 +544,9 @@ CacheObserver::Observe(nsISupports* aSubject,
 
   if (!strcmp(aTopic, "last-pb-context-exited")) {
     RefPtr<CacheStorageService> service = CacheStorageService::Self();
-    if (service)
+    if (service) {
       service->DropPrivateBrowsingEntries();
+    }
 
     return NS_OK;
   }

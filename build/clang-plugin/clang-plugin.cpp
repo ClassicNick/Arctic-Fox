@@ -39,6 +39,32 @@ typedef ASTConsumer *ASTConsumerPtr;
 #define cxxRecordDecl recordDecl
 #endif
 
+// Check if the given expression contains an assignment expression.
+// This can either take the form of a Binary Operator or a
+// Overloaded Operator Call.
+bool HasSideEffectAssignment(const Expr *expr) {
+  if (auto opCallExpr = dyn_cast_or_null<CXXOperatorCallExpr>(expr)) {
+    auto binOp = opCallExpr->getOperator();
+    if (binOp == OO_Equal || (binOp >= OO_PlusEqual && binOp <= OO_PipeEqual)) {
+      return true;
+    }
+  } else if (auto binOpExpr = dyn_cast_or_null<BinaryOperator>(expr)) {
+    if (binOpExpr->isAssignmentOp()) {
+      return true;
+    }
+  }
+
+  // Recurse to children.
+  for (const Stmt *SubStmt : expr->children()) {
+    auto childExpr = dyn_cast_or_null<Expr>(SubStmt);
+    if (childExpr && HasSideEffectAssignment(childExpr)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 namespace {
 
 using namespace clang::ast_matchers;
@@ -94,7 +120,12 @@ private:
     virtual void run(const MatchFinder::MatchResult &Result);
   };
 
-  class NonMemMovableChecker : public MatchFinder::MatchCallback {
+  class NonMemMovableTemplateArgChecker : public MatchFinder::MatchCallback {
+  public:
+    virtual void run(const MatchFinder::MatchResult &Result);
+  };
+
+  class NonMemMovableMemberChecker : public MatchFinder::MatchCallback {
   public:
     virtual void run(const MatchFinder::MatchResult &Result);
   };
@@ -119,6 +150,11 @@ private:
     virtual void run(const MatchFinder::MatchResult &Result);
   };
 
+  class AssertAssignmentChecker : public MatchFinder::MatchCallback {
+  public:
+    virtual void run(const MatchFinder::MatchResult &Result);
+  };
+
   ScopeChecker scopeChecker;
   ArithmeticArgChecker arithmeticArgChecker;
   TrivialCtorDtorChecker trivialCtorDtorChecker;
@@ -128,11 +164,13 @@ private:
   ExplicitOperatorBoolChecker explicitOperatorBoolChecker;
   NoDuplicateRefCntMemberChecker noDuplicateRefCntMemberChecker;
   NeedsNoVTableTypeChecker needsNoVTableTypeChecker;
-  NonMemMovableChecker nonMemMovableChecker;
+  NonMemMovableTemplateArgChecker nonMemMovableTemplateArgChecker;
+  NonMemMovableMemberChecker nonMemMovableMemberChecker;
   ExplicitImplicitChecker explicitImplicitChecker;
   NoAutoTypeChecker noAutoTypeChecker;
   NoExplicitMoveConstructorChecker noExplicitMoveConstructorChecker;
   RefCountedCopyConstructorChecker refCountedCopyConstructorChecker;
+  AssertAssignmentChecker assertAttributionChecker;
   MatchFinder astMatcher;
 };
 
@@ -204,7 +242,8 @@ bool isIgnoredPathForImplicitCtor(const Decl *decl) {
         begin->compare_lower(StringRef("harfbuzz")) == 0 ||
         begin->compare_lower(StringRef("hunspell")) == 0 ||
         begin->compare_lower(StringRef("scoped_ptr.h")) == 0 ||
-        begin->compare_lower(StringRef("graphite2")) == 0) {
+        begin->compare_lower(StringRef("graphite2")) == 0 ||
+        begin->compare_lower(StringRef("icu")) == 0) {
       return true;
     }
     if (begin->compare_lower(StringRef("chromium")) == 0) {
@@ -263,6 +302,11 @@ bool isIgnoredExprForMustUse(const Expr *E) {
 
   return false;
 }
+
+template<typename T>
+StringRef getNameChecked(const T& D) {
+  return D->getIdentifier() ? D->getName() : "";
+}
 }
 
 class CustomTypeAnnotation {
@@ -313,6 +357,7 @@ public:
 private:
   bool hasLiteralAnnotation(QualType T) const;
   AnnotationReason directAnnotationReason(QualType T);
+  AnnotationReason tmplArgAnnotationReason(ArrayRef<TemplateArgument> Args);
 
 protected:
   // Allow subclasses to apply annotations to external code:
@@ -330,7 +375,7 @@ static CustomTypeAnnotation HeapClass =
 static CustomTypeAnnotation NonTemporaryClass =
     CustomTypeAnnotation("moz_non_temporary_class", "non-temporary");
 static CustomTypeAnnotation MustUse =
-    CustomTypeAnnotation("moz_must_use", "must-use");
+    CustomTypeAnnotation("moz_must_use_type", "must-use");
 
 class MemMoveAnnotation final : public CustomTypeAnnotation {
 public:
@@ -346,7 +391,7 @@ protected:
     if (getDeclarationNamespace(D) == "std") {
       // This doesn't check that it's really ::std::pair and not
       // ::std::something_else::pair, but should be good enough.
-      StringRef Name = D->getName();
+      StringRef Name = getNameChecked(D);
       if (Name == "pair" || Name == "atomic" || Name == "__atomic_base") {
         return false;
       }
@@ -388,6 +433,7 @@ public:
   void HandleUnusedExprResult(const Stmt *stmt) {
     const Expr *E = dyn_cast_or_null<Expr>(stmt);
     if (E) {
+      E = E->IgnoreImplicit(); // Ignore ExprWithCleanup etc. implicit wrappers
       QualType T = E->getType();
       if (MustUse.hasEffectiveAnnotation(T) && !isIgnoredExprForMustUse(E)) {
         unsigned errorID = Diag.getDiagnosticIDs()->getCustomDiagID(
@@ -437,7 +483,7 @@ public:
            !overridden && M != d->method_end(); ++M) {
         // The way that Clang checks if a method M overrides its parent method
         // is if the method has the same name but would not overload.
-        if (M->getName() == (*it)->getName() &&
+        if (getNameChecked(M) == getNameChecked(*it) &&
             !CI.getSema().IsOverload(*M, (*it), false)) {
           overridden = true;
           break;
@@ -509,7 +555,7 @@ bool classHasAddRefRelease(const CXXRecordDecl *D) {
   bool seenRelease = false;
   for (CXXRecordDecl::method_iterator method = D->method_begin();
        method != D->method_end(); ++method) {
-    const auto &name = method->getName();
+    const auto &name = getNameChecked(method);
     if (name == "AddRef") {
       seenAddRef = true;
     } else if (name == "Release") {
@@ -545,7 +591,7 @@ bool isClassRefCounted(const CXXRecordDecl *D) {
 }
 
 bool isClassRefCounted(QualType T) {
-  while (const ArrayType *arrTy = T->getAsArrayTypeUnsafe())
+  while (const clang::ArrayType *arrTy = T->getAsArrayTypeUnsafe())
     T = arrTy->getElementType();
   CXXRecordDecl *clazz = T->getAsCXXRecordDecl();
   return clazz ? isClassRefCounted(clazz) : false;
@@ -563,7 +609,7 @@ template <class T> bool IsInSystemHeader(const ASTContext &AC, const T &D) {
 const FieldDecl *getClassRefCntMember(const CXXRecordDecl *D) {
   for (RecordDecl::field_iterator field = D->field_begin(), e = D->field_end();
        field != e; ++field) {
-    if (field->getName() == "mRefCnt") {
+    if (getNameChecked(field) == "mRefCnt") {
       return *field;
     }
   }
@@ -590,14 +636,14 @@ const FieldDecl *getBaseRefCntMember(const CXXRecordDecl *D) {
 }
 
 const FieldDecl *getBaseRefCntMember(QualType T) {
-  while (const ArrayType *arrTy = T->getAsArrayTypeUnsafe())
+  while (const clang::ArrayType *arrTy = T->getAsArrayTypeUnsafe())
     T = arrTy->getElementType();
   CXXRecordDecl *clazz = T->getAsCXXRecordDecl();
   return clazz ? getBaseRefCntMember(clazz) : 0;
 }
 
 bool typeHasVTable(QualType T) {
-  while (const ArrayType *arrTy = T->getAsArrayTypeUnsafe())
+  while (const clang::ArrayType *arrTy = T->getAsArrayTypeUnsafe())
     T = arrTy->getElementType();
   CXXRecordDecl *offender = T->getAsCXXRecordDecl();
   return offender && offender->hasDefinition() && offender->isDynamicClass();
@@ -683,7 +729,7 @@ AST_MATCHER(MemberExpr, isAddRefOrRelease) {
   ValueDecl *Member = Node.getMemberDecl();
   CXXMethodDecl *Method = dyn_cast<CXXMethodDecl>(Member);
   if (Method) {
-    const auto &Name = Method->getName();
+    const auto &Name = getNameChecked(Method);
     return Name == "AddRef" || Name == "Release";
   }
   return false;
@@ -706,8 +752,13 @@ AST_MATCHER(QualType, isNonMemMovable) {
 }
 
 /// This matcher will select classes which require a memmovable template arg
-AST_MATCHER(CXXRecordDecl, needsMemMovable) {
+AST_MATCHER(CXXRecordDecl, needsMemMovableTemplateArg) {
   return MozChecker::hasCustomAnnotation(&Node, "moz_needs_memmovable_type");
+}
+
+/// This matcher will select classes which require all members to be memmovable
+AST_MATCHER(CXXRecordDecl, needsMemMovableMembers) {
+  return MozChecker::hasCustomAnnotation(&Node, "moz_needs_memmovable_members");
 }
 
 AST_MATCHER(CXXConstructorDecl, isInterestingImplicitCtor) {
@@ -749,6 +800,20 @@ AST_MATCHER(CXXConstructorDecl, isExplicitMoveConstructor) {
 AST_MATCHER(CXXConstructorDecl, isCompilerProvidedCopyConstructor) {
   return !Node.isUserProvided() && Node.isCopyConstructor();
 }
+
+AST_MATCHER(CallExpr, isAssertAssignmentTestFunc) {
+  static const std::string assertName = "MOZ_AssertAssignmentTest";
+  const FunctionDecl *method = Node.getDirectCallee();
+
+  return method
+      && method->getDeclName().isIdentifier()
+      && method->getName() == assertName;
+}
+
+AST_MATCHER(CXXRecordDecl, isLambdaDecl) {
+  return Node.isLambda();
+}
+
 }
 }
 
@@ -830,7 +895,7 @@ CustomTypeAnnotation::directAnnotationReason(QualType T) {
   }
 
   // Check if we have a type which we can recurse into
-  if (const ArrayType *Array = T->getAsArrayTypeUnsafe()) {
+  if (const clang::ArrayType *Array = T->getAsArrayTypeUnsafe()) {
     if (hasEffectiveAnnotation(Array->getElementType())) {
       AnnotationReason Reason = {Array->getElementType(), RK_ArrayElement,
                                  nullptr};
@@ -870,16 +935,10 @@ CustomTypeAnnotation::directAnnotationReason(QualType T) {
         if (Spec) {
           const TemplateArgumentList &Args = Spec->getTemplateArgs();
 
-          for (const TemplateArgument &Arg : Args.asArray()) {
-            if (Arg.getKind() == TemplateArgument::Type) {
-              QualType Type = Arg.getAsType();
-
-              if (hasEffectiveAnnotation(Type)) {
-                AnnotationReason Reason = {Type, RK_TemplateInherited, nullptr};
-                Cache[Key] = Reason;
-                return Reason;
-              }
-            }
+          AnnotationReason Reason = tmplArgAnnotationReason(Args.asArray());
+          if (Reason.Kind != RK_None) {
+            Cache[Key] = Reason;
+            return Reason;
           }
         }
       }
@@ -888,6 +947,27 @@ CustomTypeAnnotation::directAnnotationReason(QualType T) {
 
   AnnotationReason Reason = {QualType(), RK_None, nullptr};
   Cache[Key] = Reason;
+  return Reason;
+}
+
+CustomTypeAnnotation::AnnotationReason
+CustomTypeAnnotation::tmplArgAnnotationReason(ArrayRef<TemplateArgument> Args) {
+  for (const TemplateArgument &Arg : Args) {
+    if (Arg.getKind() == TemplateArgument::Type) {
+      QualType Type = Arg.getAsType();
+      if (hasEffectiveAnnotation(Type)) {
+        AnnotationReason Reason = {Type, RK_TemplateInherited, nullptr};
+        return Reason;
+      }
+    } else if (Arg.getKind() == TemplateArgument::Pack) {
+      AnnotationReason Reason = tmplArgAnnotationReason(Arg.getPackAsArray());
+      if (Reason.Kind != RK_None) {
+        return Reason;
+      }
+    }
+  }
+
+  AnnotationReason Reason = {QualType(), RK_None, nullptr};
   return Reason;
 }
 
@@ -982,12 +1062,21 @@ DiagnosticsMatcher::DiagnosticsMatcher() {
           .bind("node"),
       &noAddRefReleaseOnReturnChecker);
 
-  // Match declrefs with type "pointer to object of ref-counted type" inside a
-  // lambda, where the declaration they reference is not inside the lambda.
-  // This excludes arguments and local variables, leaving only captured
-  // variables.
-  astMatcher.addMatcher(lambdaExpr().bind("lambda"),
-                        &refCountedInsideLambdaChecker);
+  // We want to reject any code which captures a pointer to an object of a
+  // refcounted type, and then lets that value escape. As a primitive analysis,
+  // we reject any occurances of the lambda as a template parameter to a class
+  // (which could allow it to escape), as well as any presence of such a lambda
+  // in a return value (either from lambdas, or in c++14, auto functions).
+  //
+  // We check these lambdas' capture lists for raw pointers to refcounted types.
+  astMatcher.addMatcher(
+      functionDecl(returns(recordType(hasDeclaration(cxxRecordDecl(isLambdaDecl()).bind("decl"))))),
+      &refCountedInsideLambdaChecker);
+  astMatcher.addMatcher(lambdaExpr().bind("lambdaExpr"), &refCountedInsideLambdaChecker);
+  astMatcher.addMatcher(
+      classTemplateSpecializationDecl(hasAnyTemplateArgument(refersToType(
+        recordType(hasDeclaration(cxxRecordDecl(isLambdaDecl()).bind("decl")))))),
+      &refCountedInsideLambdaChecker);
 
   // Older clang versions such as the ones used on the infra recognize these
   // conversions as 'operator _Bool', but newer clang versions recognize these
@@ -997,9 +1086,7 @@ DiagnosticsMatcher::DiagnosticsMatcher() {
           .bind("node"),
       &explicitOperatorBoolChecker);
 
-  astMatcher.addMatcher(
-      cxxRecordDecl(allOf(decl().bind("decl"), hasRefCntMember())),
-      &noDuplicateRefCntMemberChecker);
+  astMatcher.addMatcher(cxxRecordDecl().bind("decl"), &noDuplicateRefCntMemberChecker);
 
   astMatcher.addMatcher(
       classTemplateSpecializationDecl(
@@ -1011,10 +1098,16 @@ DiagnosticsMatcher::DiagnosticsMatcher() {
   // Handle non-mem-movable template specializations
   astMatcher.addMatcher(
       classTemplateSpecializationDecl(
-          allOf(needsMemMovable(),
+          allOf(needsMemMovableTemplateArg(),
                 hasAnyTemplateArgument(refersToType(isNonMemMovable()))))
           .bind("specialization"),
-      &nonMemMovableChecker);
+      &nonMemMovableTemplateArgChecker);
+
+  // Handle non-mem-movable members
+  astMatcher.addMatcher(
+      cxxRecordDecl(needsMemMovableMembers())
+          .bind("decl"),
+      &nonMemMovableMemberChecker);
 
   astMatcher.addMatcher(cxxConstructorDecl(isInterestingImplicitCtor(),
                                            ofClass(allOf(isConcreteClass(),
@@ -1036,6 +1129,10 @@ DiagnosticsMatcher::DiagnosticsMatcher() {
                                             ofClass(hasRefCntMember()))))
           .bind("node"),
       &refCountedCopyConstructorChecker);
+
+  astMatcher.addMatcher(
+      callExpr(isAssertAssignmentTestFunc()).bind("funcCall"),
+      &assertAttributionChecker);
 }
 
 // These enum variants determine whether an allocation has occured in the code.
@@ -1065,6 +1162,9 @@ void DiagnosticsMatcher::ScopeChecker::run(
 
   if (const ParmVarDecl *D =
           Result.Nodes.getNodeAs<ParmVarDecl>("parm_vardecl")) {
+    if (D->hasUnparsedDefaultArg() || D->hasUninstantiatedDefaultArg()) {
+      return;
+    }
     if (const Expr *Default = D->getDefaultArg()) {
       if (const MaterializeTemporaryExpr *E =
               dyn_cast<MaterializeTemporaryExpr>(Default)) {
@@ -1279,13 +1379,34 @@ void DiagnosticsMatcher::NoAddRefReleaseOnReturnChecker::run(
 
 void DiagnosticsMatcher::RefCountedInsideLambdaChecker::run(
     const MatchFinder::MatchResult &Result) {
+  static DenseSet<const CXXRecordDecl*> CheckedDecls;
+
   DiagnosticsEngine &Diag = Result.Context->getDiagnostics();
   unsigned errorID = Diag.getDiagnosticIDs()->getCustomDiagID(
       DiagnosticIDs::Error,
       "Refcounted variable %0 of type %1 cannot be captured by a lambda");
   unsigned noteID = Diag.getDiagnosticIDs()->getCustomDiagID(
       DiagnosticIDs::Note, "Please consider using a smart pointer");
-  const LambdaExpr *Lambda = Result.Nodes.getNodeAs<LambdaExpr>("lambda");
+
+  const CXXRecordDecl *Lambda = Result.Nodes.getNodeAs<CXXRecordDecl>("decl");
+
+  if (const LambdaExpr *OuterLambda = Result.Nodes.getNodeAs<LambdaExpr>("lambdaExpr")) {
+    const CXXMethodDecl *OpCall = OuterLambda->getCallOperator();
+    QualType ReturnTy = OpCall->getReturnType();
+    if (const CXXRecordDecl *Record = ReturnTy->getAsCXXRecordDecl()) {
+      Lambda = Record;
+    }
+  }
+
+  if (!Lambda || !Lambda->isLambda()) {
+    return;
+  }
+
+  // Don't report errors on the same declarations more than once.
+  if (CheckedDecls.count(Lambda)) {
+    return;
+  }
+  CheckedDecls.insert(Lambda);
 
   for (const LambdaCapture Capture : Lambda->captures()) {
     if (Capture.capturesVariable() && Capture.getCaptureKind() != LCK_ByRef) {
@@ -1295,6 +1416,7 @@ void DiagnosticsMatcher::RefCountedInsideLambdaChecker::run(
         Diag.Report(Capture.getLocation(), errorID) << Capture.getCapturedVar()
                                                     << Pointee;
         Diag.Report(Capture.getLocation(), noteID);
+        return;
       }
     }
   }
@@ -1323,31 +1445,62 @@ void DiagnosticsMatcher::ExplicitOperatorBoolChecker::run(
 void DiagnosticsMatcher::NoDuplicateRefCntMemberChecker::run(
     const MatchFinder::MatchResult &Result) {
   DiagnosticsEngine &Diag = Result.Context->getDiagnostics();
-  unsigned warningID = Diag.getDiagnosticIDs()->getCustomDiagID(
-      DiagnosticIDs::Error,
-      "Refcounted record %0 has multiple mRefCnt members");
-  unsigned note1ID = Diag.getDiagnosticIDs()->getCustomDiagID(
-      DiagnosticIDs::Note, "Superclass %0 also has an mRefCnt member");
-  unsigned note2ID = Diag.getDiagnosticIDs()->getCustomDiagID(
-      DiagnosticIDs::Note,
-      "Consider using the _INHERITED macros for AddRef and Release here");
+  const CXXRecordDecl *D = Result.Nodes.getNodeAs<CXXRecordDecl>("decl");
+  const FieldDecl *refCntMember = getClassRefCntMember(D);
+  const FieldDecl *foundRefCntBase = nullptr;
 
-  const CXXRecordDecl *decl = Result.Nodes.getNodeAs<CXXRecordDecl>("decl");
-  const FieldDecl *refCntMember = getClassRefCntMember(decl);
-  assert(refCntMember &&
-         "The matcher checked to make sure we have a refCntMember");
+  if (!D->hasDefinition())
+    return;
+  D = D->getDefinition();
+
+  // If we don't have an mRefCnt member, and we have less than 2 superclasses,
+  // we don't have to run this loop, as neither case will ever apply.
+  if (!refCntMember && D->getNumBases() < 2) {
+    return;
+  }
 
   // Check every superclass for whether it has a base with a refcnt member, and
   // warn for those which do
-  for (CXXRecordDecl::base_class_const_iterator base = decl->bases_begin(),
-                                                e = decl->bases_end();
-       base != e; ++base) {
-    const FieldDecl *baseRefCntMember = getBaseRefCntMember(base->getType());
+  for (auto &base : D->bases()) {
+    // Determine if this base class has an mRefCnt member
+    const FieldDecl *baseRefCntMember = getBaseRefCntMember(base.getType());
+
     if (baseRefCntMember) {
-      Diag.Report(decl->getLocStart(), warningID) << decl;
-      Diag.Report(baseRefCntMember->getLocStart(), note1ID)
+      if (refCntMember) {
+        // We have an mRefCnt, and superclass has an mRefCnt
+        unsigned error = Diag.getDiagnosticIDs()->getCustomDiagID(
+            DiagnosticIDs::Error,
+            "Refcounted record %0 has multiple mRefCnt members");
+        unsigned note1 = Diag.getDiagnosticIDs()->getCustomDiagID(
+            DiagnosticIDs::Note, "Superclass %0 also has an mRefCnt member");
+        unsigned note2 = Diag.getDiagnosticIDs()->getCustomDiagID(
+            DiagnosticIDs::Note,
+            "Consider using the _INHERITED macros for AddRef and Release here");
+
+        Diag.Report(D->getLocStart(), error) << D;
+        Diag.Report(baseRefCntMember->getLocStart(), note1)
           << baseRefCntMember->getParent();
-      Diag.Report(refCntMember->getLocStart(), note2ID);
+        Diag.Report(refCntMember->getLocStart(), note2);
+      }
+
+      if (foundRefCntBase) {
+        unsigned error = Diag.getDiagnosticIDs()->getCustomDiagID(
+            DiagnosticIDs::Error,
+            "Refcounted record %0 has multiple superclasses with mRefCnt members");
+        unsigned note = Diag.getDiagnosticIDs()->getCustomDiagID(
+            DiagnosticIDs::Note,
+            "Superclass %0 has an mRefCnt member");
+
+        // superclass has mRefCnt, and another superclass also has an mRefCnt
+        Diag.Report(D->getLocStart(), error) << D;
+        Diag.Report(baseRefCntMember->getLocStart(), note)
+          << baseRefCntMember->getParent();
+        Diag.Report(foundRefCntBase->getLocStart(), note)
+          << foundRefCntBase->getParent();
+      }
+
+      // Record that we've found a base with a mRefCnt member
+      foundRefCntBase = baseRefCntMember;
     }
   }
 }
@@ -1381,7 +1534,7 @@ void DiagnosticsMatcher::NeedsNoVTableTypeChecker::run(
       << specialization;
 }
 
-void DiagnosticsMatcher::NonMemMovableChecker::run(
+void DiagnosticsMatcher::NonMemMovableTemplateArgChecker::run(
     const MatchFinder::MatchResult &Result) {
   DiagnosticsEngine &Diag = Result.Context->getDiagnostics();
   unsigned errorID = Diag.getDiagnosticIDs()->getCustomDiagID(
@@ -1400,7 +1553,7 @@ void DiagnosticsMatcher::NonMemMovableChecker::run(
       specialization->getTemplateInstantiationArgs();
   for (unsigned i = 0; i < args.size(); ++i) {
     QualType argType = args[i].getAsType();
-    if (NonMemMovable.hasEffectiveAnnotation(args[i].getAsType())) {
+    if (NonMemMovable.hasEffectiveAnnotation(argType)) {
       Diag.Report(specialization->getLocation(), errorID) << specialization
                                                           << argType;
       // XXX It would be really nice if we could get the instantiation stack
@@ -1414,6 +1567,29 @@ void DiagnosticsMatcher::NonMemMovableChecker::run(
       // be useful)
       Diag.Report(requestLoc, note1ID) << specialization;
       NonMemMovable.dumpAnnotationReason(Diag, argType, requestLoc);
+    }
+  }
+}
+
+void DiagnosticsMatcher::NonMemMovableMemberChecker::run(
+    const MatchFinder::MatchResult &Result) {
+  DiagnosticsEngine &Diag = Result.Context->getDiagnostics();
+  unsigned errorID = Diag.getDiagnosticIDs()->getCustomDiagID(
+      DiagnosticIDs::Error,
+      "class %0 cannot have non-memmovable member %1 of type %2");
+
+  // Get the specialization
+  const CXXRecordDecl* Decl =
+      Result.Nodes.getNodeAs<CXXRecordDecl>("decl");
+
+  // Report an error for every member which is non-memmovable
+  for (const FieldDecl *Field : Decl->fields()) {
+    QualType Type = Field->getType();
+    if (NonMemMovable.hasEffectiveAnnotation(Type)) {
+      Diag.Report(Field->getLocation(), errorID) << Decl
+                                                 << Field
+                                                 << Type;
+      NonMemMovable.dumpAnnotationReason(Diag, Type, Decl->getLocation());
     }
   }
 }
@@ -1488,6 +1664,18 @@ void DiagnosticsMatcher::RefCountedCopyConstructorChecker::run(
   Diag.Report(E->getLocation(), NoteID);
 }
 
+void DiagnosticsMatcher::AssertAssignmentChecker::run(
+    const MatchFinder::MatchResult &Result) {
+  DiagnosticsEngine &Diag = Result.Context->getDiagnostics();
+  unsigned assignInsteadOfComp = Diag.getDiagnosticIDs()->getCustomDiagID(
+      DiagnosticIDs::Error, "Forbidden assignment in assert expression");
+  const CallExpr *funcCall = Result.Nodes.getNodeAs<CallExpr>("funcCall");
+
+  if (funcCall && HasSideEffectAssignment(funcCall)) {
+    Diag.Report(funcCall->getLocStart(), assignInsteadOfComp);
+  }
+}
+
 class MozCheckAction : public PluginASTAction {
 public:
   ASTConsumerPtr CreateASTConsumer(CompilerInstance &CI,
@@ -1517,3 +1705,7 @@ public:
 
 static FrontendPluginRegistry::Add<MozCheckAction> X("moz-check",
                                                      "check moz action");
+// Export the registry on Windows.
+#ifdef LLVM_EXPORT_REGISTRY
+LLVM_EXPORT_REGISTRY(FrontendPluginRegistry)
+#endif

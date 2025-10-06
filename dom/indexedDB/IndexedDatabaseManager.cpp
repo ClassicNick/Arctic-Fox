@@ -41,6 +41,7 @@
 #include "IDBKeyRange.h"
 #include "IDBRequest.h"
 #include "ProfilerHelpers.h"
+#include "ScriptErrorHelper.h"
 #include "WorkerScope.h"
 #include "WorkerPrivate.h"
 
@@ -347,6 +348,10 @@ IndexedDatabaseManager::Init()
 
     mDeleteTimer = do_CreateInstance(NS_TIMER_CONTRACTID);
     NS_ENSURE_STATE(mDeleteTimer);
+
+    if (QuotaManager* quotaManager = QuotaManager::Get()) {
+      NoteLiveQuotaManager(quotaManager);
+    }
   }
 
   Preferences::RegisterCallbackAndCall(AtomicBoolPrefChangedCallback,
@@ -393,7 +398,7 @@ IndexedDatabaseManager::Init()
   }
 
   if (mLocale.IsEmpty()) {
-    mLocale.AssignLiteral("en-US");
+    mLocale.AssignLiteral("en_US");
   }
 #endif
 
@@ -459,7 +464,7 @@ IndexedDatabaseManager::CommonPostHandleEvent(EventChainPostVisitor& aVisitor,
   }
 
   nsString type;
-  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(internalEvent->GetType(type)));
+  MOZ_ALWAYS_SUCCEEDS(internalEvent->GetType(type));
 
   MOZ_ASSERT(nsDependentString(kErrorEventType).EqualsLiteral("error"));
   if (!type.EqualsLiteral("error")) {
@@ -484,8 +489,7 @@ IndexedDatabaseManager::CommonPostHandleEvent(EventChainPostVisitor& aVisitor,
     error->GetName(errorName);
   }
 
-  ThreadsafeAutoJSContext cx;
-  RootedDictionary<ErrorEventInit> init(cx);
+  RootedDictionary<ErrorEventInit> init(RootingCx());
   request->GetCallerLocation(init.mFilename, &init.mLineno, &init.mColno);
 
   init.mMessage = errorName;
@@ -539,47 +543,51 @@ IndexedDatabaseManager::CommonPostHandleEvent(EventChainPostVisitor& aVisitor,
     return NS_OK;
   }
 
-  nsAutoCString category;
-  if (aFactory->IsChrome()) {
-    category.AssignLiteral("chrome ");
-  } else {
-    category.AssignLiteral("content ");
-  }
-  category.AppendLiteral("javascript");
-
   // Log the error to the error console.
-  nsCOMPtr<nsIConsoleService> consoleService =
-    do_GetService(NS_CONSOLESERVICE_CONTRACTID);
-  MOZ_ASSERT(consoleService);
-
-  nsCOMPtr<nsIScriptError> scriptError =
-    do_CreateInstance(NS_SCRIPTERROR_CONTRACTID);
-  MOZ_ASSERT(consoleService);
-
-  if (uint64_t innerWindowID = aFactory->InnerWindowID()) {
-    MOZ_ALWAYS_TRUE(NS_SUCCEEDED(
-      scriptError->InitWithWindowID(errorName,
-                                    init.mFilename,
-                                    /* aSourceLine */ EmptyString(),
-                                    init.mLineno,
-                                    init.mColno,
-                                    nsIScriptError::errorFlag,
-                                    category,
-                                    innerWindowID)));
-  } else {
-    MOZ_ALWAYS_TRUE(NS_SUCCEEDED(
-      scriptError->Init(errorName,
-                        init.mFilename,
-                        /* aSourceLine */ EmptyString(),
-                        init.mLineno,
-                        init.mColno,
-                        nsIScriptError::errorFlag,
-                        category.get())));
-  }
-
-  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(consoleService->LogMessage(scriptError)));
+  ScriptErrorHelper::Dump(errorName,
+                          init.mFilename,
+                          init.mLineno,
+                          init.mColno,
+                          nsIScriptError::errorFlag,
+                          aFactory->IsChrome(),
+                          aFactory->InnerWindowID());
 
   return NS_OK;
+}
+
+// static
+bool
+IndexedDatabaseManager::ResolveSandboxBinding(JSContext* aCx)
+{
+  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(js::GetObjectClass(JS::CurrentGlobalOrNull(aCx))->flags &
+             JSCLASS_DOM_GLOBAL,
+             "Passed object is not a global object!");
+
+  // We need to ensure that the manager has been created already here so that we
+  // load preferences that may control which properties are exposed.
+  if (NS_WARN_IF(!GetOrCreate())) {
+    return false;
+  }
+
+  if (!IDBCursorBinding::GetConstructorObject(aCx) ||
+      !IDBCursorWithValueBinding::GetConstructorObject(aCx) ||
+      !IDBDatabaseBinding::GetConstructorObject(aCx) ||
+      !IDBFactoryBinding::GetConstructorObject(aCx) ||
+      !IDBIndexBinding::GetConstructorObject(aCx) ||
+      !IDBKeyRangeBinding::GetConstructorObject(aCx) ||
+      !IDBLocaleAwareKeyRangeBinding::GetConstructorObject(aCx) ||
+      !IDBMutableFileBinding::GetConstructorObject(aCx) ||
+      !IDBObjectStoreBinding::GetConstructorObject(aCx) ||
+      !IDBOpenDBRequestBinding::GetConstructorObject(aCx) ||
+      !IDBRequestBinding::GetConstructorObject(aCx) ||
+      !IDBTransactionBinding::GetConstructorObject(aCx) ||
+      !IDBVersionChangeEventBinding::GetConstructorObject(aCx))
+  {
+    return false;
+  }
+
+  return true;
 }
 
 // static
@@ -590,29 +598,6 @@ IndexedDatabaseManager::DefineIndexedDB(JSContext* aCx,
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(js::GetObjectClass(aGlobal)->flags & JSCLASS_DOM_GLOBAL,
              "Passed object is not a global object!");
-
-  // We need to ensure that the manager has been created already here so that we
-  // load preferences that may control which properties are exposed.
-  if (NS_WARN_IF(!GetOrCreate())) {
-    return false;
-  }
-
-  if (!IDBCursorBinding::GetConstructorObject(aCx, aGlobal) ||
-      !IDBCursorWithValueBinding::GetConstructorObject(aCx, aGlobal) ||
-      !IDBDatabaseBinding::GetConstructorObject(aCx, aGlobal) ||
-      !IDBFactoryBinding::GetConstructorObject(aCx, aGlobal) ||
-      !IDBIndexBinding::GetConstructorObject(aCx, aGlobal) ||
-      !IDBKeyRangeBinding::GetConstructorObject(aCx, aGlobal) ||
-      !IDBLocaleAwareKeyRangeBinding::GetConstructorObject(aCx, aGlobal) ||
-      !IDBMutableFileBinding::GetConstructorObject(aCx, aGlobal) ||
-      !IDBObjectStoreBinding::GetConstructorObject(aCx, aGlobal) ||
-      !IDBOpenDBRequestBinding::GetConstructorObject(aCx, aGlobal) ||
-      !IDBRequestBinding::GetConstructorObject(aCx, aGlobal) ||
-      !IDBTransactionBinding::GetConstructorObject(aCx, aGlobal) ||
-      !IDBVersionChangeEventBinding::GetConstructorObject(aCx, aGlobal))
-  {
-    return false;
-  }
 
   RefPtr<IDBFactory> factory;
   if (NS_FAILED(IDBFactory::CreateForMainThreadJS(aCx,
@@ -724,6 +709,30 @@ IndexedDatabaseManager::ExperimentalFeaturesEnabled()
 
 // static
 bool
+IndexedDatabaseManager::ExperimentalFeaturesEnabled(JSContext* aCx, JSObject* aGlobal)
+{
+  // If, in the child process, properties of the global object are enumerated
+  // before the chrome registry (and thus the value of |intl.accept_languages|)
+  // is ready, calling IndexedDatabaseManager::Init will permanently break
+  // that preference. We can retrieve gExperimentalFeaturesEnabled without
+  // actually going through IndexedDatabaseManager.
+  // See Bug 1198093 comment 14 for detailed explanation.
+  if (IsNonExposedGlobal(aCx, js::GetGlobalForObjectCrossCompartment(aGlobal),
+                         GlobalNames::BackstagePass)) {
+    MOZ_ASSERT(NS_IsMainThread());
+    static bool featureRetrieved = false;
+    if (!featureRetrieved) {
+      gExperimentalFeaturesEnabled = Preferences::GetBool(kPrefExperimental);
+      featureRetrieved = true;
+    }
+    return gExperimentalFeaturesEnabled;
+  }
+
+  return ExperimentalFeaturesEnabled();
+}
+
+// static
+bool
 IndexedDatabaseManager::IsFileHandleEnabled()
 {
   MOZ_ASSERT(gDBManager,
@@ -742,13 +751,24 @@ IndexedDatabaseManager::ClearBackgroundActor()
 }
 
 void
-IndexedDatabaseManager::NoteBackgroundThread(nsIEventTarget* aBackgroundThread)
+IndexedDatabaseManager::NoteLiveQuotaManager(QuotaManager* aQuotaManager)
 {
   MOZ_ASSERT(IsMainProcess());
   MOZ_ASSERT(NS_IsMainThread());
-  MOZ_ASSERT(aBackgroundThread);
+  MOZ_ASSERT(aQuotaManager);
 
-  mBackgroundThread = aBackgroundThread;
+  mBackgroundThread = aQuotaManager->OwningThread();
+}
+
+void
+IndexedDatabaseManager::NoteShuttingDownQuotaManager()
+{
+  MOZ_ASSERT(IsMainProcess());
+  MOZ_ASSERT(NS_IsMainThread());
+
+  MOZ_ALWAYS_SUCCEEDS(mDeleteTimer->Cancel());
+
+  mBackgroundThread = nullptr;
 }
 
 already_AddRefed<FileManager>
@@ -846,6 +866,10 @@ IndexedDatabaseManager::AsyncDeleteFile(FileManager* aFileManager,
   MOZ_ASSERT(aFileManager);
   MOZ_ASSERT(aFileId > 0);
   MOZ_ASSERT(mDeleteTimer);
+
+  if (!mBackgroundThread) {
+    return NS_OK;
+  }
 
   nsresult rv = mDeleteTimer->Cancel();
   if (NS_WARN_IF(NS_FAILED(rv))) {
@@ -1038,6 +1062,7 @@ IndexedDatabaseManager::Notify(nsITimer* aTimer)
 {
   MOZ_ASSERT(IsMainProcess());
   MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(mBackgroundThread);
 
   for (auto iter = mPendingDeleteInfos.ConstIter(); !iter.Done(); iter.Next()) {
     auto key = iter.Key();
@@ -1177,8 +1202,7 @@ DeleteFilesRunnable::Dispatch()
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(mState == State_Initial);
 
-  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(
-    mBackgroundThread->Dispatch(this, NS_DISPATCH_NORMAL)));
+  MOZ_ALWAYS_SUCCEEDS(mBackgroundThread->Dispatch(this, NS_DISPATCH_NORMAL));
 }
 
 NS_IMPL_ISUPPORTS(DeleteFilesRunnable, nsIRunnable)
@@ -1343,8 +1367,7 @@ DeleteFilesRunnable::Finish()
   // thread.
   mState = State_UnblockingOpen;
 
-  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(
-    mBackgroundThread->Dispatch(this, NS_DISPATCH_NORMAL)));
+  MOZ_ALWAYS_SUCCEEDS(mBackgroundThread->Dispatch(this, NS_DISPATCH_NORMAL));
 }
 
 void

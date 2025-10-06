@@ -9,8 +9,8 @@ import json
 import os
 import platform
 import random
+import subprocess
 import sys
-import time
 import uuid
 import __builtin__
 
@@ -27,27 +27,9 @@ If you would like to use a different directory, hit CTRL+c and set the
 MOZBUILD_STATE_PATH environment variable to the directory you would like to
 use and re-run mach. For this change to take effect forever, you'll likely
 want to export this environment variable from your shell's init scripts.
+
+Press ENTER/RETURN to continue or CTRL+c to abort.
 '''.lstrip()
-
-NO_MERCURIAL_SETUP = '''
-*** MERCURIAL NOT CONFIGURED ***
-
-mach has detected that you have never run `{mach} mercurial-setup`.
-
-Running this command will ensure your Mercurial version control tool is up
-to date and optimally configured for a better, more productive experience
-when working on Mozilla projects.
-
-Please run `{mach} mercurial-setup` now.
-
-Note: `{mach} mercurial-setup` does not make any changes without prompting
-you first.
-
-You can disable this check by setting NO_MERCURIAL_SETUP_CHECK=1 in your
-environment.
-'''.strip()
-
-MERCURIAL_SETUP_FATAL_INTERVAL = 31 * 24 * 60 * 60
 
 
 # TODO Bug 794506 Integrate with the in-tree virtualenv configuration.
@@ -55,35 +37,39 @@ SEARCH_PATHS = [
     'python/mach',
     'python/mozboot',
     'python/mozbuild',
+    'python/mozlint',
     'python/mozversioncontrol',
     'python/blessings',
     'python/compare-locales',
     'python/configobj',
+    'python/futures',
     'python/jsmin',
     'python/psutil',
+    'python/pylru',
     'python/which',
     'python/pystache',
     'python/pyyaml/lib',
     'python/requests',
     'python/slugid',
+    'python/py',
+    'python/pytest',
+    'python/voluptuous',
     'build',
+    'build/pymake',
     'config',
     'dom/bindings',
     'dom/bindings/parser',
+    'dom/media/test/external',
     'layout/tools/reftest',
     'other-licenses/ply',
-    'xpcom/idl-parser',
+    'taskcluster',
     'testing',
-    'testing/tools/autotry',
-    'testing/taskcluster',
-    'testing/xpcshell',
-    'testing/web-platform',
-    'testing/web-platform/harness',
-    'testing/marionette/client',
-    'testing/marionette/client/marionette/runner/mixins/browsermob-proxy-py',
-    'testing/marionette/transport',
-    'testing/marionette/driver',
+    'testing/firefox-ui/harness',
+    'testing/firefox-ui/tests',
     'testing/luciddream',
+    'testing/marionette/harness',
+    'testing/marionette/harness/marionette/runner/mixins/browsermob-proxy-py',
+    'testing/marionette/client',
     'testing/mozbase/mozcrash',
     'testing/mozbase/mozdebug',
     'testing/mozbase/mozdevice',
@@ -102,6 +88,13 @@ SEARCH_PATHS = [
     'testing/mozbase/moztest',
     'testing/mozbase/mozversion',
     'testing/mozbase/manifestparser',
+    'testing/puppeteer/firefox',
+    'testing/taskcluster',
+    'testing/tools/autotry',
+    'testing/web-platform',
+    'testing/web-platform/harness',
+    'testing/web-platform/tests/tools/wptserve',
+    'testing/xpcshell',
     'xpcom/idl-parser',
 ]
 
@@ -110,9 +103,11 @@ MACH_MODULES = [
     'addon-sdk/mach_commands.py',
     'build/valgrind/mach_commands.py',
     'dom/bindings/mach_commands.py',
+    'dom/media/test/external/mach_commands.py',
     'layout/tools/reftest/mach_commands.py',
     'python/mach_commands.py',
     'python/mach/mach/commands/commandinfo.py',
+    'python/mach/mach/commands/settings.py',
     'python/compare-locales/mach_commands.py',
     'python/mozboot/mozboot/mach_commands.py',
     'python/mozbuild/mozbuild/mach_commands.py',
@@ -120,17 +115,18 @@ MACH_MODULES = [
     'python/mozbuild/mozbuild/compilation/codecomplete.py',
     'python/mozbuild/mozbuild/frontend/mach_commands.py',
     'services/common/tests/mach_commands.py',
+    'taskcluster/mach_commands.py',
+    'testing/firefox-ui/mach_commands.py',
     'testing/luciddream/mach_commands.py',
     'testing/mach_commands.py',
     'testing/marionette/mach_commands.py',
     'testing/mochitest/mach_commands.py',
     'testing/mozharness/mach_commands.py',
     'testing/talos/mach_commands.py',
-    'testing/taskcluster/mach_commands.py',
     'testing/web-platform/mach_commands.py',
     'testing/xpcshell/mach_commands.py',
     'tools/docs/mach_commands.py',
-    'tools/mercurial/mach_commands.py',
+    'tools/lint/mach_commands.py',
     'tools/mach_commands.py',
     'tools/power/mach_commands.py',
 ]
@@ -180,27 +176,8 @@ CATEGORIES = {
 }
 
 
-# Server to which to submit telemetry data
-BUILD_TELEMETRY_SERVER = 'http://52.88.27.118/build-metrics-dev'
-
-
 # We submit data to telemetry approximately every this many mach invocations
 TELEMETRY_SUBMISSION_FREQUENCY = 10
-
-
-def get_state_dir():
-    """Obtain the path to a directory to hold state.
-
-    Returns a tuple of the path and a bool indicating whether the value came
-    from an environment variable.
-    """
-    state_user_dir = os.path.expanduser('~/.mozbuild')
-    state_env_dir = os.environ.get('MOZBUILD_STATE_PATH', None)
-
-    if state_env_dir:
-        return state_env_dir, True
-    else:
-        return state_user_dir, False
 
 
 def bootstrap(topsrcdir, mozilla_dir=None):
@@ -223,11 +200,9 @@ def bootstrap(topsrcdir, mozilla_dir=None):
     # case. For default behavior, we educate users and give them an opportunity
     # to react. We always exit after creating the directory because users don't
     # like surprises.
-    try:
-        import mach.main
-    except ImportError:
-        sys.path[0:0] = [os.path.join(mozilla_dir, path) for path in SEARCH_PATHS]
-        import mach.main
+    sys.path[0:0] = [os.path.join(mozilla_dir, path) for path in SEARCH_PATHS]
+    import mach.main
+    from mozboot.util import get_state_dir
 
     def telemetry_handler(context, data):
         # We have not opted-in to telemetry
@@ -288,43 +263,6 @@ def bootstrap(topsrcdir, mozilla_dir=None):
 
         return False
 
-    def pre_dispatch_handler(context, handler, args):
-        """Perform global checks before command dispatch.
-
-        Currently, our goal is to ensure developers periodically run
-        `mach mercurial-setup` (when applicable) to ensure their Mercurial
-        tools are up to date.
-        """
-        # Don't do anything when...
-        if should_skip_dispatch(context, handler):
-            return
-
-        # User has disabled first run check.
-        if 'I_PREFER_A_SUBOPTIMAL_MERCURIAL_EXPERIENCE' in os.environ:
-            return
-        if 'NO_MERCURIAL_SETUP_CHECK' in os.environ:
-            return
-
-        # Mercurial isn't managing this source checkout.
-        if not os.path.exists(os.path.join(topsrcdir, '.hg')):
-            return
-
-        state_dir = get_state_dir()[0]
-        last_check_path = os.path.join(state_dir, 'mercurial',
-                                       'setup.lastcheck')
-
-        mtime = None
-        try:
-            mtime = os.path.getmtime(last_check_path)
-        except OSError as e:
-            if e.errno != errno.ENOENT:
-                raise
-
-        # No last run file means mercurial-setup has never completed.
-        if mtime is None:
-            print(NO_MERCURIAL_SETUP.format(mach=sys.argv[0]), file=sys.stderr)
-            sys.exit(2)
-
     def post_dispatch_handler(context, handler, args):
         """Perform global operations after command dispatch.
 
@@ -335,6 +273,11 @@ def bootstrap(topsrcdir, mozilla_dir=None):
         if should_skip_dispatch(context, handler):
             return
 
+        # We call mach environment in client.mk which would cause the
+        # data submission below to block the forward progress of make.
+        if handler.name in ('environment'):
+            return
+
         # We have not opted-in to telemetry
         if 'BUILD_SYSTEM_TELEMETRY' not in os.environ:
             return
@@ -343,49 +286,12 @@ def bootstrap(topsrcdir, mozilla_dir=None):
         if random.randint(1, TELEMETRY_SUBMISSION_FREQUENCY) != 1:
             return
 
-        # No data to work with anyway
-        outgoing = os.path.join(get_state_dir()[0], 'telemetry', 'outgoing')
-        if not os.path.isdir(outgoing):
-            return
-
-        # We can't import requests until after it has been added during the
-        # bootstrapping below.
-        import requests
-
-        submitted = os.path.join(get_state_dir()[0], 'telemetry', 'submitted')
-        try:
-            os.mkdir(submitted)
-        except OSError as e:
-            if e.errno != errno.EEXIST:
-                raise
-
-        session = requests.Session()
-        for filename in os.listdir(outgoing):
-            path = os.path.join(outgoing, filename)
-            if os.path.isdir(path) or not path.endswith('.json'):
-                continue
-            with open(path, 'r') as f:
-                data = f.read()
-                r = session.post(BUILD_TELEMETRY_SERVER, data=data,
-                                 headers={'Content-Type': 'application/json'})
-                # TODO: some of these errors are likely not recoverable, as
-                # written, we'll retry indefinitely
-                if r.status_code != 200:
-                    print('Error posting to telemetry: %s %s' %
-                          (r.status_code, r.text))
-                    continue
-
-            os.rename(os.path.join(outgoing, filename),
-                      os.path.join(submitted, filename))
-
-        session.close()
-
-        # Discard submitted data that is >= 30 days old
-        now = time.time()
-        for filename in os.listdir(submitted):
-            ctime = os.stat(os.path.join(submitted, filename)).st_ctime
-            if now - ctime >= 60*60*24*30:
-                os.remove(os.path.join(submitted, filename))
+        with open(os.devnull, 'wb') as devnull:
+            subprocess.Popen([sys.executable,
+                              os.path.join(topsrcdir, 'build',
+                                           'submit_telemetry_data.py'),
+                              get_state_dir()[0]],
+                              stdout=devnull, stderr=devnull)
 
     def populate_context(context, key=None):
         if key is None:
@@ -395,33 +301,23 @@ def bootstrap(topsrcdir, mozilla_dir=None):
             if is_environ:
                 if not os.path.exists(state_dir):
                     print('Creating global state directory from environment variable: %s'
-                        % state_dir)
+                          % state_dir)
                     os.makedirs(state_dir, mode=0o770)
-                    print('Please re-run mach.')
-                    sys.exit(1)
             else:
                 if not os.path.exists(state_dir):
                     print(STATE_DIR_FIRST_RUN.format(userdir=state_dir))
                     try:
-                        for i in range(20, -1, -1):
-                            time.sleep(1)
-                            sys.stdout.write('%d ' % i)
-                            sys.stdout.flush()
+                        sys.stdin.readline()
                     except KeyboardInterrupt:
                         sys.exit(1)
 
                     print('\nCreating default state directory: %s' % state_dir)
-                    os.mkdir(state_dir)
-                    print('Please re-run mach.')
-                    sys.exit(1)
+                    os.makedirs(state_dir, mode=0o770)
 
             return state_dir
 
         if key == 'topdir':
             return topsrcdir
-
-        if key == 'pre_dispatch_handler':
-            return pre_dispatch_handler
 
         if key == 'telemetry_handler':
             return telemetry_handler
@@ -433,6 +329,12 @@ def bootstrap(topsrcdir, mozilla_dir=None):
 
     mach = mach.main.Mach(os.getcwd())
     mach.populate_context_handler = populate_context
+
+    if not mach.settings_paths:
+        # default global machrc location
+        mach.settings_paths.append(get_state_dir()[0])
+    # always load local repository configuration
+    mach.settings_paths.append(mozilla_dir)
 
     for category, meta in CATEGORIES.items():
         mach.define_category(category, meta['short'], meta['long'],

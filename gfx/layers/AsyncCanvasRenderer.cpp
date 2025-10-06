@@ -44,14 +44,14 @@ AsyncCanvasRenderer::~AsyncCanvasRenderer()
 void
 AsyncCanvasRenderer::NotifyElementAboutAttributesChanged()
 {
-  class Runnable final : public nsRunnable
+  class Runnable final : public mozilla::Runnable
   {
   public:
     explicit Runnable(AsyncCanvasRenderer* aRenderer)
       : mRenderer(aRenderer)
     {}
 
-    NS_IMETHOD Run()
+    NS_IMETHOD Run() override
     {
       if (mRenderer) {
         dom::HTMLCanvasElement::SetAttrFromAsyncCanvasRenderer(mRenderer);
@@ -69,7 +69,7 @@ AsyncCanvasRenderer::NotifyElementAboutAttributesChanged()
     RefPtr<AsyncCanvasRenderer> mRenderer;
   };
 
-  RefPtr<nsRunnable> runnable = new Runnable(this);
+  nsCOMPtr<nsIRunnable> runnable = new Runnable(this);
   nsresult rv = NS_DispatchToMainThread(runnable);
   if (NS_FAILED(rv)) {
     NS_WARNING("Failed to dispatch a runnable to the main-thread.");
@@ -79,14 +79,14 @@ AsyncCanvasRenderer::NotifyElementAboutAttributesChanged()
 void
 AsyncCanvasRenderer::NotifyElementAboutInvalidation()
 {
-  class Runnable final : public nsRunnable
+  class Runnable final : public mozilla::Runnable
   {
   public:
     explicit Runnable(AsyncCanvasRenderer* aRenderer)
       : mRenderer(aRenderer)
     {}
 
-    NS_IMETHOD Run()
+    NS_IMETHOD Run() override
     {
       if (mRenderer) {
         dom::HTMLCanvasElement::InvalidateFromAsyncCanvasRenderer(mRenderer);
@@ -104,7 +104,7 @@ AsyncCanvasRenderer::NotifyElementAboutInvalidation()
     RefPtr<AsyncCanvasRenderer> mRenderer;
   };
 
-  RefPtr<nsRunnable> runnable = new Runnable(this);
+  nsCOMPtr<nsIRunnable> runnable = new Runnable(this);
   nsresult rv = NS_DispatchToMainThread(runnable);
   if (NS_FAILED(rv)) {
     NS_WARNING("Failed to dispatch a runnable to the main-thread.");
@@ -148,6 +148,12 @@ void
 AsyncCanvasRenderer::CopyFromTextureClient(TextureClient* aTextureClient)
 {
   MutexAutoLock lock(mMutex);
+
+  if (!aTextureClient) {
+    mSurfaceForBasic = nullptr;
+    return;
+  }
+
   TextureClientAutoLock texLock(aTextureClient, layers::OpenMode::OPEN_READ);
   if (!texLock.Succeeded()) {
     return;

@@ -14,7 +14,7 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=1170760
 <a target="_blank" href="https://bugzilla.mozilla.org/show_bug.cgi?id=1170760">Mozilla Bug 1170760</a>
 <p id="display"></p>
 <div id="content" style="display: none">
-<iframe id="t" src="http://example.org/tests/dom/promise/tests/file_promise_xrays.html"></iframe>
+<iframe id="t" src="http://example.org/chrome/dom/promise/tests/file_promise_xrays.html"></iframe>
 </div>
 
 <pre id="test">
@@ -41,6 +41,30 @@ function testHaveXray() {
   is(exception, "Getting race", "Should have thrown the right exception");
   is(win.wrappedJSObject.setupThrew, false, "Setup should not have thrown");
   nextTest();
+}
+
+function testConstructor1() {
+  var p = new win.Promise(function(resolve, reject) { resolve(win.Promise.resolve(5)); });
+  p.then(
+    function(arg) {
+      is(arg, 5, "Content Promise constructor resolved with content promise should work");
+    },
+    function(e) {
+      ok(false, "Content Promise constructor resolved with content promise should not fail");
+    }
+  ).then(nextTest);
+}
+
+function testConstructor2() {
+  var p = new win.Promise(function(resolve, reject) { resolve(Promise.resolve(5)); });
+  p.then(
+    function(arg) {
+      is(arg, 5, "Content Promise constructor resolved with chrome promise should work");
+    },
+    function(e) {
+      ok(false, "Content Promise constructor resolved with chrome promise should not fail");
+    }
+  ).then(nextTest);
 }
 
 function testRace1() {
@@ -250,7 +274,7 @@ function testThen2() {
 
 function testCatch1() {
   var p = win.Promise.reject(5);
-  ok(p instanceof win.Promise, "Promise.resolve should return a promise");
+  ok(p instanceof win.Promise, "Promise.reject should return a promise");
   var q = p.catch((x) => x*x);
   ok(q instanceof win.Promise,
      "Promise.catch should return a promise from the right global");
@@ -267,6 +291,8 @@ function testCatch1() {
 var tests = [
   testLoadComplete,
   testHaveXray,
+  testConstructor1,
+  testConstructor2,
   testRace1,
   testRace2,
   testRace3,

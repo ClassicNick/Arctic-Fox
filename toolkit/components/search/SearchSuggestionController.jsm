@@ -128,7 +128,7 @@ this.SearchSuggestionController.prototype = {
     if (!this.maxLocalResults && !this.maxRemoteResults) {
       throw new Error("Zero results expected, what are you trying to do?");
     }
-    if (this.maxLocalResults < 0 || this.remoteResult < 0) {
+    if (this.maxLocalResults < 0 || this.maxRemoteResults < 0) {
       throw new Error("Number of requested results must be positive");
     }
 
@@ -281,12 +281,14 @@ this.SearchSuggestionController.prototype = {
 
     try {
       serverResults = JSON.parse(this._request.responseText);
-    } catch(ex) {
+    } catch (ex) {
       deferredResponse.resolve("Failed to parse suggestion JSON: " + ex);
       return;
     }
 
-    if (this._searchString !== serverResults[0]) {
+    if (!serverResults[0] ||
+        this._searchString.localeCompare(serverResults[0], undefined,
+                                         { sensitivity: "base" })) {
       // something is wrong here so drop remote results
       deferredResponse.resolve("Unexpected response, this._searchString does not match remote response");
       return;

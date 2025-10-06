@@ -21,6 +21,7 @@
 #include "nsIWeakReferenceUtils.h"
 #include "nsIInterfaceRequestor.h"
 #include "mozilla/dom/ChannelInfo.h"
+#include "mozilla/net/ReferrerPolicy.h"
 
 #define BEGIN_WORKERS_NAMESPACE \
   namespace mozilla { namespace dom { namespace workers {
@@ -92,6 +93,7 @@ struct JSSettings
     JSSettings_JSGC_SLICE_TIME_BUDGET,
     JSSettings_JSGC_DYNAMIC_HEAP_GROWTH,
     JSSettings_JSGC_DYNAMIC_MARK_SLICE,
+    JSSettings_JSGC_REFRESH_FRAME_SLICES,
     // JSGC_MODE not supported
 
     // This must be last so that we get an accurate count.
@@ -139,7 +141,7 @@ struct JSSettings
   JSContentChromeSettings chrome;
   JSContentChromeSettings content;
   JSGCSettingsArray gcSettings;
-  JS::RuntimeOptions runtimeOptions;
+  JS::ContextOptions contextOptions;
 
 #ifdef JS_GC_ZEAL
   uint8_t gcZeal;
@@ -260,13 +262,12 @@ struct WorkerLoadInfo
   uint64_t mWindowID;
   uint64_t mServiceWorkerID;
 
+  net::ReferrerPolicy mReferrerPolicy;
   bool mFromWindow;
   bool mEvalAllowed;
   bool mReportCSPViolations;
   bool mXHRParamsAllowed;
   bool mPrincipalIsSystem;
-  bool mIsInPrivilegedApp;
-  bool mIsInCertifiedApp;
   bool mStorageAllowed;
   bool mPrivateBrowsing;
   bool mServiceWorkersTestingInWindow;
@@ -294,6 +295,8 @@ SuspendWorkersForWindow(nsPIDOMWindowInner* aWindow);
 void
 ResumeWorkersForWindow(nsPIDOMWindowInner* aWindow);
 
+// A class that can be used with WorkerCrossThreadDispatcher to run a
+// bit of C++ code on the worker thread.
 class WorkerTask
 {
 protected:
@@ -306,6 +309,8 @@ protected:
 public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(WorkerTask)
 
+  // The return value here has the same semantics as the return value
+  // of WorkerRunnable::WorkerRun.
   virtual bool
   RunTask(JSContext* aCx) = 0;
 };
@@ -355,9 +360,6 @@ void
 ThrowDOMExceptionForNSResult(JSContext* aCx, nsresult aNSResult);
 
 } // namespace exceptions
-
-nsIGlobalObject*
-GetGlobalObjectForGlobal(JSObject* global);
 
 bool
 IsWorkerGlobal(JSObject* global);

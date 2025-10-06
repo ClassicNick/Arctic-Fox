@@ -5,7 +5,7 @@
 
 // Process each item in the "constants hash" to add to "global" and give a name
 this.EXPORTED_SYMBOLS = [];
-for (let [key, val] in Iterator({
+for (let [key, val] of Object.entries({
 
 WEAVE_VERSION:                         "@weave_version@",
 
@@ -172,7 +172,7 @@ kSyncBackoffNotMet:                    "Trying to sync before the server said it
 kFirstSyncChoiceNotMade:               "User has not selected an action for first sync",
 
 // Application IDs
-FIREFOX_ID:                            "{8de7fcbb-c55c-4fbe-bfc5-fc555c87dbc4}",
+FIREFOX_ID:                            "{ec8030f7-c20a-464f-9b0e-13a3a9e97384}",
 FENNEC_ID:                             "{a23983c0-fd0e-11dc-95ff-0800200c9a66}",
 SEAMONKEY_ID:                          "{92650c4d-4b8e-4d2a-b7eb-24ecf4f6b63a}",
 TEST_HARNESS_ID:                       "xuth@mozilla.org",
@@ -181,6 +181,9 @@ MIN_PP_LENGTH:                         12,
 MIN_PASS_LENGTH:                       8,
 
 LOG_DATE_FORMAT:                       "%Y-%m-%d %H:%M:%S",
+
+DEVICE_TYPE_DESKTOP:                   "desktop",
+DEVICE_TYPE_MOBILE:                    "mobile",
 
 })) {
   this[key] = val;

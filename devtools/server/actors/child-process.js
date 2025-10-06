@@ -14,6 +14,8 @@ const Services = require("Services");
 const { assert } = require("devtools/shared/DevToolsUtils");
 const { TabSources } = require("./utils/TabSources");
 
+loader.lazyRequireGetter(this, "WorkerActorList", "devtools/server/actors/worker", true);
+
 function ChildProcessActor(aConnection) {
   this.conn = aConnection;
   this._contextPool = new ActorPool(this.conn);
@@ -32,6 +34,10 @@ function ChildProcessActor(aConnection) {
     .createInstance(Ci.nsIPrincipal);
   let sandbox = Cu.Sandbox(systemPrincipal);
   this._consoleScope = sandbox;
+
+  this._workerList = null;
+  this._workerActorPool = null;
+  this._onWorkerListChanged = this._onWorkerListChanged.bind(this);
 }
 exports.ChildProcessActor = ChildProcessActor;
 
@@ -62,7 +68,7 @@ ChildProcessActor.prototype = {
     return this._sources;
   },
 
-  form: function() {
+  form: function () {
     if (!this._consoleActor) {
       this._consoleActor = new WebConsoleActor(this.conn, this);
       this._contextPool.addActor(this._consoleActor);
@@ -87,20 +93,54 @@ ChildProcessActor.prototype = {
     };
   },
 
-  disconnect: function() {
-    this.conn.removeActorPool(this._contextPool);
-    this._contextPool = null;
+  onListWorkers: function () {
+    if (!this._workerList) {
+      this._workerList = new WorkerActorList(this.conn, {});
+    }
+    return this._workerList.getList().then(actors => {
+      let pool = new ActorPool(this.conn);
+      for (let actor of actors) {
+        pool.addActor(actor);
+      }
+
+      this.conn.removeActorPool(this._workerActorPool);
+      this._workerActorPool = pool;
+      this.conn.addActorPool(this._workerActorPool);
+
+      this._workerList.onListChanged = this._onWorkerListChanged;
+
+      return {
+        "from": this.actorID,
+        "workers": actors.map(actor => actor.form())
+      };
+    });
   },
 
-  preNest: function() {
+  _onWorkerListChanged: function () {
+    this.conn.send({ from: this.actorID, type: "workerListChanged" });
+    this._workerList.onListChanged = null;
+  },
+
+  disconnect: function () {
+    this.conn.removeActorPool(this._contextPool);
+    this._contextPool = null;
+
+    // Tell the live lists we aren't watching any more.
+    if (this._workerList) {
+      this._workerList.onListChanged = null;
+    }
+  },
+
+  preNest: function () {
     // TODO: freeze windows
     // window mediator doesn't work in child.
     // it doesn't throw, but doesn't return any window
   },
 
-  postNest: function() {
+  postNest: function () {
   },
 };
 
 ChildProcessActor.prototype.requestTypes = {
+  "listWorkers": ChildProcessActor.prototype.onListWorkers,
 };

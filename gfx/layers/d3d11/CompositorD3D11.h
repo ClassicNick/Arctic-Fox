@@ -42,11 +42,12 @@ struct DeviceAttachmentsD3D11;
 class CompositorD3D11 : public Compositor
 {
 public:
-  CompositorD3D11(nsIWidget* aWidget);
+  CompositorD3D11(CompositorBridgeParent* aParent, widget::CompositorWidget* aWidget);
   ~CompositorD3D11();
 
-  virtual bool Initialize() override;
-  virtual void Destroy() override {}
+  virtual CompositorD3D11* AsCompositorD3D11() override { return this; }
+
+  virtual bool Initialize(nsCString* const out_failureReason) override;
 
   virtual TextureFactoryIdentifier
     GetTextureFactoryIdentifier() override;
@@ -91,28 +92,22 @@ public:
   virtual void ClearRect(const gfx::Rect& aRect) override;
 
   virtual void DrawQuad(const gfx::Rect &aRect,
-                        const gfx::Rect &aClipRect,
+                        const gfx::IntRect &aClipRect,
                         const EffectChain &aEffectChain,
                         gfx::Float aOpacity,
                         const gfx::Matrix4x4& aTransform,
                         const gfx::Rect& aVisibleRect) override;
-
-  /* Helper for when the primary effect is VR_DISTORTION */
-  void DrawVRDistortion(const gfx::Rect &aRect,
-                        const gfx::Rect &aClipRect,
-                        const EffectChain &aEffectChain,
-                        gfx::Float aOpacity,
-                        const gfx::Matrix4x4 &aTransform);
 
   /**
    * Start a new frame. If aClipRectIn is null, sets *aClipRectOut to the
    * screen dimensions. 
    */
   virtual void BeginFrame(const nsIntRegion& aInvalidRegion,
-                          const gfx::Rect *aClipRectIn,
-                          const gfx::Rect& aRenderBounds,
-                          gfx::Rect *aClipRectOut = nullptr,
-                          gfx::Rect *aRenderBoundsOut = nullptr) override;
+                          const gfx::IntRect *aClipRectIn,
+                          const gfx::IntRect& aRenderBounds,
+                          const nsIntRegion& aOpaqueRegion,
+                          gfx::IntRect *aClipRectOut = nullptr,
+                          gfx::IntRect *aRenderBoundsOut = nullptr) override;
 
   /**
    * Flush the current frame to the screen.
@@ -143,7 +138,7 @@ public:
     return LayersBackend::LAYERS_D3D11;
   }
 
-  virtual nsIWidget* GetWidget() const override { return mWidget; }
+  virtual void ForcePresent();
 
   ID3D11Device* GetDevice() { return mDevice; }
 
@@ -167,7 +162,7 @@ private:
   bool VerifyBufferSize();
   bool UpdateRenderTarget();
   bool UpdateConstantBuffers();
-  void SetSamplerForFilter(gfx::Filter aFilter);
+  void SetSamplerForSamplingFilter(gfx::SamplingFilter aSamplingFilter);
   ID3D11PixelShader* GetPSForEffect(Effect *aEffect, MaskType aMaskType);
   void PaintToTarget();
   RefPtr<ID3D11Texture2D> CreateTexture(const gfx::IntRect& aRect,
@@ -183,9 +178,9 @@ private:
   RefPtr<CompositingRenderTargetD3D11> mDefaultRT;
   RefPtr<CompositingRenderTargetD3D11> mCurrentRT;
 
-  DeviceAttachmentsD3D11* mAttachments;
+  RefPtr<ID3D11Query> mQuery;
 
-  nsIWidget* mWidget;
+  DeviceAttachmentsD3D11* mAttachments;
 
   LayoutDeviceIntSize mSize;
 
@@ -196,6 +191,7 @@ private:
   VertexShaderConstants mVSConstants;
   PixelShaderConstants mPSConstants;
   bool mDisableSequenceForNextFrame;
+  bool mAllowPartialPresents;
 
   gfx::IntRect mInvalidRect;
   // This is the clip rect applied to the default DrawTarget (i.e. the window)

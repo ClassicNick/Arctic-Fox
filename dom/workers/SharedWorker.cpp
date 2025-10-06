@@ -21,6 +21,7 @@
 
 using mozilla::dom::Optional;
 using mozilla::dom::Sequence;
+using mozilla::dom::MessagePort;
 using namespace mozilla;
 
 USING_WORKERS_NAMESPACE
@@ -136,7 +137,6 @@ SharedWorker::Close()
 
   if (mMessagePort) {
     mMessagePort->Close();
-    mMessagePort = nullptr;
   }
 }
 

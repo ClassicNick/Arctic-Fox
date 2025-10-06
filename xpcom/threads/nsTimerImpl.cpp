@@ -14,9 +14,6 @@
 #include "mozilla/Atomics.h"
 #include "mozilla/IntegerPrintfMacros.h"
 #include "mozilla/Logging.h"
-#ifdef MOZ_NUWA_PROCESS
-#include "ipc/Nuwa.h"
-#endif
 #ifdef MOZ_TASK_TRACER
 #include "GeckoTaskTracerImpl.h"
 using namespace mozilla::tasktracer;
@@ -52,7 +49,7 @@ GetTimerLog()
 // wakeups for the purposes of power profiling. Set the following environment
 // variable before starting the browser.
 //
-//   NSPR_LOG_MODULES=TimerFirings:4
+//   MOZ_LOG=TimerFirings:4
 //
 // Then a line will be printed for every timer that fires. The name used for a
 // |CallbackType::Function| timer depends on the circumstances.
@@ -464,10 +461,8 @@ nsTimerImpl::Fire()
     return;
   }
 
-#if !defined(MOZILLA_XPCOMRT_API)
   PROFILER_LABEL("Timer", "Fire",
                  js::ProfileEntry::Category::OTHER);
-#endif
 
   TimeStamp now = TimeStamp::Now();
   if (MOZ_LOG_TEST(GetTimerLog(), LogLevel::Debug)) {
@@ -573,7 +568,7 @@ nsTimerImpl::Fire()
   }
 }
 
-#if defined(XP_MACOSX) || (defined(XP_LINUX) && !defined(ANDROID))
+#if defined(HAVE_DLADDR) && defined(HAVE___CXA_DEMANGLE)
 #define USE_DLADDR 1
 #endif
 

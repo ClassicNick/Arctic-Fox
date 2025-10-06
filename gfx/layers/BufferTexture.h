@@ -15,15 +15,18 @@
 namespace mozilla {
 namespace layers {
 
+bool ComputeHasIntermediateBuffer(gfx::SurfaceFormat aFormat,
+                                  LayersBackend aLayersBackend);
+
 class BufferTextureData : public TextureData
 {
 public:
   static BufferTextureData* Create(gfx::IntSize aSize, gfx::SurfaceFormat aFormat,
                                    gfx::BackendType aMoz2DBackend,TextureFlags aFlags,
                                    TextureAllocationFlags aAllocFlags,
-                                   ISurfaceAllocator* aAllocator);
+                                   ClientIPCAllocator* aAllocator);
 
-  static BufferTextureData* CreateForYCbCr(ISurfaceAllocator* aAllocator,
+  static BufferTextureData* CreateForYCbCr(ClientIPCAllocator* aAllocator,
                                            gfx::IntSize aYSize,
                                            gfx::IntSize aCbCrSize,
                                            StereoMode aStereoMode,
@@ -32,8 +35,7 @@ public:
   // It is generally better to use CreateForYCbCr instead.
   // This creates a half-initialized texture since we don't know the sizes and
   // offsets in the buffer.
-  static BufferTextureData* CreateForYCbCrWithBufferSize(ISurfaceAllocator* aAllocator,
-                                                         gfx::SurfaceFormat aFormat,
+  static BufferTextureData* CreateForYCbCrWithBufferSize(ClientIPCAllocator* aAllocator,
                                                          int32_t aSize,
                                                          TextureFlags aTextureFlags);
 
@@ -41,30 +43,32 @@ public:
 
   virtual void Unlock() override {}
 
-  virtual gfx::IntSize GetSize() const override;
-
-  virtual gfx::SurfaceFormat GetFormat() const override;
+  virtual void FillInfo(TextureData::Info& aInfo) const override;
 
   virtual already_AddRefed<gfx::DrawTarget> BorrowDrawTarget() override;
-
-  virtual bool CanExposeMappedData() const override { return true; }
 
   virtual bool BorrowMappedData(MappedTextureData& aMap) override;
 
   virtual bool BorrowMappedYCbCrData(MappedYCbCrTextureData& aMap) override;
 
-  virtual bool SupportsMoz2D() const override;
-
-  virtual bool HasInternalBuffer() const override { return true; }
-
   // use TextureClient's default implementation
   virtual bool UpdateFromSurface(gfx::SourceSurface* aSurface) override;
+
+  virtual BufferTextureData* AsBufferTextureData() override { return this; }
 
   // Don't use this.
   void SetDesciptor(const BufferDescriptor& aDesc);
 
+  Maybe<gfx::IntSize> GetCbCrSize() const;
+
+  Maybe<StereoMode> GetStereoMode() const;
+
 protected:
-  static BufferTextureData* CreateInternal(ISurfaceAllocator* aAllocator,
+  gfx::IntSize GetSize() const;
+
+  gfx::SurfaceFormat GetFormat() const;
+
+  static BufferTextureData* CreateInternal(ClientIPCAllocator* aAllocator,
                                            const BufferDescriptor& aDesc,
                                            gfx::BackendType aMoz2DBackend,
                                            int32_t aBufferSize,

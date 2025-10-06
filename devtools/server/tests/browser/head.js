@@ -2,17 +2,17 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const Cc = Components.classes;
-const Ci = Components.interfaces;
-const Cu = Components.utils;
+var Cc = Components.classes;
+var Ci = Components.interfaces;
+var Cu = Components.utils;
 
-Cu.import("resource://gre/modules/Services.jsm");
 const {console} = Cu.import("resource://gre/modules/Console.jsm", {});
 const {require} = Cu.import("resource://devtools/shared/Loader.jsm", {});
 const {DebuggerClient} = require("devtools/shared/client/main");
 const {DebuggerServer} = require("devtools/server/main");
 const {defer} = require("promise");
 const DevToolsUtils = require("devtools/shared/DevToolsUtils");
+const Services = require("Services");
 
 const PATH = "browser/devtools/server/tests/browser/";
 const MAIN_DOMAIN = "http://test1.example.org/" + PATH;
@@ -25,29 +25,24 @@ waitForExplicitFinish();
 /**
  * Add a new test tab in the browser and load the given url.
  * @param {String} url The url to be loaded in the new tab
- * @return a promise that resolves to the document when the url is loaded
+ * @return a promise that resolves to the new browser that the document
+ *         is loaded in. Note that we cannot return the document
+ *         directly, since this would be a CPOW in the e10s case,
+ *         and Promises cannot be resolved with CPOWs (see bug 1233497).
  */
 var addTab = Task.async(function* (url) {
-  info("Adding a new tab with URL: '" + url + "'");
-  let tab = gBrowser.selectedTab = gBrowser.addTab();
-  let loaded = once(gBrowser.selectedBrowser, "load", true);
+  info(`Adding a new tab with URL: ${url}`);
+  let tab = gBrowser.selectedTab = gBrowser.addTab(url);
+  yield once(gBrowser.selectedBrowser, "load", true);
 
-  content.location = url;
-  yield loaded;
+  info(`Tab added and URL ${url} loaded`);
 
-  info("URL '" + url + "' loading complete");
-
-  yield new Promise(resolve => {
-    let isBlank = url == "about:blank";
-    waitForFocus(resolve, content, isBlank);
-  });
-
-  return tab.linkedBrowser.contentWindow.document;
+  return tab.linkedBrowser;
 });
 
 function* initAnimationsFrontForUrl(url) {
-  const {AnimationsFront} = require("devtools/server/actors/animation");
-  const {InspectorFront} = require("devtools/server/actors/inspector");
+  const {AnimationsFront} = require("devtools/shared/fronts/animation");
+  const {InspectorFront} = require("devtools/shared/fronts/inspector");
 
   yield addTab(url);
 
@@ -66,7 +61,9 @@ function initDebuggerServer() {
     // Sometimes debugger server does not get destroyed correctly by previous
     // tests.
     DebuggerServer.destroy();
-  } catch (ex) { }
+  } catch (e) {
+    info(`DebuggerServer destroy error: ${e}\n${e.stack}`);
+  }
   DebuggerServer.init();
   DebuggerServer.addBrowserActors();
 }
@@ -102,7 +99,7 @@ function closeDebuggerClient(client) {
  * @param {Boolean} useCapture Optional, for addEventListener/removeEventListener
  * @return A promise that resolves when the event has been handled
  */
-function once(target, eventName, useCapture=false) {
+function once(target, eventName, useCapture = false) {
   info("Waiting for event: '" + eventName + "' on " + target + ".");
 
   return new Promise(resolve => {
@@ -177,10 +174,39 @@ function waitUntil(predicate, interval = 10) {
     return Promise.resolve(true);
   }
   return new Promise(resolve => {
-    setTimeout(function() {
+    setTimeout(function () {
       waitUntil(predicate).then(() => resolve(true));
     }, interval);
   });
 }
 
-// EventUtils just doesn't work!
+function waitForMarkerType(front, types, predicate,
+  unpackFun = (name, data) => data.markers,
+  eventName = "timeline-data")
+{
+  types = [].concat(types);
+  predicate = predicate || function () { return true; };
+  let filteredMarkers = [];
+  let { promise, resolve } = defer();
+
+  info("Waiting for markers of type: " + types);
+
+  function handler(name, data) {
+    if (typeof name === "string" && name !== "markers") {
+      return;
+    }
+
+    let markers = unpackFun(name, data);
+    info("Got markers: " + JSON.stringify(markers, null, 2));
+
+    filteredMarkers = filteredMarkers.concat(markers.filter(m => types.indexOf(m.name) !== -1));
+
+    if (types.every(t => filteredMarkers.some(m => m.name === t)) && predicate(filteredMarkers)) {
+      front.off(eventName, handler);
+      resolve(filteredMarkers);
+    }
+  }
+  front.on(eventName, handler);
+
+  return promise;
+}

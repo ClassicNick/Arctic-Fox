@@ -28,51 +28,51 @@ const VALUES_TEST_DATA = [{
   values: [{
     name: "margin-top",
     ruleSelector: "#div1",
-    styleSheetLocation: "null:1"
+    styleSheetLocation: "inline:1"
   }, {
     name: "margin-right",
     ruleSelector: "#div1",
-    styleSheetLocation: "null:1"
+    styleSheetLocation: "inline:1"
   }, {
     name: "margin-bottom",
     ruleSelector: "#div1",
-    styleSheetLocation: "null:1"
+    styleSheetLocation: "inline:1"
   }, {
     name: "margin-left",
     ruleSelector: "#div1",
-    styleSheetLocation: "null:1"
+    styleSheetLocation: "inline:1"
   }]
-},{
+}, {
   selector: "#div2",
   values: [{
     name: "border-bottom-width",
     ruleSelector: "#div2",
-    styleSheetLocation: "null:2"
+    styleSheetLocation: "inline:2"
   }]
-},{
+}, {
   selector: "#div3",
   values: [{
     name: "padding-top",
     ruleSelector: "html, body, #div3",
-    styleSheetLocation: "null:3"
+    styleSheetLocation: "inline:3"
   }, {
     name: "padding-right",
     ruleSelector: "html, body, #div3",
-    styleSheetLocation: "null:3"
+    styleSheetLocation: "inline:3"
   }, {
     name: "padding-bottom",
     ruleSelector: "html, body, #div3",
-    styleSheetLocation: "null:3"
+    styleSheetLocation: "inline:3"
   }, {
     name: "padding-left",
     ruleSelector: "html, body, #div3",
-    styleSheetLocation: "null:3"
+    styleSheetLocation: "inline:3"
   }]
 }];
 
-add_task(function*() {
+add_task(function* () {
   yield addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
-  let {toolbox, inspector, view} = yield openLayoutView();
+  let {inspector, view} = yield openLayoutView();
 
   info("Checking the regions tooltips");
 

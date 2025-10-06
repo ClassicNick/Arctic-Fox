@@ -7,7 +7,7 @@
   background-repeat: no-repeat;
   background-color: #100000;
   background-size: cover;
-  color: #E0E0FF; 
+  color: #000000;
 }
 
 #PMleftBox {
@@ -17,7 +17,7 @@
   min-width: 210px;
   min-height: 210px;
   margin-top:20px;
-  -moz-margin-start: 30px;
+  margin-inline-start: 30px;
 }
 
 #PMrightBox {
@@ -25,8 +25,12 @@
   margin-right: 30px;
 }
 
+#detailsBox > description {
+  color: #000066;
+}
+
 #detailsBox > description > .text-link {
-  color: #CDC36F;
+  color: #1111CC;
 }
 
 #PMbottomBox {

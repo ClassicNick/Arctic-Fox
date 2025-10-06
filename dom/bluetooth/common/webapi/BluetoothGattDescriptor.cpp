@@ -202,7 +202,7 @@ public:
 
     JSContext* cx = jsapi.cx();
     if (!ToJSValue(cx, v.get_ArrayOfuint8_t(), aValue)) {
-      JS_ClearPendingException(cx);
+      jsapi.ClearException();
       return false;
     }
 
@@ -281,7 +281,7 @@ BluetoothGattDescriptor::WriteValue(
     mValue.Clear();
     mValue.AppendElements(aValue.Data(), aValue.Length());
 
-    promise->MaybeResolve(JS::UndefinedHandleValue);
+    promise->MaybeResolveWithUndefined();
     return promise.forget();
   }
 

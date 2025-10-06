@@ -36,6 +36,8 @@
 #include "prclist.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/CORSMode.h"
+#include "mozilla/StyleBackendType.h"
+#include "mozilla/StyleSheetHandle.h"
 #include <bitset>                        // for member
 
 class gfxUserFontSet;
@@ -82,7 +84,6 @@ class nsPresContext;
 class nsRange;
 class nsScriptLoader;
 class nsSMILAnimationController;
-class nsStyleSet;
 class nsTextNode;
 class nsWindowSizes;
 class nsDOMCaretPosition;
@@ -95,6 +96,7 @@ class CSSStyleSheet;
 class ErrorResult;
 class EventStates;
 class PendingAnimationTracker;
+class StyleSetHandle;
 class SVGAttrAnimationRuleProcessor;
 template<typename> class OwningNonNull;
 
@@ -118,6 +120,7 @@ class DocumentType;
 class DOMImplementation;
 class DOMStringList;
 class Element;
+struct ElementCreationOptions;
 struct ElementRegistrationOptions;
 class Event;
 class EventTarget;
@@ -323,6 +326,19 @@ public:
   }
 
   /**
+   * If true, this flag indicates that all mixed content subresource
+   * loads for this document (and also embeded browsing contexts) will
+   * be blocked.
+   */
+  bool GetBlockAllMixedContent(bool aPreload) const
+  {
+    if (aPreload) {
+      return mBlockAllMixedContentPreloads;
+    }
+    return mBlockAllMixedContent;
+  }
+
+  /**
    * If true, this flag indicates that all subresource loads for this
    * document need to be upgraded from http to https.
    * This flag becomes true if the CSP of the document itself, or any
@@ -335,6 +351,10 @@ public:
       return mUpgradeInsecurePreloads;
     }
     return mUpgradeInsecureRequests;
+  }
+
+  void SetReferrer(const nsACString& aReferrer) {
+    mReferrer = aReferrer;
   }
 
   /**
@@ -381,7 +401,7 @@ public:
   }
   virtual already_AddRefed<nsIURI> GetBaseURI(bool aTryUseXHRDocBaseURI = false) const override;
 
-  virtual nsresult SetBaseURI(nsIURI* aURI) = 0;
+  virtual void SetBaseURI(nsIURI* aURI) = 0;
 
   /**
    * Get/Set the base target of a link in a document.
@@ -617,6 +637,38 @@ public:
   }
 
   /**
+   * Set the mixed content object subrequest flag for this document.
+   */
+  void SetHasMixedContentObjectSubrequest(bool aHasMixedContentObjectSubrequest)
+  {
+    mHasMixedContentObjectSubrequest = aHasMixedContentObjectSubrequest;
+  }
+
+  /**
+   * Set CSP flag for this document.
+   */
+  void SetHasCSP(bool aHasCSP)
+  {
+    mHasCSP = aHasCSP;
+  }
+
+  /**
+   * Set unsafe-inline CSP flag for this document.
+   */
+  void SetHasUnsafeInlineCSP(bool aHasUnsafeInlineCSP)
+  {
+    mHasUnsafeInlineCSP = aHasUnsafeInlineCSP;
+  }
+
+  /**
+   * Set unsafe-eval CSP flag for this document.
+   */
+  void SetHasUnsafeEvalCSP(bool aHasUnsafeEvalCSP)
+  {
+    mHasUnsafeEvalCSP = aHasUnsafeEvalCSP;
+  }
+
+  /**
    * Get tracking content blocked flag for this document.
    */
   bool GetHasTrackingContentBlocked()
@@ -658,6 +710,11 @@ public:
   }
 
   /**
+   * Get string representation of sandbox flags (null if no flags are set)
+   */
+  void GetSandboxFlagsAsString(nsAString& aFlags);
+
+  /**
    * Set the sandbox flags for this document.
    * @see nsSandboxFlags.h for the possible flags
    */
@@ -680,9 +737,10 @@ public:
    * method is responsible for calling BeginObservingDocument() on the
    * presshell if the presshell should observe document mutations.
    */
-  virtual already_AddRefed<nsIPresShell> CreateShell(nsPresContext* aContext,
-                                                     nsViewManager* aViewManager,
-                                                     nsStyleSet* aStyleSet) = 0;
+  virtual already_AddRefed<nsIPresShell> CreateShell(
+      nsPresContext* aContext,
+      nsViewManager* aViewManager,
+      mozilla::StyleSetHandle aStyleSet) = 0;
   virtual void DeleteShell() = 0;
 
   nsIPresShell* GetShell() const
@@ -817,6 +875,13 @@ public:
                          mozilla::ErrorResult& aError);
   void RemoveAnonymousContent(mozilla::dom::AnonymousContent& aContent,
                               mozilla::ErrorResult& aError);
+  /**
+   * If aNode is a descendant of anonymous content inserted by
+   * InsertAnonymousContent, this method returns the root element of the
+   * inserted anonymous content (in other words, the clone of the aElement
+   * that was passed to InsertAnonymousContent).
+   */
+  Element* GetAnonRootIfInAnonymousContentContainer(nsINode* aNode) const;
   nsTArray<RefPtr<mozilla::dom::AnonymousContent>>& GetAnonymousContents() {
     return mAnonymousContents;
   }
@@ -925,7 +990,7 @@ public:
    * TODO We can get rid of the whole concept of delayed loading if we fix
    * bug 77999.
    */
-  virtual void EnsureOnDemandBuiltInUASheet(mozilla::CSSStyleSheet* aSheet) = 0;
+  virtual void EnsureOnDemandBuiltInUASheet(mozilla::StyleSheetHandle aSheet) = 0;
 
   /**
    * Get the number of (document) stylesheets
@@ -941,7 +1006,7 @@ public:
    * @return the stylesheet at aIndex.  Null if aIndex is out of range.
    * @throws no exceptions
    */
-  virtual mozilla::CSSStyleSheet* GetStyleSheetAt(int32_t aIndex) const = 0;
+  virtual mozilla::StyleSheetHandle GetStyleSheetAt(int32_t aIndex) const = 0;
 
   /**
    * Insert a sheet at a particular spot in the stylesheet list (zero-based)
@@ -950,7 +1015,7 @@ public:
    *   adjusted for the "special" sheets.
    * @throws no exceptions
    */
-  virtual void InsertStyleSheetAt(mozilla::CSSStyleSheet* aSheet,
+  virtual void InsertStyleSheetAt(mozilla::StyleSheetHandle aSheet,
                                   int32_t aIndex) = 0;
 
   /**
@@ -959,7 +1024,8 @@ public:
    * @param aSheet the sheet to get the index of
    * @return aIndex the index of the sheet in the full list
    */
-  virtual int32_t GetIndexOfStyleSheet(mozilla::CSSStyleSheet* aSheet) const = 0;
+  virtual int32_t GetIndexOfStyleSheet(
+      const mozilla::StyleSheetHandle aSheet) const = 0;
 
   /**
    * Replace the stylesheets in aOldSheets with the stylesheets in
@@ -970,24 +1036,24 @@ public:
    * will simply be removed.
    */
   virtual void UpdateStyleSheets(
-      nsTArray<RefPtr<mozilla::CSSStyleSheet>>& aOldSheets,
-      nsTArray<RefPtr<mozilla::CSSStyleSheet>>& aNewSheets) = 0;
+      nsTArray<mozilla::StyleSheetHandle::RefPtr>& aOldSheets,
+      nsTArray<mozilla::StyleSheetHandle::RefPtr>& aNewSheets) = 0;
 
   /**
    * Add a stylesheet to the document
    */
-  virtual void AddStyleSheet(mozilla::CSSStyleSheet* aSheet) = 0;
+  virtual void AddStyleSheet(mozilla::StyleSheetHandle aSheet) = 0;
 
   /**
    * Remove a stylesheet from the document
    */
-  virtual void RemoveStyleSheet(mozilla::CSSStyleSheet* aSheet) = 0;
+  virtual void RemoveStyleSheet(mozilla::StyleSheetHandle aSheet) = 0;
 
   /**
    * Notify the document that the applicable state of the sheet changed
    * and that observers should be notified and style sets updated
    */
-  virtual void SetStyleSheetApplicableState(mozilla::CSSStyleSheet* aSheet,
+  virtual void SetStyleSheetApplicableState(mozilla::StyleSheetHandle aSheet,
                                             bool aApplicable) = 0;
 
   enum additionalSheetType {
@@ -1000,16 +1066,41 @@ public:
   virtual nsresult LoadAdditionalStyleSheet(additionalSheetType aType,
                                             nsIURI* aSheetURI) = 0;
   virtual nsresult AddAdditionalStyleSheet(additionalSheetType aType,
-                                           mozilla::CSSStyleSheet* aSheet) = 0;
+                                           mozilla::StyleSheetHandle aSheet) = 0;
   virtual void RemoveAdditionalStyleSheet(additionalSheetType aType,
                                           nsIURI* sheetURI) = 0;
-  virtual mozilla::CSSStyleSheet* FirstAdditionalAuthorSheet() = 0;
+  virtual mozilla::StyleSheetHandle GetFirstAdditionalAuthorSheet() = 0;
+
+  /**
+   * Assuming that aDocSheets is an array of document-level style
+   * sheets for this document, returns the index that aSheet should
+   * be inserted at to maintain document ordering.
+   *
+   * Defined in nsIDocumentInlines.h.
+   */
+  template<typename T>
+  size_t FindDocStyleSheetInsertionPoint(const nsTArray<RefPtr<T>>& aDocSheets,
+                                         T* aSheet);
 
   /**
    * Get this document's CSSLoader.  This is guaranteed to not return null.
    */
   mozilla::css::Loader* CSSLoader() const {
     return mCSSLoader;
+  }
+
+  mozilla::StyleBackendType GetStyleBackendType() const {
+    if (mStyleBackendType == mozilla::StyleBackendType(0)) {
+      const_cast<nsIDocument*>(this)->UpdateStyleBackendType();
+    }
+    MOZ_ASSERT(mStyleBackendType != mozilla::StyleBackendType(0));
+    return mStyleBackendType;
+  }
+
+  void UpdateStyleBackendType();
+
+  bool IsStyledByServo() const {
+    return GetStyleBackendType() == mozilla::StyleBackendType::Servo;
   }
 
   /**
@@ -1184,11 +1275,6 @@ public:
   virtual void RestorePreviousFullScreenState() = 0;
 
   /**
-   * Returns true if this document is in full-screen mode.
-   */
-  virtual bool IsFullScreenDoc() = 0;
-
-  /**
    * Returns true if this document is a fullscreen leaf document, i.e. it
    * is in fullscreen mode and has no fullscreen children.
    */
@@ -1304,11 +1390,11 @@ public:
 
   // Observation hooks for style data to propagate notifications
   // to document observers
-  virtual void StyleRuleChanged(mozilla::CSSStyleSheet* aStyleSheet,
+  virtual void StyleRuleChanged(mozilla::StyleSheetHandle aStyleSheet,
                                 mozilla::css::Rule* aStyleRule) = 0;
-  virtual void StyleRuleAdded(mozilla::CSSStyleSheet* aStyleSheet,
+  virtual void StyleRuleAdded(mozilla::StyleSheetHandle aStyleSheet,
                               mozilla::css::Rule* aStyleRule) = 0;
-  virtual void StyleRuleRemoved(mozilla::CSSStyleSheet* aStyleSheet,
+  virtual void StyleRuleRemoved(mozilla::StyleSheetHandle aStyleSheet,
                                 mozilla::css::Rule* aStyleRule) = 0;
 
   /**
@@ -1431,7 +1517,8 @@ public:
    */
   virtual already_AddRefed<Element> CreateElem(const nsAString& aName,
                                                nsIAtom* aPrefix,
-                                               int32_t aNamespaceID) = 0;
+                                               int32_t aNamespaceID,
+                                               nsAString* aIs = nullptr) = 0;
 
   /**
    * Get the security info (i.e. SSL state etc) that the document got
@@ -2035,13 +2122,25 @@ public:
   virtual nsIDocument* GetTemplateContentsOwner() = 0;
 
   /**
-   * true when this document is a static clone of a normal document.
-   * For example print preview and printing use static documents.
+   * Returns true if this document is a static clone of a normal document.
+   *
+   * We create static clones for print preview and printing (possibly other
+   * things in future).
+   *
+   * Note that static documents are also "loaded as data" (if this method
+   * returns true, IsLoadedAsData() will also return true).
    */
   bool IsStaticDocument() { return mIsStaticDocument; }
 
   /**
-   * Clones the document and subdocuments and stylesheet etc.
+   * Clones the document along with any subdocuments, stylesheet, etc.
+   *
+   * The resulting document and everything it contains (including any
+   * sub-documents) are created purely via cloning.  The returned documents and
+   * any sub-documents are "loaded as data" documents to preserve the state as
+   * it was during the clone process (we don't want external resources to load
+   * and replace the cloned resources).
+   *
    * @param aCloneContainer The container for the clone document.
    */
   virtual already_AddRefed<nsIDocument>
@@ -2131,7 +2230,7 @@ public:
    * DO NOT USE FOR UNTRUSTED CONTENT.
    */
   virtual nsresult LoadChromeSheetSync(nsIURI* aURI, bool aIsAgentSheet,
-                                       mozilla::CSSStyleSheet** aSheet) = 0;
+                                       mozilla::StyleSheetHandle::RefPtr* aSheet) = 0;
 
   /**
    * Returns true if the locale used for the document specifies a direction of
@@ -2457,18 +2556,15 @@ public:
   already_AddRefed<nsContentList>
     GetElementsByClassName(const nsAString& aClasses);
   // GetElementById defined above
-  already_AddRefed<Element> CreateElement(const nsAString& aTagName,
-                                          mozilla::ErrorResult& rv);
-  already_AddRefed<Element> CreateElementNS(const nsAString& aNamespaceURI,
-                                            const nsAString& aQualifiedName,
-                                            mozilla::ErrorResult& rv);
-  virtual already_AddRefed<Element> CreateElement(const nsAString& aTagName,
-                                                  const nsAString& aTypeExtension,
-                                                  mozilla::ErrorResult& rv) = 0;
-  virtual already_AddRefed<Element> CreateElementNS(const nsAString& aNamespaceURI,
-                                                    const nsAString& aQualifiedName,
-                                                    const nsAString& aTypeExtension,
-                                                    mozilla::ErrorResult& rv) = 0;
+  virtual already_AddRefed<Element>
+    CreateElement(const nsAString& aTagName,
+                  const mozilla::dom::ElementCreationOptions& aOptions,
+                  mozilla::ErrorResult& rv) = 0;
+  virtual already_AddRefed<Element>
+    CreateElementNS(const nsAString& aNamespaceURI,
+                    const nsAString& aQualifiedName,
+                    const mozilla::dom::ElementCreationOptions& aOptions,
+                    mozilla::ErrorResult& rv) = 0;
   already_AddRefed<mozilla::dom::DocumentFragment>
     CreateDocumentFragment() const;
   already_AddRefed<nsTextNode> CreateTextNode(const nsAString& aData) const;
@@ -2489,14 +2585,14 @@ public:
                        mozilla::ErrorResult& rv) const;
   already_AddRefed<mozilla::dom::NodeIterator>
     CreateNodeIterator(nsINode& aRoot, uint32_t aWhatToShow,
-                       const mozilla::dom::NodeFilterHolder& aFilter,
+                       mozilla::dom::NodeFilterHolder aFilter,
                        mozilla::ErrorResult& rv) const;
   already_AddRefed<mozilla::dom::TreeWalker>
     CreateTreeWalker(nsINode& aRoot, uint32_t aWhatToShow,
                      mozilla::dom::NodeFilter* aFilter, mozilla::ErrorResult& rv) const;
   already_AddRefed<mozilla::dom::TreeWalker>
     CreateTreeWalker(nsINode& aRoot, uint32_t aWhatToShow,
-                     const mozilla::dom::NodeFilterHolder& aFilter,
+                     mozilla::dom::NodeFilterHolder aFilter,
                      mozilla::ErrorResult& rv) const;
 
   // Deprecated WebIDL bits
@@ -2539,13 +2635,13 @@ public:
   // Not const because all the full-screen goop is not const
   virtual bool FullscreenEnabled() = 0;
   virtual Element* GetFullscreenElement() = 0;
-  bool MozFullScreen()
+  bool Fullscreen()
   {
-    return IsFullScreenDoc();
+    return !!GetFullscreenElement();
   }
   void ExitFullscreen();
-  Element* GetMozPointerLockElement();
-  void MozExitPointerLock()
+  Element* GetPointerLockElement();
+  void ExitPointerLock()
   {
     UnlockPointer(this);
   }
@@ -2718,6 +2814,10 @@ public:
   bool InlineScriptAllowedByCSP();
 
   void ReportHasScrollLinkedEffect();
+  bool HasScrollLinkedEffect() const
+  {
+    return mHasScrollLinkedEffect;
+  }
 
 protected:
   bool GetUseCounter(mozilla::UseCounter aUseCounter)
@@ -2783,6 +2883,11 @@ protected:
     FlushUserFontSet();
   }
 
+  const nsString& GetId() const
+  {
+    return mId;
+  }
+
   nsCString mReferrer;
   nsString mLastModified;
 
@@ -2797,6 +2902,8 @@ protected:
   bool mReferrerPolicySet;
   ReferrerPolicyEnum mReferrerPolicy;
 
+  bool mBlockAllMixedContent;
+  bool mBlockAllMixedContentPreloads;
   bool mUpgradeInsecureRequests;
   bool mUpgradeInsecurePreloads;
 
@@ -2854,6 +2961,10 @@ protected:
   // Our visibility state
   mozilla::dom::VisibilityState mVisibilityState;
 
+  // Whether this document has (or will have, once we have a pres shell) a
+  // Gecko- or Servo-backed style system.
+  mozilla::StyleBackendType mStyleBackendType;
+
   // True if BIDI is enabled.
   bool mBidiEnabled : 1;
   // True if a MathML element has ever been owned by this document.
@@ -2881,11 +2992,15 @@ protected:
   // True iff we've ever fired a DOMTitleChanged event for this document
   bool mHaveFiredTitleChange : 1;
 
-  // True iff IsShowing() should be returning true
+  // State for IsShowing(). mIsShowing starts off false. It becomes true when
+  // OnPageShow happens and becomes false when OnPageHide happens. So it's false
+  // before the initial load completes and when we're in bfcache or unloaded,
+  // true otherwise.
   bool mIsShowing : 1;
 
-  // True iff the document "page" is not hidden (i.e. currently in the
-  // bfcache)
+  // State for IsVisible(). mVisible starts off true. It becomes false when
+  // OnPageHide happens, and becomes true again when OnPageShow happens.  So
+  // it's false only when we're in bfcache or unloaded.
   bool mVisible : 1;
 
   // True if our content viewer has been removed from the docshell
@@ -2942,6 +3057,18 @@ protected:
 
   // True if a document has blocked Mixed Display/Passive Content (see nsMixedContentBlocker.cpp)
   bool mHasMixedDisplayContentBlocked : 1;
+
+  // True if a document loads a plugin object that attempts to load mixed content subresources through necko(see nsMixedContentBlocker.cpp)
+  bool mHasMixedContentObjectSubrequest : 1;
+
+  // True if a document load has a CSP attached.
+  bool mHasCSP : 1;
+
+  // True if a document load has a CSP with unsafe-eval attached.
+  bool mHasUnsafeEvalCSP : 1;
+
+  // True if a document load has a CSP with unsafe-inline attached.
+  bool mHasUnsafeInlineCSP : 1;
 
   // True if a document has blocked Tracking Content
   bool mHasTrackingContentBlocked : 1;

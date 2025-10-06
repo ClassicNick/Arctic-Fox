@@ -8,13 +8,13 @@
 #define nsDOMMutationObserver_h
 
 #include "mozilla/Attributes.h"
+#include "mozilla/Move.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsPIDOMWindow.h"
 #include "nsIScriptContext.h"
 #include "nsStubAnimationObserver.h"
 #include "nsCOMArray.h"
 #include "nsTArray.h"
-#include "nsAutoPtr.h"
 #include "nsIVariant.h"
 #include "nsContentList.h"
 #include "mozilla/dom/Element.h"
@@ -218,11 +218,11 @@ public:
   }
 
   nsCOMArray<nsIAtom>& AttributeFilter() { return mAttributeFilter; }
-  void SetAttributeFilter(nsCOMArray<nsIAtom>& aFilter)
+  void SetAttributeFilter(nsCOMArray<nsIAtom>&& aFilter)
   {
     NS_ASSERTION(!mParent, "Shouldn't have parent");
     mAttributeFilter.Clear();
-    mAttributeFilter.AppendObjects(aFilter);
+    mAttributeFilter = mozilla::Move(aFilter);
   }
 
   void AddClone(nsMutationReceiverBase* aClone)
@@ -335,6 +335,7 @@ public:
                                     nsMutationReceiverBase* aParent)
   {
     nsMutationReceiver* r = new nsMutationReceiver(aRegisterTarget, aParent);
+    aParent->AddClone(r);
     r->AddObserver();
     return r;
   }
@@ -397,7 +398,6 @@ protected:
   {
     NS_ASSERTION(!static_cast<nsMutationReceiver*>(aParent)->GetParent(),
                  "Shouldn't create deep observer hierarchies!");
-    aParent->AddClone(this);
   }
 
   virtual void AddMutationObserver() override
@@ -421,6 +421,7 @@ public:
                                      nsMutationReceiverBase* aParent)
   {
     nsAnimationReceiver* r = new nsAnimationReceiver(aRegisterTarget, aParent);
+    aParent->AddClone(r);
     r->AddObserver();
     return r;
   }
@@ -910,6 +911,8 @@ private:
   typedef nsTArray<Entry> EntryArray;
   nsClassHashtable<nsPtrHashKey<nsINode>, EntryArray> mEntryTable;
   // List of nodes referred to by mEntryTable so we can sort them
+  // For a specific pseudo element, we use its parent element as the
+  // batch target, so they will be put in the same EntryArray.
   nsTArray<nsINode*> mBatchTargets;
 };
 

@@ -4,19 +4,16 @@
 
 #include "AndroidDecoderModule.h"
 #include "AndroidBridge.h"
-#include "GLBlitHelper.h"
-#include "GLContext.h"
-#include "GLContextEGL.h"
-#include "GLContextProvider.h"
+#include "AndroidSurfaceTexture.h"
 #include "GLImages.h"
-#include "GLLibraryEGL.h"
 
 #include "MediaData.h"
 #include "MediaInfo.h"
+#include "VPXDecoder.h"
 
 #include "nsThreadUtils.h"
-#include "nsAutoPtr.h"
 #include "nsPromiseFlatString.h"
+#include "nsIGfxInfo.h"
 
 #include "prlog.h"
 
@@ -38,7 +35,7 @@ static PRLogModuleInfo* AndroidDecoderModuleLog()
 
 using namespace mozilla;
 using namespace mozilla::gl;
-using namespace mozilla::widget::sdk;
+using namespace mozilla::java::sdk;
 using media::TimeUnit;
 
 namespace mozilla {
@@ -53,9 +50,9 @@ namespace mozilla {
 static const char*
 TranslateMimeType(const nsACString& aMimeType)
 {
-  if (aMimeType.EqualsLiteral("video/webm; codecs=vp8")) {
+  if (VPXDecoder::IsVPX(aMimeType, VPXDecoder::VP8)) {
     return "video/x-vnd.on2.vp8";
-  } else if (aMimeType.EqualsLiteral("video/webm; codecs=vp9")) {
+  } else if (VPXDecoder::IsVPX(aMimeType, VPXDecoder::VP9)) {
     return "video/x-vnd.on2.vp9";
   }
   return PromiseFlatCString(aMimeType).get();
@@ -69,6 +66,18 @@ CreateDecoder(const nsACString& aMimeType)
                     &codec), nullptr);
   return codec;
 }
+
+static bool
+GetFeatureStatus(int32_t aFeature)
+{
+  nsCOMPtr<nsIGfxInfo> gfxInfo = services::GetGfxInfo();
+  int32_t status = nsIGfxInfo::FEATURE_STATUS_UNKNOWN;
+  nsCString discardFailureId;
+  if (!gfxInfo || NS_FAILED(gfxInfo->GetFeatureStatus(aFeature, discardFailureId, &status))) {
+    return false;
+  }
+  return status == nsIGfxInfo::FEATURE_STATUS_OK;
+};
 
 class VideoDataDecoder : public MediaCodecDataDecoder
 {
@@ -107,7 +116,6 @@ public:
 
   void Cleanup() override
   {
-    mGLContext = nullptr;
   }
 
   nsresult Input(MediaRawData* aSample) override
@@ -115,78 +123,12 @@ public:
     return MediaCodecDataDecoder::Input(aSample);
   }
 
-  bool WantCopy() const
-  {
-    // Allocating a texture is incredibly slow on PowerVR and may fail on
-    // emulators, see bug 1190379.
-    return mGLContext->Vendor() != GLVendor::Imagination &&
-           mGLContext->Renderer() != GLRenderer::AndroidEmulator;
-  }
-
-  EGLImage CopySurface(layers::Image* img)
-  {
-    mGLContext->MakeCurrent();
-
-    GLuint tex = CreateTextureForOffscreen(mGLContext, mGLContext->GetGLFormats(),
-                                           img->GetSize());
-
-    auto helper = mGLContext->BlitHelper();
-    const gl::OriginPos destOrigin = gl::OriginPos::TopLeft;
-    if (!helper->BlitImageToTexture(img, img->GetSize(), tex,
-                                    LOCAL_GL_TEXTURE_2D, destOrigin))
-    {
-      mGLContext->fDeleteTextures(1, &tex);
-      return nullptr;
-    }
-
-    EGLint attribs[] = {
-      LOCAL_EGL_IMAGE_PRESERVED_KHR, LOCAL_EGL_TRUE,
-      LOCAL_EGL_NONE, LOCAL_EGL_NONE
-    };
-
-    EGLContext eglContext = static_cast<GLContextEGL*>(mGLContext.get())->mContext;
-    EGLImage eglImage = sEGLLibrary.fCreateImage(
-        EGL_DISPLAY(), eglContext, LOCAL_EGL_GL_TEXTURE_2D_KHR,
-        reinterpret_cast<EGLClientBuffer>(tex), attribs);
-    mGLContext->fDeleteTextures(1, &tex);
-
-    return eglImage;
-  }
-
   nsresult PostOutput(BufferInfo::Param aInfo, MediaFormat::Param aFormat,
                       const TimeUnit& aDuration) override
   {
-    if (!EnsureGLContext()) {
-      return NS_ERROR_FAILURE;
-    }
-
     RefPtr<layers::Image> img =
       new SurfaceTextureImage(mSurfaceTexture.get(), mConfig.mDisplay,
                               gl::OriginPos::BottomLeft);
-
-    if (WantCopy()) {
-      EGLImage eglImage = CopySurface(img);
-      if (!eglImage) {
-        return NS_ERROR_FAILURE;
-      }
-
-      EGLSync eglSync = nullptr;
-      if (sEGLLibrary.IsExtensionSupported(GLLibraryEGL::KHR_fence_sync) &&
-          mGLContext->IsExtensionSupported(GLContext::OES_EGL_sync))
-      {
-        MOZ_ASSERT(mGLContext->IsCurrent());
-        eglSync = sEGLLibrary.fCreateSync(EGL_DISPLAY(),
-                                          LOCAL_EGL_SYNC_FENCE,
-                                          nullptr);
-        MOZ_ASSERT(eglSync);
-        mGLContext->fFlush();
-      } else {
-        NS_WARNING("No EGL fence support detected, rendering artifacts may occur!");
-      }
-
-      img = new layers::EGLImageImage(eglImage, eglSync, mConfig.mDisplay,
-                                      gl::OriginPos::TopLeft, true /* owns */);
-    }
 
     nsresult rv;
     int32_t flags;
@@ -202,7 +144,6 @@ public:
 
     RefPtr<VideoData> v =
       VideoData::CreateFromImage(mConfig,
-                                 mImageContainer,
                                  offset,
                                  presentationTimeUs,
                                  aDuration.ToMicroseconds(),
@@ -217,20 +158,9 @@ public:
   }
 
 protected:
-  bool EnsureGLContext()
-  {
-    if (mGLContext) {
-      return true;
-    }
-
-    mGLContext = GLContextProvider::CreateHeadless(CreateContextFlags::NONE);
-    return mGLContext;
-  }
-
   layers::ImageContainer* mImageContainer;
   const VideoInfo& mConfig;
   RefPtr<AndroidSurfaceTexture> mSurfaceTexture;
-  RefPtr<GLContext> mGLContext;
 };
 
 class AudioDataDecoder : public MediaCodecDataDecoder
@@ -243,14 +173,14 @@ public:
   {
     JNIEnv* const env = jni::GetEnvForThread();
 
-    jni::Object::LocalRef buffer(env);
+    jni::ByteBuffer::LocalRef buffer(env);
     NS_ENSURE_SUCCESS_VOID(aFormat->GetByteBuffer(NS_LITERAL_STRING("csd-0"),
                                                   &buffer));
 
     if (!buffer && aConfig.mCodecSpecificConfig->Length() >= 2) {
-      buffer = jni::Object::LocalRef::Adopt(
-          env, env->NewDirectByteBuffer(aConfig.mCodecSpecificConfig->Elements(),
-          aConfig.mCodecSpecificConfig->Length()));
+      buffer = jni::ByteBuffer::New(
+          aConfig.mCodecSpecificConfig->Elements(),
+          aConfig.mCodecSpecificConfig->Length());
       NS_ENSURE_SUCCESS_VOID(aFormat->SetByteBuffer(NS_LITERAL_STRING("csd-0"),
                                                     buffer));
     }
@@ -262,13 +192,17 @@ public:
   }
 
   nsresult Output(BufferInfo::Param aInfo, void* aBuffer,
-                  MediaFormat::Param aFormat, const TimeUnit& aDuration)
+                  MediaFormat::Param aFormat, const TimeUnit& aDuration) override
   {
     // The output on Android is always 16-bit signed
     nsresult rv;
     int32_t numChannels;
     NS_ENSURE_SUCCESS(rv =
         aFormat->GetInteger(NS_LITERAL_STRING("channel-count"), &numChannels), rv);
+    AudioConfig::ChannelLayout layout(numChannels);
+    if (!layout.IsValid()) {
+      return NS_ERROR_FAILURE;
+    }
 
     int32_t sampleRate;
     NS_ENSURE_SUCCESS(rv =
@@ -287,7 +221,10 @@ public:
 #endif
 
     const int32_t numFrames = numSamples / numChannels;
-    auto audio = MakeUnique<AudioDataValue[]>(numSamples);
+    AlignedAudioBuffer audio(numSamples);
+    if (!audio) {
+      return NS_ERROR_OUT_OF_MEMORY;
+    }
 
     const uint8_t* bufferStart = static_cast<uint8_t*>(aBuffer) + offset;
     PodCopy(audio.get(), reinterpret_cast<const AudioDataValue*>(bufferStart),
@@ -308,7 +245,8 @@ public:
 };
 
 bool
-AndroidDecoderModule::SupportsMimeType(const nsACString& aMimeType) const
+AndroidDecoderModule::SupportsMimeType(const nsACString& aMimeType,
+                                       DecoderDoctorDiagnostics* aDiagnostics) const
 {
   if (!AndroidBridge::Bridge() ||
       AndroidBridge::Bridge()->GetAPIVersion() < 16) {
@@ -329,49 +267,59 @@ AndroidDecoderModule::SupportsMimeType(const nsACString& aMimeType) const
       aMimeType.EqualsLiteral("audio/wave; codecs=7") ||
       aMimeType.EqualsLiteral("audio/wave; codecs=65534")) {
     return false;
-  }  
+  }
 
-  return widget::HardwareCodecCapabilityUtils::FindDecoderCodecInfoForMimeType(
+  if ((VPXDecoder::IsVPX(aMimeType, VPXDecoder::VP8) &&
+       !GetFeatureStatus(nsIGfxInfo::FEATURE_VP8_HW_DECODE)) ||
+      (VPXDecoder::IsVPX(aMimeType, VPXDecoder::VP9) &&
+       !GetFeatureStatus(nsIGfxInfo::FEATURE_VP9_HW_DECODE))) {
+    return false;
+  }
+
+  return java::HardwareCodecCapabilityUtils::FindDecoderCodecInfoForMimeType(
       nsCString(TranslateMimeType(aMimeType)));
 }
 
 already_AddRefed<MediaDataDecoder>
-AndroidDecoderModule::CreateVideoDecoder(
-    const VideoInfo& aConfig, layers::LayersBackend aLayersBackend,
-    layers::ImageContainer* aImageContainer, FlushableTaskQueue* aVideoTaskQueue,
-    MediaDataDecoderCallback* aCallback)
+AndroidDecoderModule::CreateVideoDecoder(const CreateDecoderParams& aParams)
 {
   MediaFormat::LocalRef format;
 
+  const VideoInfo& config = aParams.VideoConfig();
   NS_ENSURE_SUCCESS(MediaFormat::CreateVideoFormat(
-      TranslateMimeType(aConfig.mMimeType),
-      aConfig.mDisplay.width,
-      aConfig.mDisplay.height,
+      TranslateMimeType(config.mMimeType),
+      config.mDisplay.width,
+      config.mDisplay.height,
       &format), nullptr);
 
   RefPtr<MediaDataDecoder> decoder =
-    new VideoDataDecoder(aConfig, format, aCallback, aImageContainer);
+    new VideoDataDecoder(config,
+                         format,
+                         aParams.mCallback,
+                         aParams.mImageContainer);
 
   return decoder.forget();
 }
 
 already_AddRefed<MediaDataDecoder>
-AndroidDecoderModule::CreateAudioDecoder(
-    const AudioInfo& aConfig, FlushableTaskQueue* aAudioTaskQueue,
-    MediaDataDecoderCallback* aCallback)
+AndroidDecoderModule::CreateAudioDecoder(const CreateDecoderParams& aParams)
 {
-  MOZ_ASSERT(aConfig.mBitDepth == 16, "We only handle 16-bit audio!");
+  const AudioInfo& config = aParams.AudioConfig();
+  MOZ_ASSERT(config.mBitDepth == 16, "We only handle 16-bit audio!");
 
   MediaFormat::LocalRef format;
 
+  LOG("CreateAudioFormat with mimeType=%s, mRate=%d, channels=%d",
+      config.mMimeType.Data(), config.mRate, config.mChannels);
+
   NS_ENSURE_SUCCESS(MediaFormat::CreateAudioFormat(
-      aConfig.mMimeType,
-      aConfig.mBitDepth,
-      aConfig.mChannels,
+      config.mMimeType,
+      config.mRate,
+      config.mChannels,
       &format), nullptr);
 
   RefPtr<MediaDataDecoder> decoder =
-    new AudioDataDecoder(aConfig, format, aCallback);
+    new AudioDataDecoder(config, format, aParams.mCallback);
 
   return decoder.forget();
 }
@@ -380,9 +328,9 @@ PlatformDecoderModule::ConversionRequired
 AndroidDecoderModule::DecoderNeedsConversion(const TrackInfo& aConfig) const
 {
   if (aConfig.IsVideo()) {
-    return kNeedAnnexB;
+    return ConversionRequired::kNeedAnnexB;
   }
-  return kNeedNone;
+  return ConversionRequired::kNeedNone;
 }
 
 MediaCodecDataDecoder::MediaCodecDataDecoder(MediaData::Type aType,
@@ -426,7 +374,7 @@ MediaCodecDataDecoder::InitDecoder(Surface::Param aSurface)
 {
   mDecoder = CreateDecoder(mMimeType);
   if (!mDecoder) {
-    INVOKE_CALLBACK(Error);
+    INVOKE_CALLBACK(Error, MediaDataDecoderError::FATAL_ERROR);
     return NS_ERROR_FAILURE;
   }
 
@@ -437,10 +385,10 @@ MediaCodecDataDecoder::InitDecoder(Surface::Param aSurface)
   NS_ENSURE_SUCCESS(rv = ResetInputBuffers(), rv);
   NS_ENSURE_SUCCESS(rv = ResetOutputBuffers(), rv);
 
-  NS_NewNamedThread("MC Decoder", getter_AddRefs(mThread),
-                    NS_NewRunnableMethod(this, &MediaCodecDataDecoder::DecoderLoop));
+  nsCOMPtr<nsIRunnable> r = NewRunnableMethod(this, &MediaCodecDataDecoder::DecoderLoop);
+  rv = NS_NewNamedThread("MC Decoder", getter_AddRefs(mThread), r);
 
-  return NS_OK;
+  return rv;
 }
 
 // This is in usec, so that's 10ms.
@@ -453,7 +401,7 @@ static const int64_t kDecoderTimeout = 10000;
       INVOKE_CALLBACK(DrainComplete); \
       State(kDecoding); \
     } \
-    INVOKE_CALLBACK(Error); \
+    INVOKE_CALLBACK(Error, MediaDataDecoderError::FATAL_ERROR); \
     break; \
   }
 
@@ -495,7 +443,7 @@ MediaCodecDataDecoder::WaitForInput()
 }
 
 
-MediaRawData*
+already_AddRefed<MediaRawData>
 MediaCodecDataDecoder::PeekNextSample()
 {
   MonitorAutoLock lock(mMonitor);
@@ -516,7 +464,7 @@ MediaCodecDataDecoder::PeekNextSample()
   }
 
   // We're not stopping or flushing, so try to get a sample.
-  return mQueue.front();
+  return RefPtr<MediaRawData>(mQueue.front()).forget();
 }
 
 nsresult
@@ -557,7 +505,7 @@ MediaCodecDataDecoder::QueueSample(const MediaRawData* aSample)
     return res;
   }
 
-  mDurations.push(TimeUnit::FromMicroseconds(aSample->mDuration));
+  mDurations.push_back(TimeUnit::FromMicroseconds(aSample->mDuration));
   return NS_OK;
 }
 
@@ -597,12 +545,14 @@ MediaCodecDataDecoder::HandleEOS(int32_t aOutputStatus)
   mDecoder->ReleaseOutputBuffer(aOutputStatus, false);
 }
 
-TimeUnit
+Maybe<TimeUnit>
 MediaCodecDataDecoder::GetOutputDuration()
 {
-  MOZ_ASSERT(!mDurations.empty(), "Should have had a duration queued");
-  const TimeUnit duration = mDurations.front();
-  mDurations.pop();
+  if (mDurations.empty()) {
+    return Nothing();
+  }
+  const Maybe<TimeUnit> duration = Some(mDurations.front());
+  mDurations.pop_front();
   return duration;
 }
 
@@ -612,19 +562,26 @@ MediaCodecDataDecoder::ProcessOutput(
 {
   AutoLocalJNIFrame frame(jni::GetEnvForThread(), 1);
 
-  const TimeUnit duration = GetOutputDuration();
+  const Maybe<TimeUnit> duration = GetOutputDuration();
+  if (!duration) {
+    // Some devices report failure in QueueSample while actually succeeding at
+    // it, in which case we get an output buffer without having a cached duration
+    // (bug 1273523).
+    return NS_OK;
+  }
+
   const auto buffer = jni::Object::LocalRef::Adopt(
       frame.GetEnv()->GetObjectArrayElement(mOutputBuffers.Get(), aStatus));
 
   if (buffer) {
     // The buffer will be null on Android L if we are decoding to a Surface.
     void* directBuffer = frame.GetEnv()->GetDirectBufferAddress(buffer.Get());
-    Output(aInfo, directBuffer, aFormat, duration);
+    Output(aInfo, directBuffer, aFormat, duration.value());
   }
 
   // The Surface will be updated at this point (for video).
   mDecoder->ReleaseOutputBuffer(aStatus, true);
-  PostOutput(aInfo, aFormat, duration);
+  PostOutput(aInfo, aFormat, duration.value());
 
   return NS_OK;
 }
@@ -634,12 +591,11 @@ MediaCodecDataDecoder::DecoderLoop()
 {
   bool isOutputDone = false;
   AutoLocalJNIFrame frame(jni::GetEnvForThread(), 1);
-  RefPtr<MediaRawData> sample;
   MediaFormat::LocalRef outputFormat(frame.GetEnv());
   nsresult res = NS_OK;
 
   while (WaitForInput()) {
-    sample = PeekNextSample();
+    RefPtr<MediaRawData> sample = PeekNextSample();
 
     {
       MonitorAutoLock lock(mMonitor);
@@ -655,7 +611,8 @@ MediaCodecDataDecoder::DecoderLoop()
       if (NS_SUCCEEDED(res)) {
         // We've fed this into the decoder, so remove it from the queue.
         MonitorAutoLock lock(mMonitor);
-        mQueue.pop();
+        MOZ_RELEASE_ASSERT(mQueue.size(), "Queue may not be empty");
+        mQueue.pop_front();
         isOutputDone = false;
       }
     }
@@ -684,7 +641,7 @@ MediaCodecDataDecoder::DecoderLoop()
       BREAK_ON_DECODER_ERROR();
     } else if (outputStatus < 0) {
       NS_WARNING("Unknown error from decoder!");
-      INVOKE_CALLBACK(Error);
+      INVOKE_CALLBACK(Error, MediaDataDecoderError::DECODE_ERROR);
       // Don't break here just in case it's recoverable. If it's not, other
       // stuff will fail later and we'll bail out.
     } else {
@@ -730,18 +687,27 @@ MediaCodecDataDecoder::State() const
   return mState;
 }
 
-void
+bool
 MediaCodecDataDecoder::State(ModuleState aState)
 {
-  LOG("%s -> %s", ModuleStateStr(mState), ModuleStateStr(aState));
+  bool ok = true;
 
-  if (aState == kDrainDecoder) {
-    MOZ_ASSERT(mState == kDrainQueue);
+  if (mState == kShutdown) {
+    ok = false;
+  } else if (mState == kStopping) {
+    ok = aState == kShutdown;
+  } else if (aState == kDrainDecoder) {
+    ok = mState == kDrainQueue;
   } else if (aState == kDrainWaitEOS) {
-    MOZ_ASSERT(mState == kDrainDecoder);
+    ok = mState == kDrainDecoder;
   }
 
-  mState = aState;
+  if (ok) {
+    LOG("%s -> %s", ModuleStateStr(mState), ModuleStateStr(aState));
+    mState = aState;
+  }
+
+  return ok;
 }
 
 void
@@ -749,19 +715,15 @@ MediaCodecDataDecoder::ClearQueue()
 {
   mMonitor.AssertCurrentThreadOwns();
 
-  while (!mQueue.empty()) {
-    mQueue.pop();
-  }
-  while (!mDurations.empty()) {
-    mDurations.pop();
-  }
+  mQueue.clear();
+  mDurations.clear();
 }
 
 nsresult
 MediaCodecDataDecoder::Input(MediaRawData* aSample)
 {
   MonitorAutoLock lock(mMonitor);
-  mQueue.push(aSample);
+  mQueue.push_back(aSample);
   lock.NotifyAll();
 
   return NS_OK;
@@ -783,7 +745,9 @@ nsresult
 MediaCodecDataDecoder::Flush()
 {
   MonitorAutoLock lock(mMonitor);
-  State(kFlushing);
+  if (!State(kFlushing)) {
+    return NS_OK;
+  }
   lock.Notify();
 
   while (State() == kFlushing) {
@@ -813,23 +777,23 @@ MediaCodecDataDecoder::Shutdown()
 {
   MonitorAutoLock lock(mMonitor);
 
-  if (!mThread || State() == kStopping) {
-    // Already shutdown or in the process of doing so
-    return NS_OK;
-  }
-
   State(kStopping);
   lock.Notify();
 
-  while (State() == kStopping) {
+  while (mThread && State() != kShutdown) {
     lock.Wait();
   }
 
-  mThread->Shutdown();
-  mThread = nullptr;
+  if (mThread) {
+    mThread->Shutdown();
+    mThread = nullptr;
+  }
 
-  mDecoder->Stop();
-  mDecoder->Release();
+  if (mDecoder) {
+    mDecoder->Stop();
+    mDecoder->Release();
+    mDecoder = nullptr;
+  }
 
   return NS_OK;
 }

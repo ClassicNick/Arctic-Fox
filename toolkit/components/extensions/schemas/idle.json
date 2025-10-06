@@ -6,6 +6,7 @@
   {
     "namespace": "idle",
     "description": "Use the <code>browser.idle</code> API to detect when the machine's idle state changes.",
+    "permissions": ["idle"],
     "types": [
       {
         "id": "IdleState",
@@ -18,6 +19,7 @@
         "name": "queryState",
         "type": "function",
         "description": "Returns \"locked\" if the system is locked, \"idle\" if the user has not generated any input for a specified number of seconds, or \"active\" otherwise.",
+        "async": "callback",
         "parameters": [
           {
             "name": "detectionIntervalInSeconds",

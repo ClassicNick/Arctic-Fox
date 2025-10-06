@@ -33,6 +33,7 @@ class NonCopyable
     void operator=(const NonCopyable&) = delete;
 };
 
+extern const uintptr_t DirtyPointer;
 }
 
 template <typename T, size_t N>
@@ -167,5 +168,11 @@ std::string FormatString(const char *fmt, ...);
 
 // Hidden enum for the NULL D3D device type.
 #define EGL_PLATFORM_ANGLE_DEVICE_TYPE_NULL_ANGLE 0x6AC0
+
+#define ANGLE_TRY_CHECKED_MATH(result)                               \
+    if (!result.IsValid())                                           \
+    {                                                                \
+        return gl::Error(GL_INVALID_OPERATION, "Integer overflow."); \
+    }
 
 #endif // COMMON_ANGLEUTILS_H_

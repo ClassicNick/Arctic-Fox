@@ -190,6 +190,7 @@ add_task(function* test_addLivemark_noSiteURI_succeeds() {
   do_check_true(livemark.feedURI.equals(FEED_URI));
   do_check_eq(livemark.siteURI, null);
   do_check_true(livemark.lastModified > 0);
+  do_check_true(is_time_ordered(livemark.dateAdded, livemark.lastModified));
 
   let bookmark = yield PlacesUtils.bookmarks.fetch(livemark.guid);
   do_check_eq(livemark.index, bookmark.index);
@@ -239,7 +240,7 @@ add_task(function* test_addLivemark_bogusParentId_fails() {
       , feedURI: FEED_URI
       });
     do_throw("Adding a livemark with a bogus parent should fail");
-  } catch(ex) {}
+  } catch (ex) {}
 });
 
 add_task(function* test_addLivemark_bogusParentGuid_fails() {
@@ -250,7 +251,7 @@ add_task(function* test_addLivemark_bogusParentGuid_fails() {
       , feedURI: FEED_URI
       });
     do_throw("Adding a livemark with a bogus parent should fail");
-  } catch(ex) {}
+  } catch (ex) {}
 })
 
 add_task(function* test_addLivemark_intoLivemark_fails() {
@@ -267,7 +268,7 @@ add_task(function* test_addLivemark_intoLivemark_fails() {
       , feedURI: FEED_URI
       });
     do_throw("Adding a livemark into a livemark should fail");
-  } catch(ex) {
+  } catch (ex) {
     do_check_eq(ex.result, Cr.NS_ERROR_INVALID_ARG);
   }
 });
@@ -303,8 +304,7 @@ add_task(function* test_addLivemark_lastModified_succeeds() {
     , lastModified: now
     });
   do_check_eq(livemark.dateAdded, now);
-  // lastModified is updated when annotations are added to the livemark.
-  do_check_true(livemark.lastModified >= now);
+  do_check_eq(livemark.lastModified, now);
 });
 
 add_task(function* test_removeLivemark_emptyObject_throws() {
@@ -330,7 +330,7 @@ add_task(function* test_removeLivemark_nonExistent_fails() {
     yield PlacesUtils.livemarks.removeLivemark({ id: 1337 });
     do_throw("Removing a non-existent livemark should fail");
   }
-  catch(ex) {
+  catch (ex) {
   }
 });
 
@@ -442,7 +442,7 @@ add_task(function* test_getLivemark_removeItem_contention() {
   PlacesUtils.livemarks.addLivemark({ title: "test"
                                     , parentGuid: PlacesUtils.bookmarks.unfiledGuid
                                     , feedURI: FEED_URI
-                                    });
+                                  }).catch(() => {/* swallow errors*/});
   yield PlacesUtils.bookmarks.eraseEverything();
   let livemark = yield PlacesUtils.livemarks.addLivemark(
     { title: "test"

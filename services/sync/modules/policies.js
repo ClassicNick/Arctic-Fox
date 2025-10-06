@@ -17,6 +17,8 @@ Cu.import("resource://services-common/logmanager.js");
 
 XPCOMUtils.defineLazyModuleGetter(this, "Status",
                                   "resource://services-sync/status.js");
+XPCOMUtils.defineLazyModuleGetter(this, "AddonManager",
+                                  "resource://gre/modules/AddonManager.jsm");
 
 this.SyncScheduler = function SyncScheduler(service) {
   this.service = service;
@@ -599,7 +601,9 @@ ErrorHandler.prototype = {
     root.level = Log.Level[Svc.Prefs.get("log.rootLogger")];
 
     let logs = ["Sync", "FirefoxAccounts", "Hawk", "Common.TokenServerClient",
-                "Sync.SyncMigration", "browserwindow.syncui"];
+                "Sync.SyncMigration", "browserwindow.syncui",
+                "Services.Common.RESTRequest", "Services.Common.RESTRequest",
+               ];
 
     this._logManager = new LogManager(Svc.Prefs, logs, "sync");
   },
@@ -620,7 +624,7 @@ ErrorHandler.prototype = {
         let exception = subject;  // exception thrown by engine's sync() method
         let engine_name = data;   // engine name that threw the exception
 
-        this.checkServerError(exception, "engines/" + engine_name);
+        this.checkServerError(exception);
 
         Status.engines = [engine_name, exception.failureCode || ENGINE_UNKNOWN_FAIL];
         this._log.debug(engine_name + " failed", exception);
@@ -707,6 +711,27 @@ ErrorHandler.prototype = {
     Utils.nextTick(this.service.sync, this.service);
   },
 
+  _dumpAddons: function _dumpAddons() {
+    // Just dump the items that sync may be concerned with. Specifically,
+    // active extensions that are not hidden.
+    let addonPromise = new Promise(resolve => {
+      try {
+        AddonManager.getAddonsByTypes(["extension"], resolve);
+      } catch (e) {
+        this._log.warn("Failed to dump addons", e)
+        resolve([])
+      }
+    });
+
+    return addonPromise.then(addons => {
+      let relevantAddons = addons.filter(x => x.isActive && !x.hidden);
+      this._log.debug("Addons installed", relevantAddons.length);
+      for (let addon of relevantAddons) {
+        this._log.debug(" - ${name}, version ${version}, id ${id}", addon);
+      }
+    });
+  },
+
   /**
    * Generate a log file for the sync that just completed
    * and refresh the input & output streams.
@@ -719,9 +744,19 @@ ErrorHandler.prototype = {
         Cu.reportError("Sync encountered an error - see about:sync-log for the log file.");
       }
     };
+
+    // If we're writing an error log, dump extensions that may be causing problems.
+    let beforeResetLog;
+    if (this._logManager.sawError) {
+      beforeResetLog = this._dumpAddons();
+    } else {
+      beforeResetLog = Promise.resolve();
+    }
     // Note we do not return the promise here - the caller doesn't need to wait
     // for this to complete.
-    this._logManager.resetFileLog().then(onComplete, onComplete);
+    beforeResetLog
+      .then(() => this._logManager.resetFileLog())
+      .then(onComplete, onComplete);
   },
 
   /**
@@ -873,7 +908,7 @@ ErrorHandler.prototype = {
    *
    * This method also looks for "side-channel" warnings.
    */
-  checkServerError: function (resp, cause) {
+  checkServerError: function (resp) {
     switch (resp.status) {
       case 200:
       case 404:
@@ -903,12 +938,9 @@ ErrorHandler.prototype = {
         break;
 
       case 401:
-        Services.telemetry.getKeyedHistogramById(
-          "WEAVE_STORAGE_AUTH_ERRORS").add(cause);
-
         this.service.logout();
         this._log.info("Got 401 response; resetting clusterURL.");
-        Svc.Prefs.reset("clusterURL");
+        this.service.clusterURL = null;
 
         let delay = 0;
         if (Svc.Prefs.get("lastSyncReassigned")) {

@@ -128,7 +128,7 @@ AccessibleWrap::QueryInterface(REFIID iid, void** ppv)
       return E_NOINTERFACE;
 
     *ppv = static_cast<IEnumVARIANT*>(new ChildrenEnumVariant(this));
-  } else if (IID_IServiceProvider == iid && !IsProxy())
+  } else if (IID_IServiceProvider == iid)
     *ppv = new ServiceProvider(this);
   else if (IID_ISimpleDOMNode == iid && !IsProxy()) {
     if (IsDefunct() || (!HasOwnContent() && !IsDoc()))
@@ -187,16 +187,6 @@ AccessibleWrap::get_accParent( IDispatch __RPC_FAR *__RPC_FAR *ppdispParent)
   if (IsDefunct())
     return CO_E_OBJNOTCONNECTED;
 
-  if (IsProxy()) {
-    ProxyAccessible* proxy = Proxy();
-    ProxyAccessible* parent = proxy->Parent();
-    if (!parent)
-      return S_FALSE;
-
-    *ppdispParent = NativeAccessible(WrapperFor(parent));
-    return S_OK;
-  }
-
   DocAccessible* doc = AsDoc();
   if (doc) {
     // Return window system accessible object for root document and tab document
@@ -235,15 +225,6 @@ AccessibleWrap::get_accChildCount( long __RPC_FAR *pcountChildren)
 
   if (IsDefunct())
     return CO_E_OBJNOTCONNECTED;
-
-  if (IsProxy()) {
-    ProxyAccessible* proxy = Proxy();
-    if (proxy->MustPruneChildren())
-      return S_OK;
-
-    *pcountChildren = proxy->ChildrenCount();
-    return S_OK;
-  }
 
   if (nsAccUtils::MustPrune(this))
     return S_OK;
@@ -309,10 +290,7 @@ AccessibleWrap::get_accName(
     return CO_E_OBJNOTCONNECTED;
 
   nsAutoString name;
-  if (xpAccessible->IsProxy())
-    xpAccessible->Proxy()->Name(name);
-  else
-    xpAccessible->Name(name);
+  xpAccessible->Name(name);
 
   // The name was not provided, e.g. no alt attribute for an image. A screen
   // reader may choose to invent its own accessible name, e.g. from an image src
@@ -350,13 +328,6 @@ AccessibleWrap::get_accValue(
 
   if (xpAccessible->IsDefunct())
     return CO_E_OBJNOTCONNECTED;
-
-  // TODO make this work with proxies.
-  if (IsProxy())
-    return E_NOTIMPL;
-
-  if (xpAccessible->NativeRole() == roles::PASSWORD_TEXT)
-    return E_ACCESSDENIED;
 
   nsAutoString value;
   xpAccessible->Value(value);
@@ -397,10 +368,7 @@ AccessibleWrap::get_accDescription(VARIANT varChild,
     return CO_E_OBJNOTCONNECTED;
 
   nsAutoString description;
-  if (IsProxy())
-    xpAccessible->Proxy()->Description(description);
-  else
-    xpAccessible->Description(description);
+  xpAccessible->Description(description);
 
   *pszDescription = ::SysAllocStringLen(description.get(),
                                         description.Length());
@@ -432,16 +400,12 @@ AccessibleWrap::get_accRole(
     return CO_E_OBJNOTCONNECTED;
 
   a11y::role geckoRole;
-  if (xpAccessible->IsProxy()) {
-    geckoRole = xpAccessible->Proxy()->Role();
-  } else {
 #ifdef DEBUG
-    NS_ASSERTION(nsAccUtils::IsTextInterfaceSupportCorrect(xpAccessible),
-                 "Does not support Text when it should");
+  NS_ASSERTION(nsAccUtils::IsTextInterfaceSupportCorrect(xpAccessible),
+               "Does not support Text when it should");
 #endif
 
-    geckoRole = xpAccessible->Role();
-  }
+  geckoRole = xpAccessible->Role();
 
   uint32_t msaaRole = 0;
 
@@ -462,28 +426,18 @@ AccessibleWrap::get_accRole(
   // Special case, if there is a ROLE_ROW inside of a ROLE_TREE_TABLE, then call the MSAA role
   // a ROLE_OUTLINEITEM for consistency and compatibility.
   // We need this because ARIA has a role of "row" for both grid and treegrid
-  if (xpAccessible->IsProxy()) {
-      if (geckoRole == roles::ROW
-          && xpAccessible->Proxy()->Parent()->Role() == roles::TREE_TABLE)
-        msaaRole = ROLE_SYSTEM_OUTLINEITEM;
-  } else {
-    if (geckoRole == roles::ROW) {
-      Accessible* xpParent = Parent();
-      if (xpParent && xpParent->Role() == roles::TREE_TABLE)
-        msaaRole = ROLE_SYSTEM_OUTLINEITEM;
-    }
+  if (geckoRole == roles::ROW) {
+    Accessible* xpParent = Parent();
+    if (xpParent && xpParent->Role() == roles::TREE_TABLE)
+      msaaRole = ROLE_SYSTEM_OUTLINEITEM;
   }
-  
+
   // -- Try enumerated role
   if (msaaRole != USE_ROLE_STRING) {
     pvarRole->vt = VT_I4;
     pvarRole->lVal = msaaRole;  // Normal enumerated role
     return S_OK;
   }
-
-  // XXX bug 798492 make this work with proxies?
-  if (IsProxy())
-  return E_FAIL;
 
   // -- Try BSTR role
   // Could not map to known enumerated MSAA role like ROLE_BUTTON
@@ -496,7 +450,7 @@ AccessibleWrap::get_accRole(
     nsAutoString roleString;
     if (msaaRole != ROLE_SYSTEM_CLIENT &&
         !content->GetAttr(kNameSpaceID_None, nsGkAtoms::role, roleString)) {
-      nsIDocument * document = content->GetCurrentDoc();
+      nsIDocument * document = content->GetUncomposedDoc();
       if (!document)
         return E_FAIL;
 
@@ -555,11 +509,7 @@ AccessibleWrap::get_accState(
   //   INVALID -> ALERT_HIGH
   //   CHECKABLE -> MARQUEED
 
-  uint64_t state;
-  if (xpAccessible->IsProxy())
-    state = xpAccessible->Proxy()->State();
-  else
-    state = State();
+  uint64_t state = State();
 
   uint32_t msaaState = 0;
   nsAccUtils::To32States(state, &msaaState, nullptr);
@@ -625,10 +575,6 @@ AccessibleWrap::get_accKeyboardShortcut(
   if (acc->IsDefunct())
     return CO_E_OBJNOTCONNECTED;
 
-  // TODO make this work with proxies.
-  if (acc->IsProxy())
-    return E_NOTIMPL;
-
   KeyBinding keyBinding = acc->AccessKey();
   if (keyBinding.IsEmpty())
     keyBinding = acc->KeyboardShortcut();
@@ -664,13 +610,7 @@ AccessibleWrap::get_accFocus(
     return CO_E_OBJNOTCONNECTED;
 
   // Return the current IAccessible child that has focus
-  Accessible* focusedAccessible;
-  if (IsProxy()) {
-    ProxyAccessible* proxy = Proxy()->FocusedChild();
-    focusedAccessible = proxy ? WrapperFor(proxy) : nullptr;
-  } else {
-    focusedAccessible = FocusedChild();
-  }
+  Accessible* focusedAccessible = FocusedChild();
 
   if (focusedAccessible == this) {
     pvarChild->vt = VT_I4;
@@ -832,23 +772,9 @@ AccessibleWrap::get_accSelection(VARIANT __RPC_FAR *pvarChildren)
   if (IsDefunct())
     return CO_E_OBJNOTCONNECTED;
 
-  // TODO make this work with proxies.
-  if (IsProxy())
-    return E_NOTIMPL;
-
   if (IsSelect()) {
     AutoTArray<Accessible*, 10> selectedItems;
-    if (IsProxy()) {
-      nsTArray<ProxyAccessible*> proxies;
-      Proxy()->SelectedItems(&proxies);
-
-      uint32_t selectedCount = proxies.Length();
-      for (uint32_t i = 0; i < selectedCount; i++) {
-        selectedItems.AppendElement(WrapperFor(proxies[i]));
-      }
-    } else {
-      SelectedItems(&selectedItems);
-    }
+    SelectedItems(&selectedItems);
 
     // 1) Create and initialize the enumeration
     RefPtr<AccessibleEnumerator> pEnum = new AccessibleEnumerator(selectedItems);
@@ -882,12 +808,9 @@ AccessibleWrap::get_accDefaultAction(
   if (xpAccessible->IsDefunct())
     return CO_E_OBJNOTCONNECTED;
 
-  // TODO make this work with proxies.
-  if (xpAccessible->IsProxy())
-    return E_NOTIMPL;
-
   nsAutoString defaultAction;
   xpAccessible->ActionNameAt(0, defaultAction);
+
   *pszDefaultAction = ::SysAllocStringLen(defaultAction.get(),
                                           defaultAction.Length());
   return *pszDefaultAction ? S_OK : E_OUTOFMEMORY;
@@ -913,24 +836,23 @@ AccessibleWrap::accSelect(
   if (xpAccessible->IsDefunct())
     return CO_E_OBJNOTCONNECTED;
 
-  // TODO make this work with proxies.
-  if (xpAccessible->IsProxy())
-    return E_NOTIMPL;
+  if (flagsSelect & SELFLAG_TAKEFOCUS) {
+    xpAccessible->TakeFocus();
+    return S_OK;
+  }
 
-  if (flagsSelect & (SELFLAG_TAKEFOCUS|SELFLAG_TAKESELECTION|SELFLAG_REMOVESELECTION))
-  {
-    if (flagsSelect & SELFLAG_TAKEFOCUS)
-      xpAccessible->TakeFocus();
+  if (flagsSelect & SELFLAG_TAKESELECTION) {
+    xpAccessible->TakeSelection();
+    return S_OK;
+  }
 
-    if (flagsSelect & SELFLAG_TAKESELECTION)
-      xpAccessible->TakeSelection();
+  if (flagsSelect & SELFLAG_ADDSELECTION) {
+    xpAccessible->SetSelected(true);
+    return S_OK;
+  }
 
-    if (flagsSelect & SELFLAG_ADDSELECTION)
-      xpAccessible->SetSelected(true);
-
-    if (flagsSelect & SELFLAG_REMOVESELECTION)
-      xpAccessible->SetSelected(false);
-
+  if (flagsSelect & SELFLAG_REMOVESELECTION) {
+    xpAccessible->SetSelected(false);
     return S_OK;
   }
 
@@ -967,11 +889,8 @@ AccessibleWrap::accLocation(
   if (xpAccessible->IsDefunct())
     return CO_E_OBJNOTCONNECTED;
 
-  // TODO make this work with proxies.
-  if (xpAccessible->IsProxy())
-    return E_NOTIMPL;
-
   nsIntRect rect = xpAccessible->Bounds();
+
   *pxLeft = rect.x;
   *pyTop = rect.y;
   *pcxWidth = rect.width;
@@ -1004,10 +923,6 @@ AccessibleWrap::accNavigate(
   if (accessible->IsDefunct())
     return CO_E_OBJNOTCONNECTED;
 
-  // TODO make this work with proxies.
-  if (IsProxy())
-    return E_NOTIMPL;
-
   Accessible* navAccessible = nullptr;
   Maybe<RelationType> xpRelation;
 
@@ -1018,18 +933,34 @@ AccessibleWrap::accNavigate(
 
   switch(navDir) {
     case NAVDIR_FIRSTCHILD:
-      if (!nsAccUtils::MustPrune(accessible))
-        navAccessible = accessible->FirstChild();
+      if (accessible->IsProxy()) {
+        if (!accessible->Proxy()->MustPruneChildren()) {
+          navAccessible = WrapperFor(accessible->Proxy()->FirstChild());
+        }
+      } else {
+        if (!nsAccUtils::MustPrune(accessible))
+          navAccessible = accessible->FirstChild();
+      }
       break;
     case NAVDIR_LASTCHILD:
-      if (!nsAccUtils::MustPrune(accessible))
-        navAccessible = accessible->LastChild();
+      if (accessible->IsProxy()) {
+        if (!accessible->Proxy()->MustPruneChildren()) {
+          navAccessible = WrapperFor(accessible->Proxy()->LastChild());
+        }
+      } else {
+        if (!nsAccUtils::MustPrune(accessible))
+          navAccessible = accessible->LastChild();
+      }
       break;
     case NAVDIR_NEXT:
-      navAccessible = accessible->NextSibling();
+      navAccessible = accessible->IsProxy()
+        ? WrapperFor(accessible->Proxy()->NextSibling())
+        : accessible->NextSibling();
       break;
     case NAVDIR_PREVIOUS:
-      navAccessible = accessible->PrevSibling();
+      navAccessible = accessible->IsProxy()
+        ? WrapperFor(accessible->Proxy()->PrevSibling())
+        : accessible->PrevSibling();
       break;
     case NAVDIR_DOWN:
     case NAVDIR_LEFT:
@@ -1079,10 +1010,6 @@ AccessibleWrap::accHitTest(
   if (IsDefunct())
     return CO_E_OBJNOTCONNECTED;
 
-  // TODO make this work with proxies.
-  if (IsProxy())
-    return E_NOTIMPL;
-
   Accessible* accessible = ChildAtPoint(xLeft, yTop, eDirectChild);
 
   // if we got a child
@@ -1120,10 +1047,6 @@ AccessibleWrap::accDoDefaultAction(
 
   if (xpAccessible->IsDefunct())
     return CO_E_OBJNOTCONNECTED;
-
-  // TODO make this work with proxies.
-  if (xpAccessible->IsProxy())
-    return E_NOTIMPL;
 
   return xpAccessible->DoAction(0) ? S_OK : E_INVALIDARG;
 
@@ -1309,8 +1232,12 @@ AccessibleWrap::GetChildIDFor(Accessible* aAccessible)
   // so that the 3rd party application can call back and get the IAccessible
   // the event occurred on.
 
+  if (!aAccessible) {
+    return 0;
+  }
+
 #ifdef _WIN64
-  if (!aAccessible || (!aAccessible->Document() && !aAccessible->IsProxy()))
+  if (!aAccessible->Document() && !aAccessible->IsProxy())
     return 0;
 
   uint32_t* id = & static_cast<AccessibleWrap*>(aAccessible)->mID;
@@ -1427,6 +1354,27 @@ GetAccessibleInSubtree(DocAccessible* aDoc, uint32_t aID)
   }
 #endif
 
+static AccessibleWrap*
+GetProxiedAccessibleInSubtree(const DocAccessibleParent* aDoc, uint32_t aID)
+{
+  auto wrapper = static_cast<DocProxyAccessibleWrap*>(WrapperFor(aDoc));
+  AccessibleWrap* child = wrapper->GetAccessibleByID(aID);
+  if (child) {
+    return child;
+  }
+
+  size_t childDocs = aDoc->ChildDocCount();
+  for (size_t i = 0; i < childDocs; i++) {
+    const DocAccessibleParent* childDoc = aDoc->ChildDocAt(i);
+    child = GetProxiedAccessibleInSubtree(childDoc, aID);
+    if (child) {
+      return child;
+    }
+  }
+
+  return nullptr;
+}
+
 Accessible*
 AccessibleWrap::GetXPAccessibleFor(const VARIANT& aVarChild)
 {
@@ -1437,39 +1385,38 @@ AccessibleWrap::GetXPAccessibleFor(const VARIANT& aVarChild)
   if (aVarChild.lVal == CHILDID_SELF)
     return this;
 
-  if (IsProxy()) {
-    if (Proxy()->MustPruneChildren())
-      return nullptr;
-
-    if (aVarChild.lVal > 0)
-      return WrapperFor(Proxy()->ChildAt(aVarChild.lVal - 1));
-
-    // XXX Don't implement negative child ids for now because annoying, and
-    // doesn't seem to be speced.
+  if (IsProxy() ? Proxy()->MustPruneChildren() : nsAccUtils::MustPrune(this)) {
     return nullptr;
   }
 
-  if (nsAccUtils::MustPrune(this))
-    return nullptr;
+  if (aVarChild.lVal > 0) {
+    // Gecko child indices are 0-based in contrast to indices used in MSAA.
+    if (IsProxy()) {
+      return WrapperFor(Proxy()->ChildAt(aVarChild.lVal - 1));
+    } else {
+      return GetChildAt(aVarChild.lVal - 1);
+    }
+  }
 
   // If lVal negative then it is treated as child ID and we should look for
   // accessible through whole accessible subtree including subdocuments.
   // Otherwise we treat lVal as index in parent.
-
-  if (aVarChild.lVal < 0) {
-    // Convert child ID to unique ID.
-    void* uniqueID = reinterpret_cast<void*>(-aVarChild.lVal);
+  // Convert child ID to unique ID.
+  // First handle the case that both this accessible and the id'd one are in
+  // this process.
+  if (!IsProxy()) {
+    void* uniqueID = reinterpret_cast<void*>(intptr_t(-aVarChild.lVal));
 
     DocAccessible* document = Document();
     Accessible* child =
 #ifdef _WIN64
-    GetAccessibleInSubtree(document, static_cast<uint32_t>(aVarChild.lVal));
+      GetAccessibleInSubtree(document, static_cast<uint32_t>(aVarChild.lVal));
 #else
       document->GetAccessibleByUniqueIDInSubtree(uniqueID);
 #endif
 
     // If it is a document then just return an accessible.
-    if (IsDoc())
+    if (child && IsDoc())
       return child;
 
     // Otherwise check whether the accessible is a child (this path works for
@@ -1481,12 +1428,82 @@ AccessibleWrap::GetXPAccessibleFor(const VARIANT& aVarChild)
 
       parent = parent->Parent();
     }
+  }
+
+  // Now see about the case that both this accessible and the target one are
+  // proxied.
+  uint32_t id = aVarChild.lVal;
+  if (IsProxy()) {
+    DocAccessibleParent* proxyDoc = Proxy()->Document();
+    AccessibleWrap* wrapper = GetProxiedAccessibleInSubtree(proxyDoc, id);
+    if (!wrapper)
+      return nullptr;
+
+    MOZ_ASSERT(wrapper->IsProxy());
+
+    if (proxyDoc == this->Proxy()) {
+      return wrapper;
+    }
+
+    ProxyAccessible* parent = wrapper->Proxy();
+    while (parent && parent != proxyDoc) {
+      if (parent == this->Proxy()) {
+        return wrapper;
+      }
+
+      parent = parent->Parent();
+    }
 
     return nullptr;
   }
 
-  // Gecko child indices are 0-based in contrast to indices used in MSAA.
-  return GetChildAt(aVarChild.lVal - 1);
+  // Finally we need to handle the case that this accessible is in the main
+  // process, but the target is proxied.  This is the case when the target
+  // accessible is in a child document of this one.
+  DocAccessibleParent* proxyDoc = nullptr;
+  DocAccessible* doc = Document();
+  const nsTArray<DocAccessibleParent*>* remoteDocs =
+    DocManager::TopLevelRemoteDocs();
+  if (!remoteDocs) {
+    return nullptr;
+  }
+
+  size_t docCount = remoteDocs->Length();
+  for (size_t i = 0; i < docCount; i++) {
+    Accessible* outerDoc = remoteDocs->ElementAt(i)->OuterDocOfRemoteBrowser();
+    if (!outerDoc) {
+      continue;
+    }
+
+    if (outerDoc->Document() != doc) {
+      continue;
+    }
+
+    if (doc == this) {
+      AccessibleWrap* proxyWrapper =
+        GetProxiedAccessibleInSubtree(remoteDocs->ElementAt(i), id);
+      if (proxyWrapper) {
+        return proxyWrapper;
+      }
+
+      continue;
+    }
+
+    Accessible* parent = outerDoc;
+    while (parent && parent != doc) {
+      if (parent == this) {
+        AccessibleWrap* proxyWrapper =
+          GetProxiedAccessibleInSubtree(remoteDocs->ElementAt(i), id);
+        if (proxyWrapper) {
+          return proxyWrapper;
+        }
+      }
+
+      parent = parent->Parent();
+    }
+  }
+
+  return nullptr;
 }
 
 void

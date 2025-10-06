@@ -24,7 +24,7 @@ class TaggedProto
 
     uintptr_t toWord() const { return uintptr_t(proto); }
 
-    bool isLazy() const {
+    bool isDynamic() const {
         return proto == LazyProto;
     }
     bool isObject() const {
@@ -44,6 +44,12 @@ class TaggedProto
     bool operator ==(const TaggedProto& other) const { return proto == other.proto; }
     bool operator !=(const TaggedProto& other) const { return proto != other.proto; }
 
+    HashNumber hashCode() const;
+
+    bool hasUniqueId() const;
+    bool ensureUniqueId() const;
+    uint64_t uniqueId() const;
+
     void trace(JSTracer* trc) {
         if (isObject())
             TraceManuallyBarrieredEdge(trc, &proto, "TaggedProto");
@@ -59,6 +65,8 @@ struct InternalBarrierMethods<TaggedProto>
     static void preBarrier(TaggedProto& proto);
 
     static void postBarrier(TaggedProto* vp, TaggedProto prev, TaggedProto next);
+
+    static void readBarrier(const TaggedProto& proto);
 
     static bool isMarkableTaggedPointer(TaggedProto proto) {
         return proto.isObject();
@@ -78,11 +86,13 @@ class TaggedProtoOperations
 
   public:
     uintptr_t toWord() const { return value().toWord(); }
-    inline bool isLazy() const { return value().isLazy(); }
+    inline bool isDynamic() const { return value().isDynamic(); }
     inline bool isObject() const { return value().isObject(); }
     inline JSObject* toObject() const { return value().toObject(); }
     inline JSObject* toObjectOrNull() const { return value().toObjectOrNull(); }
     JSObject* raw() const { return value().raw(); }
+    HashNumber hashCode() const { return value().hashCode(); }
+    uint64_t uniqueId() const { return value().uniqueId(); }
 };
 
 template <>
@@ -94,7 +104,7 @@ class RootedBase<TaggedProto> : public TaggedProtoOperations<Rooted<TaggedProto>
 {};
 
 template <>
-class BarrieredBaseMixins<TaggedProto> : public TaggedProtoOperations<HeapPtr<TaggedProto>>
+class BarrieredBaseMixins<TaggedProto> : public TaggedProtoOperations<GCPtr<TaggedProto>>
 {};
 
 // If the TaggedProto is a JSObject pointer, convert to that type and call |f|

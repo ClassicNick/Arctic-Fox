@@ -180,6 +180,7 @@ WebGLContext::BufferData(GLenum target, WebGLsizeiptr size, GLenum usage)
     }
 
     boundBuffer->SetByteLength(size);
+
     if (!boundBuffer->ElementArrayCacheBufferData(nullptr, size)) {
         boundBuffer->SetByteLength(0);
         return ErrorOutOfMemory("bufferData: out of memory");
@@ -234,9 +235,12 @@ WebGLContext::BufferDataT(GLenum target,
     }
 
     boundBuffer->SetByteLength(data.LengthAllowShared());
+
     // Warning: Possibly shared memory.  See bug 1225033.
-    if (!boundBuffer->ElementArrayCacheBufferData(data.DataAllowShared(), data.LengthAllowShared()))
+    if (!boundBuffer->ElementArrayCacheBufferData(data.DataAllowShared(), data.LengthAllowShared())) {
+        boundBuffer->SetByteLength(0);
         return ErrorOutOfMemory("bufferData: out of memory");
+	}
 }
 
 void
@@ -324,7 +328,7 @@ WebGLContext::BufferSubData(GLenum target, WebGLsizeiptr byteOffset,
                             const dom::Nullable<dom::ArrayBuffer>& maybeData)
 {
     if (maybeData.IsNull()) {
-        // see http://www.khronos.org/bugzilla/show_bug.cgi?id=386
+        ErrorInvalidValue("BufferSubData: returnedData is null.");
         return;
     }
     BufferSubDataT(target, byteOffset, maybeData.Value());
@@ -566,7 +570,7 @@ WebGLContext::GetBufferSlotByTarget(GLenum target)
         return mBoundUniformBuffer;
 
     default:
-        MOZ_CRASH("Should not get here.");
+        MOZ_CRASH("GFX: Should not get here.");
     }
 }
 
@@ -584,7 +588,7 @@ WebGLContext::GetBufferSlotByTargetIndexed(GLenum target, GLuint index)
         return mBoundUniformBuffers[index];
 
     default:
-        MOZ_CRASH("Should not get here.");
+        MOZ_CRASH("GFX: Should not get here.");
     }
 }
 

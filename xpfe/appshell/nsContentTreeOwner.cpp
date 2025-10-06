@@ -334,6 +334,38 @@ nsContentTreeOwner::GetPrimaryTabParent(nsITabParent** aTab)
   return mXULWindow->GetPrimaryTabParent(aTab);
 }
 
+NS_IMETHODIMP
+nsContentTreeOwner::GetPrimaryContentSize(int32_t* aWidth,
+                                          int32_t* aHeight)
+{
+  NS_ENSURE_STATE(mXULWindow);
+  return mXULWindow->GetPrimaryContentSize(aWidth, aHeight);
+}
+
+NS_IMETHODIMP
+nsContentTreeOwner::SetPrimaryContentSize(int32_t aWidth,
+                                          int32_t aHeight)
+{
+  NS_ENSURE_STATE(mXULWindow);
+  return mXULWindow->SetPrimaryContentSize(aWidth, aHeight);
+}
+
+NS_IMETHODIMP
+nsContentTreeOwner::GetRootShellSize(int32_t* aWidth,
+                                     int32_t* aHeight)
+{
+  NS_ENSURE_STATE(mXULWindow);
+  return mXULWindow->GetRootShellSize(aWidth, aHeight);
+}
+
+NS_IMETHODIMP
+nsContentTreeOwner::SetRootShellSize(int32_t aWidth,
+                                     int32_t aHeight)
+{
+  NS_ENSURE_STATE(mXULWindow);
+  return mXULWindow->SetRootShellSize(aWidth, aHeight);
+}
+
 NS_IMETHODIMP nsContentTreeOwner::SizeShellTo(nsIDocShellTreeItem* aShellItem,
    int32_t aCX, int32_t aCY)
 {
@@ -442,6 +474,13 @@ nsContentTreeOwner::GetTargetableShellCount(uint32_t* aResult)
   NS_ENSURE_STATE(mXULWindow);
   *aResult = mXULWindow->mTargetableShells.Count();
   return NS_OK;
+}
+
+NS_IMETHODIMP
+nsContentTreeOwner::GetHasPrimaryContent(bool* aResult)
+{
+  NS_ENSURE_STATE(mXULWindow);
+  return mXULWindow->GetHasPrimaryContent(aResult);
 }
 
 //*****************************************************************************
@@ -599,7 +638,7 @@ NS_IMETHODIMP nsContentTreeOwner::InitWindow(nativeWindow aParentNativeWindow,
    nsIWidget* parentWidget, int32_t x, int32_t y, int32_t cx, int32_t cy)   
 {
    // Ignore wigdet parents for now.  Don't think those are a vaild thing to call.
-   NS_ENSURE_SUCCESS(SetPositionAndSize(x, y, cx, cy, false), NS_ERROR_FAILURE);
+   NS_ENSURE_SUCCESS(SetPositionAndSize(x, y, cx, cy, 0), NS_ERROR_FAILURE);
 
    return NS_OK;
 }
@@ -659,10 +698,10 @@ NS_IMETHODIMP nsContentTreeOwner::GetSize(int32_t* aCX, int32_t* aCY)
 }
 
 NS_IMETHODIMP nsContentTreeOwner::SetPositionAndSize(int32_t aX, int32_t aY,
-   int32_t aCX, int32_t aCY, bool aRepaint)
+   int32_t aCX, int32_t aCY, uint32_t aFlags)
 {
    NS_ENSURE_STATE(mXULWindow);
-   return mXULWindow->SetPositionAndSize(aX, aY, aCX, aCY, aRepaint);
+   return mXULWindow->SetPositionAndSize(aX, aY, aCX, aCY, aFlags);
 }
 
 NS_IMETHODIMP nsContentTreeOwner::GetPositionAndSize(int32_t* aX, int32_t* aY,
@@ -887,7 +926,7 @@ nsContentTreeOwner::ProvideWindow(mozIDOMWindowProxy* aParent,
   // open a modal-type window, we're going to create a new <iframe mozbrowser>
   // and return its window here.
   nsCOMPtr<nsIDocShell> docshell = do_GetInterface(aParent);
-  if (docshell && docshell->GetIsInBrowserOrApp() &&
+  if (docshell && docshell->GetIsInMozBrowserOrApp() &&
       !(aChromeFlags & (nsIWebBrowserChrome::CHROME_MODAL |
                         nsIWebBrowserChrome::CHROME_OPENAS_DIALOG |
                         nsIWebBrowserChrome::CHROME_OPENAS_CHROME))) {
@@ -965,14 +1004,14 @@ nsContentTreeOwner::ProvideWindow(mozIDOMWindowProxy* aParent,
 //*****************************************************************************
 
 #if defined(XP_MACOSX)
-class nsContentTitleSettingEvent : public nsRunnable
+class nsContentTitleSettingEvent : public Runnable
 {
 public:
   nsContentTitleSettingEvent(dom::Element* dse, const nsAString& wtm)
     : mElement(dse),
       mTitleDefault(wtm) {}
 
-  NS_IMETHOD Run()
+  NS_IMETHOD Run() override
   {
     ErrorResult rv;
     mElement->SetAttribute(NS_LITERAL_STRING("titledefault"), mTitleDefault, rv);
@@ -1058,7 +1097,8 @@ nsSiteWindow::SetDimensions(uint32_t aFlags,
                     int32_t aX, int32_t aY, int32_t aCX, int32_t aCY)
 {
   // XXX we're ignoring aFlags
-  return mAggregator->SetPositionAndSize(aX, aY, aCX, aCY, true);
+  return mAggregator->SetPositionAndSize(aX, aY, aCX, aCY,
+                                         nsIBaseWindow::eRepaint);
 }
 
 NS_IMETHODIMP

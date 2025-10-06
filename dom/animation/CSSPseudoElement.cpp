@@ -7,6 +7,7 @@
 #include "mozilla/dom/CSSPseudoElement.h"
 #include "mozilla/dom/CSSPseudoElementBinding.h"
 #include "mozilla/dom/Element.h"
+#include "mozilla/AnimationComparator.h"
 
 namespace mozilla {
 namespace dom {
@@ -36,6 +37,12 @@ CSSPseudoElement::~CSSPseudoElement()
   }
 }
 
+ParentObject
+CSSPseudoElement::GetParentObject() const
+{
+  return mParentElement->GetParentObject();
+}
+
 JSObject*
 CSSPseudoElement::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aGivenProto)
 {
@@ -43,22 +50,28 @@ CSSPseudoElement::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aGivenProto)
 }
 
 void
-CSSPseudoElement::GetAnimations(nsTArray<RefPtr<Animation>>& aRetVal)
+CSSPseudoElement::GetAnimations(const AnimationFilter& filter,
+                                nsTArray<RefPtr<Animation>>& aRetVal)
 {
-  // Bug 1234403: Implement this API.
-  NS_NOTREACHED("CSSPseudoElement::GetAnimations() is not implemented yet.");
+  nsIDocument* doc = mParentElement->GetComposedDoc();
+  if (doc) {
+    doc->FlushPendingNotifications(Flush_Style);
+  }
+
+  Element::GetAnimationsUnsorted(mParentElement, mPseudoType, aRetVal);
+  aRetVal.Sort(AnimationPtrComparator<RefPtr<Animation>>());
 }
 
 already_AddRefed<Animation>
 CSSPseudoElement::Animate(
     JSContext* aContext,
-    JS::Handle<JSObject*> aFrames,
+    JS::Handle<JSObject*> aKeyframes,
     const UnrestrictedDoubleOrKeyframeAnimationOptions& aOptions,
     ErrorResult& aError)
 {
-  // Bug 1241784: Implement this API.
-  NS_NOTREACHED("CSSPseudoElement::Animate() is not implemented yet.");
-  return nullptr;
+  Nullable<ElementOrCSSPseudoElement> target;
+  target.SetValue().SetAsCSSPseudoElement() = this;
+  return Element::Animate(target, aContext, aKeyframes, aOptions, aError);
 }
 
 /* static */ already_AddRefed<CSSPseudoElement>

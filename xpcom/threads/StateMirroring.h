@@ -1,5 +1,5 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12,7 +12,7 @@
 #include "mozilla/StateWatching.h"
 #include "mozilla/TaskDispatcher.h"
 #include "mozilla/UniquePtr.h"
-#include "mozilla/unused.h"
+#include "mozilla/Unused.h"
 
 #include "mozilla/Logging.h"
 #include "nsISupportsImpl.h"
@@ -36,7 +36,7 @@
  * don't assert dispatch success for any of the notifications, and assume that
  * any canonical or mirror owned by a thread for whom dispatch fails will soon
  * be disconnected by its holder anyway.
- * 
+ *
  * Given that semantics may change and comments tend to go out of date, we
  * deliberately don't provide usage examples here. Grep around to find them.
  */
@@ -115,6 +115,7 @@ public:
     mImpl = new Impl(aThread, aInitialValue, aName);
   }
 
+
   ~Canonical() {}
 
 private:
@@ -151,9 +152,9 @@ private:
     {
       MIRROR_LOG("%s [%p] Disconnecting all mirrors", mName, this);
       for (size_t i = 0; i < mMirrors.Length(); ++i) {
-        nsCOMPtr<nsIRunnable> r =
-          NS_NewRunnableMethod(mMirrors[i], &AbstractMirror<T>::NotifyDisconnected);
-        mMirrors[i]->OwnerThread()->Dispatch(r.forget(), AbstractThread::DontAssertDispatchSuccess);
+        mMirrors[i]->OwnerThread()->Dispatch(NewRunnableMethod(mMirrors[i],
+                                                               &AbstractMirror<T>::NotifyDisconnected),
+                                             AbstractThread::DontAssertDispatchSuccess);
       }
       mMirrors.Clear();
     }
@@ -186,12 +187,11 @@ private:
       }
       mValue = aNewValue;
 
-      // We wait until things have stabilized before sending state updates so that
+      // We wait until things have stablized before sending state updates so that
       // we can avoid sending multiple updates, and possibly avoid sending any
       // updates at all if the value ends up where it started.
       if (!alreadyNotifying) {
-        nsCOMPtr<nsIRunnable> r = NS_NewRunnableMethod(this, &Impl::DoNotify);
-        AbstractThread::GetCurrent()->TailDispatcher().AddDirectTask(r.forget());
+        AbstractThread::DispatchDirectTask(NewRunnableMethod(this, &Impl::DoNotify));
       }
     }
 
@@ -222,9 +222,7 @@ private:
 
     already_AddRefed<nsIRunnable> MakeNotifier(AbstractMirror<T>* aMirror)
     {
-      nsCOMPtr<nsIRunnable> r =
-        NS_NewRunnableMethodWithArg<T>(aMirror, &AbstractMirror<T>::UpdateValue, mValue);
-      return r.forget();
+      return NewRunnableMethod<T>(aMirror, &AbstractMirror<T>::UpdateValue, mValue);;
     }
 
     T mValue;
@@ -233,6 +231,8 @@ private:
   };
 public:
 
+  // NB: Because mirror-initiated disconnection can race with canonical-
+  // initiated disconnection, a canonical should never be reinitialized.
   // Forward control operations to the Impl.
   void DisconnectAll() { return mImpl->DisconnectAll(); }
 
@@ -325,7 +325,7 @@ private:
       MOZ_ASSERT(!IsConnected());
       MOZ_ASSERT(OwnerThread()->RequiresTailDispatch(aCanonical->OwnerThread()), "Can't get coherency without tail dispatch");
 
-      nsCOMPtr<nsIRunnable> r = NS_NewRunnableMethodWithArg<StorensRefPtrPassByPtr<AbstractMirror<T>>>
+      nsCOMPtr<nsIRunnable> r = NewRunnableMethod<StorensRefPtrPassByPtr<AbstractMirror<T>>>
                                   (aCanonical, &AbstractCanonical<T>::AddMirror, this);
       aCanonical->OwnerThread()->Dispatch(r.forget(), AbstractThread::DontAssertDispatchSuccess);
       mCanonical = aCanonical;
@@ -340,7 +340,7 @@ private:
       }
 
       MIRROR_LOG("%s [%p] Disconnecting from %p", mName, this, mCanonical.get());
-      nsCOMPtr<nsIRunnable> r = NS_NewRunnableMethodWithArg<StorensRefPtrPassByPtr<AbstractMirror<T>>>
+      nsCOMPtr<nsIRunnable> r = NewRunnableMethod<StorensRefPtrPassByPtr<AbstractMirror<T>>>
                                   (mCanonical, &AbstractCanonical<T>::RemoveMirror, this);
       mCanonical->OwnerThread()->Dispatch(r.forget(), AbstractThread::DontAssertDispatchSuccess);
       mCanonical = nullptr;

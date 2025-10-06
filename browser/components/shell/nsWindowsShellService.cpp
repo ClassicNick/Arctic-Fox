@@ -50,6 +50,9 @@
 #include <mbstring.h>
 #include <shlwapi.h>
 
+#include <lm.h>
+#undef ACCESS_READ
+
 #ifndef MAX_BUF
 #define MAX_BUF 4096
 #endif
@@ -185,7 +188,7 @@ typedef struct {
   const char* oldValueData;
 } SETTING;
 
-#define APP_REG_NAME L"Pale Moon"
+#define APP_REG_NAME L"ArcticFox"
 #define VAL_FILE_ICON "%APPPATH%,1"
 #define VAL_OPEN "\"%APPPATH%\" -osint -url \"%1\""
 #define OLD_VAL_OPEN "\"%APPPATH%\" -requestPending -osint -url \"%1\""
@@ -368,7 +371,7 @@ IsAARDefault(const RefPtr<IApplicationAssociationRegistration>& pAAR,
     return false;
   }
 
-  LPCWSTR progID = isProtocol ? L"FirefoxURL" : L"FirefoxHTML";
+  LPCWSTR progID = isProtocol ? L"ArcticFoxURL" : L"ArcticFoxHTML";
   bool isDefault = !wcsicmp(registeredApp, progID);
   CoTaskMemFree(registeredApp);
 
@@ -843,8 +846,95 @@ nsWindowsShellService::LaunchControlPanelDefaultsSelectionUI()
 }
 
 nsresult
+nsWindowsShellService::LaunchControlPanelDefaultPrograms()
+{
+  // Default Programs is a Vista+ feature
+  if (!IsVistaOrLater()) {
+    return NS_ERROR_FAILURE;
+  }
+
+  // Build the path control.exe path safely
+  WCHAR controlEXEPath[MAX_PATH + 1] = { '\0' };
+  if (!GetSystemDirectoryW(controlEXEPath, MAX_PATH)) {
+    return NS_ERROR_FAILURE;
+  }
+  LPCWSTR controlEXE = L"control.exe";
+  if (wcslen(controlEXEPath) + wcslen(controlEXE) >= MAX_PATH) {
+    return NS_ERROR_FAILURE;
+  }
+  if (!PathAppendW(controlEXEPath, controlEXE)) {
+    return NS_ERROR_FAILURE;
+  }
+
+  WCHAR params[] = L"control.exe /name Microsoft.DefaultPrograms /page pageDefaultProgram";
+  STARTUPINFOW si = {sizeof(si), 0};
+  si.dwFlags = STARTF_USESHOWWINDOW;
+  si.wShowWindow = SW_SHOWDEFAULT;
+  PROCESS_INFORMATION pi = {0};
+  if (!CreateProcessW(controlEXEPath, params, nullptr, nullptr, FALSE,
+                      0, nullptr, nullptr, &si, &pi)) {
+    return NS_ERROR_FAILURE;
+  }
+  CloseHandle(pi.hProcess);
+  CloseHandle(pi.hThread);
+
+  return NS_OK;
+}
+
+static bool
+IsWindowsLogonConnected()
+{
+  WCHAR userName[UNLEN + 1];
+  DWORD size = ArrayLength(userName);
+  if (!GetUserNameW(userName, &size)) {
+    return false;
+  }
+
+  LPUSER_INFO_24 info;
+  if (NetUserGetInfo(nullptr, userName, 24, (LPBYTE *)&info)
+      != NERR_Success) {
+    return false;
+  }
+  bool connected = info->usri24_internet_identity;
+  NetApiBufferFree(info);
+
+  return connected;
+}
+
+static bool
+SettingsAppBelievesConnected()
+{
+  nsresult rv;
+  nsCOMPtr<nsIWindowsRegKey> regKey =
+    do_CreateInstance("@mozilla.org/windows-registry-key;1", &rv);
+  if (NS_FAILED(rv)) {
+    return false;
+  }
+
+  rv = regKey->Open(nsIWindowsRegKey::ROOT_KEY_CURRENT_USER,
+                    NS_LITERAL_STRING("SOFTWARE\\Microsoft\\Windows\\Shell\\Associations"),
+                    nsIWindowsRegKey::ACCESS_READ);
+  if (NS_FAILED(rv)) {
+    return false;
+  }
+
+  uint32_t value;
+  rv = regKey->ReadIntValue(NS_LITERAL_STRING("IsConnectedAtLogon"), &value);
+  if (NS_FAILED(rv)) {
+    return false;
+  }
+
+  return !!value;
+}
+
+nsresult
 nsWindowsShellService::LaunchModernSettingsDialogDefaultApps()
 {
+  if (!IsWindowsLogonConnected() && SettingsAppBelievesConnected()) {
+    // Use the classic Control Panel to work around a bug of Windows 10.
+    return LaunchControlPanelDefaultPrograms();
+  }
+
   IApplicationActivationManager* pActivator;
   HRESULT hr = CoCreateInstance(CLSID_ApplicationActivationManager,
                                 nullptr,
@@ -858,6 +948,15 @@ nsWindowsShellService::LaunchModernSettingsDialogDefaultApps()
            L"windows.immersivecontrolpanel_cw5n1h2txyewy"
            L"!microsoft.windows.immersivecontrolpanel",
            L"page=SettingsPageAppsDefaults", AO_NONE, &pid);
+    if (SUCCEEDED(hr)) {
+      // Do not check error because we could at least open
+      // the "Default apps" setting.
+      pActivator->ActivateApplication(
+             L"windows.immersivecontrolpanel_cw5n1h2txyewy"
+             L"!microsoft.windows.immersivecontrolpanel",
+             L"page=SettingsPageAppsDefaults"
+             L"&target=SystemSettings_DefaultApps_Browser", AO_NONE, &pid);
+    }
     pActivator->Release();
     return SUCCEEDED(hr) ? NS_OK : NS_ERROR_FAILURE;
   }
@@ -1098,7 +1197,7 @@ nsWindowsShellService::SetDesktopBackground(nsIDOMElement* aElement,
   // e.g. "Desktop Background.bmp"
   nsString fileLeafName;
   rv = shellBundle->GetStringFromName
-                      (MOZ_UTF16("desktopBackgroundLeafNameWin"),
+                      (u"desktopBackgroundLeafNameWin",
                        getter_Copies(fileLeafName));
   NS_ENSURE_SUCCESS(rv, rv);
 
@@ -1134,24 +1233,24 @@ nsWindowsShellService::SetDesktopBackground(nsIDOMElement* aElement,
     nsAutoString style;
     switch (aPosition) {
       case BACKGROUND_TILE:
-        style.AssignLiteral("0");
-        tile.AssignLiteral("1");
+        style.Assign('0');
+        tile.Assign('1');
         break;
       case BACKGROUND_CENTER:
-        style.AssignLiteral("0");
-        tile.AssignLiteral("0");
+        style.Assign('0');
+        tile.Assign('0');
         break;
       case BACKGROUND_STRETCH:
-        style.AssignLiteral("2");
-        tile.AssignLiteral("0");
+        style.Assign('2');
+        tile.Assign('0');
         break;
       case BACKGROUND_FILL:
         style.AssignLiteral("10");
-        tile.AssignLiteral("0");
+        tile.Assign('0');
         break;
       case BACKGROUND_FIT:
-        style.AssignLiteral("6");
-        tile.AssignLiteral("0");
+        style.Assign('6');
+        tile.Assign('0');
         break;
     }
 
@@ -1209,7 +1308,7 @@ nsWindowsShellService::OpenApplication(int32_t aApplication)
   ::RegCloseKey(theKey);
 
   // Find the "open" command
-  application.AppendLiteral("\\");
+  application.Append('\\');
   application.Append(buf);
   application.AppendLiteral("\\shell\\open\\command");
 

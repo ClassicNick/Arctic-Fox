@@ -4,15 +4,18 @@
 
 var {classes: Cc, interfaces: Ci, utils: Cu, results: Cr} = Components;
 
+Cu.import("resource://gre/modules/AppConstants.jsm");
+Cu.import("resource://gre/modules/Services.jsm");
+
 // Copied from nsILookAndFeel.h, see comments on eMetric_AlertNotificationOrigin
 const NS_ALERT_HORIZONTAL = 1;
 const NS_ALERT_LEFT = 2;
 const NS_ALERT_TOP = 4;
 
-const WINDOW_MARGIN = 10;
+const WINDOW_MARGIN = AppConstants.platform == "win" ? 0 : 10;
 const BODY_TEXT_LIMIT = 200;
+const WINDOW_SHADOW_SPREAD = AppConstants.platform == "win" ? 10 : 0;
 
-Cu.import("resource://gre/modules/Services.jsm");
 
 var gOrigin = 0; // Default value: alert from bottom right.
 var gReplacedWindow = null;
@@ -34,9 +37,19 @@ function prefillAlertInfo() {
   // arguments[8] --> replaced alert window (nsIDOMWindow)
   // arguments[9] --> an optional callback listener (nsIObserver)
   // arguments[10] -> the nsIURI.hostPort of the origin, optional
+  // arguments[11] -> the alert icon URL, optional
 
   switch (window.arguments.length) {
     default:
+    case 12: {
+      if (window.arguments[11]) {
+        let alertBox = document.getElementById("alertBox");
+        alertBox.setAttribute("hasIcon", true);
+
+        let icon = document.getElementById("alertIcon");
+        icon.src = window.arguments[11];
+      }
+    }
     case 11: {
       if (window.arguments[10]) {
         let alertBox = document.getElementById("alertBox");
@@ -133,7 +146,7 @@ function prefillAlertInfo() {
 }
 
 function onAlertLoad() {
-  const ALERT_DURATION_IMMEDIATE = 12000;
+  const ALERT_DURATION_IMMEDIATE = 20000;
   let alertTextBox = document.getElementById("alertTextBox");
   let alertImageBox = document.getElementById("alertImageBox");
   alertImageBox.style.minHeight = alertTextBox.scrollHeight + "px";
@@ -217,9 +230,9 @@ function moveWindowToEnd() {
     let alertWindow = windows.getNext();
     if (alertWindow != window) {
       if (gOrigin & NS_ALERT_TOP) {
-        y = Math.max(y, alertWindow.screenY + alertWindow.outerHeight);
+        y = Math.max(y, alertWindow.screenY + alertWindow.outerHeight - WINDOW_SHADOW_SPREAD);
       } else {
-        y = Math.min(y, alertWindow.screenY - window.outerHeight);
+        y = Math.min(y, alertWindow.screenY - window.outerHeight + WINDOW_SHADOW_SPREAD);
       }
     }
   }
@@ -234,7 +247,7 @@ function moveWindowToEnd() {
 function onAlertBeforeUnload() {
   if (!gIsReplaced) {
     // Move other alert windows to fill the gap left by closing alert.
-    let heightDelta = window.outerHeight + WINDOW_MARGIN;
+    let heightDelta = window.outerHeight + WINDOW_MARGIN - WINDOW_SHADOW_SPREAD;
     let windows = Services.wm.getEnumerator("alert:alert");
     while (windows.hasMoreElements()) {
       let alertWindow = windows.getNext();
@@ -243,10 +256,8 @@ function onAlertBeforeUnload() {
           if (alertWindow.screenY > window.screenY) {
             alertWindow.moveTo(alertWindow.screenX, alertWindow.screenY - heightDelta);
           }
-        } else {
-          if (window.screenY > alertWindow.screenY) {
-            alertWindow.moveTo(alertWindow.screenX, alertWindow.screenY + heightDelta);
-          }
+        } else if (window.screenY > alertWindow.screenY) {
+          alertWindow.moveTo(alertWindow.screenX, alertWindow.screenY + heightDelta);
         }
       }
     }

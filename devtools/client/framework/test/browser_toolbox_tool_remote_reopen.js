@@ -1,5 +1,7 @@
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
+/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 /* Any copyright is dedicated to the Public Domain.
-   http://creativecommons.org/publicdomain/zero/1.0/ */
+ * http://creativecommons.org/publicdomain/zero/1.0/ */
 
 "use strict";
 
@@ -40,7 +42,7 @@ const { DebuggerClient } = require("devtools/shared/client/main");
  */
 
 function runTools(target) {
-  return Task.spawn(function*() {
+  return Task.spawn(function* () {
     let toolIds = gDevTools.getToolDefinitionArray()
                            .filter(def => def.isTargetSupported(target))
                            .map(def => def.id);
@@ -63,7 +65,7 @@ function runTools(target) {
 }
 
 function getClient() {
-  let deferred = promise.defer();
+  let deferred = defer();
 
   if (!DebuggerServer.initialized) {
     DebuggerServer.init();
@@ -77,7 +79,7 @@ function getClient() {
 }
 
 function getTarget(client) {
-  let deferred = promise.defer();
+  let deferred = defer();
 
   client.listTabs(tabList => {
     let target = TargetFactory.forRemoteTab({
@@ -92,7 +94,7 @@ function getTarget(client) {
 }
 
 function test() {
-  Task.spawn(function*() {
+  Task.spawn(function* () {
     toggleAllTools(true);
     yield addTab("about:blank");
 

@@ -2,8 +2,6 @@
 /* vim: set sts=2 sw=2 et tw=80: */
 "use strict";
 
-/* globals content */
-/* eslint-disable mozilla/no-cpows-in-tests */
 
 add_task(function* () {
   let tab1 = yield BrowserTestUtils.openNewForegroundTab(gBrowser,
@@ -17,107 +15,170 @@ add_task(function* () {
     },
 
     background: function() {
+      browser.contextMenus.create({
+        id: "clickme",
+        title: "Click me!",
+        contexts: ["image"],
+      });
+      browser.test.notifyPass();
+    },
+  });
+
+  yield extension.startup();
+  yield extension.awaitFinish();
+
+  let contentAreaContextMenu = yield openContextMenu("#img1");
+  let item = contentAreaContextMenu.getElementsByAttribute("label", "Click me!");
+  is(item.length, 1, "contextMenu item for image was found");
+  yield closeContextMenu();
+
+  contentAreaContextMenu = yield openContextMenu("body");
+  item = contentAreaContextMenu.getElementsByAttribute("label", "Click me!");
+  is(item.length, 0, "no contextMenu item for image was found");
+  yield closeContextMenu();
+
+  yield extension.unload();
+
+  yield BrowserTestUtils.removeTab(tab1);
+});
+
+/* globals content */
+/* eslint-disable mozilla/no-cpows-in-tests */
+add_task(function* () {
+  let tab1 = yield BrowserTestUtils.openNewForegroundTab(gBrowser,
+    "http://mochi.test:8888/browser/browser/components/extensions/test/browser/context.html");
+
+  gBrowser.selectedTab = tab1;
+
+  let extension = ExtensionTestUtils.loadExtension({
+    manifest: {
+      "permissions": ["contextMenus"],
+    },
+
+    background: function() {
       // A generic onclick callback function.
-      function genericOnClick(info) {
-        browser.test.sendMessage("menuItemClick", JSON.stringify(info));
+      function genericOnClick(info, tab) {
+        browser.test.sendMessage("onclick", {info, tab});
       }
 
-      browser.contextMenus.create({contexts: ["all"], type: "separator"});
+      browser.contextMenus.onClicked.addListener((info, tab) => {
+        browser.test.sendMessage("browser.contextMenus.onClicked", {info, tab});
+      });
+
+      browser.contextMenus.create({
+        contexts: ["all"],
+        type: "separator",
+      });
 
       let contexts = ["page", "selection", "image"];
       for (let i = 0; i < contexts.length; i++) {
         let context = contexts[i];
         let title = context;
-        browser.contextMenus.create({title: title, contexts: [context], id: "ext-" + context,
-                                     onclick: genericOnClick});
+        browser.contextMenus.create({
+          title: title,
+          contexts: [context],
+          id: "ext-" + context,
+          onclick: genericOnClick,
+        });
         if (context == "selection") {
           browser.contextMenus.update("ext-selection", {
             title: "selection is: '%s'",
-            onclick: (info) => {
+            onclick: (info, tab) => {
               browser.contextMenus.removeAll();
-              genericOnClick(info);
+              genericOnClick(info, tab);
             },
           });
         }
       }
 
-      let parent = browser.contextMenus.create({title: "parent"});
-      browser.contextMenus.create(
-        {title: "child1", parentId: parent, onclick: genericOnClick});
-      let child2 = browser.contextMenus.create(
-        {title: "child2", parentId: parent, onclick: genericOnClick});
+      let parent = browser.contextMenus.create({
+        title: "parent",
+      });
+      browser.contextMenus.create({
+        title: "child1",
+        parentId: parent,
+        onclick: genericOnClick,
+      });
+      let child2 = browser.contextMenus.create({
+        title: "child2",
+        parentId: parent,
+        onclick: genericOnClick,
+      });
 
-      let parentToDel = browser.contextMenus.create({title: "parentToDel"});
-      browser.contextMenus.create(
-        {title: "child1", parentId: parentToDel, onclick: genericOnClick});
-      browser.contextMenus.create(
-        {title: "child2", parentId: parentToDel, onclick: genericOnClick});
+      let parentToDel = browser.contextMenus.create({
+        title: "parentToDel",
+      });
+      browser.contextMenus.create({
+        title: "child1",
+        parentId: parentToDel,
+        onclick: genericOnClick,
+      });
+      browser.contextMenus.create({
+        title: "child2",
+        parentId: parentToDel,
+        onclick: genericOnClick,
+      });
       browser.contextMenus.remove(parentToDel);
+
+      browser.contextMenus.create({
+        title: "Without onclick property",
+        id: "ext-without-onclick",
+      });
 
       browser.contextMenus.update(parent, {parentId: child2}).then(
         () => {
-          browser.test.notifyFail();
+          browser.test.notifyFail("contextmenus");
         },
         () => {
-          browser.test.notifyPass();
-        });
+          browser.test.notifyPass("contextmenus");
+        }
+      );
     },
   });
 
-  let expectedClickInfo;
-  function checkClickInfo(info) {
-    info = JSON.parse(info);
-    for (let i in expectedClickInfo) {
-      is(info[i], expectedClickInfo[i],
-         "click info " + i + " expected to be: " + expectedClickInfo[i] + " but was: " + info[i]);
-    }
-    is(expectedClickInfo.pageSrc, info.tab.url);
-  }
-
   yield extension.startup();
-  yield extension.awaitFinish();
+  yield extension.awaitFinish("contextmenus");
 
-  // Bring up context menu
-  let contentAreaContextMenu = document.getElementById("contentAreaContextMenu");
-  let popupShownPromise = BrowserTestUtils.waitForEvent(contentAreaContextMenu, "popupshown");
-  yield BrowserTestUtils.synthesizeMouseAtCenter("#img1",
-    {type: "contextmenu", button: 2}, gBrowser.selectedBrowser);
-  yield popupShownPromise;
-
-  // Check some menu items
-  let items = contentAreaContextMenu.getElementsByAttribute("ext-type", "top-level-menu");
-  is(items.length, 1, "top level item was found (context=image)");
-  let topItem = items.item(0);
-  let top = topItem.childNodes[0];
-
-  items = top.getElementsByAttribute("label", "image");
-  is(items.length, 1, "contextMenu item for image was found (context=image)");
-  let image = items.item(0);
-
-  items = top.getElementsByAttribute("label", "selection-edited");
-  is(items.length, 0, "contextMenu item for selection was not found (context=image)");
-
-  items = top.getElementsByAttribute("label", "parentToDel");
-  is(items.length, 0, "contextMenu item for removed parent was not found (context=image)");
-
-  items = top.getElementsByAttribute("label", "parent");
-  is(items.length, 1, "contextMenu item for parent was found (context=image)");
-
-  is(items.item(0).childNodes[0].childNodes.length, 2, "child items for parent were found (context=image)");
-
-  // Click on ext-image item and check the results
-  let popupHiddenPromise = BrowserTestUtils.waitForEvent(contentAreaContextMenu, "popuphidden");
-  expectedClickInfo = {
+  let expectedClickInfo = {
     menuItemId: "ext-image",
     mediaType: "image",
     srcUrl: "http://mochi.test:8888/browser/browser/components/extensions/test/browser/ctxmenu-image.png",
     pageUrl: "http://mochi.test:8888/browser/browser/components/extensions/test/browser/context.html",
   };
-  top.openPopup(topItem, "end_before", 0, 0, true, false);
-  EventUtils.synthesizeMouseAtCenter(image, {});
-  let clickInfo = yield extension.awaitMessage("menuItemClick");
-  checkClickInfo(clickInfo);
-  yield popupHiddenPromise;
+
+  function checkClickInfo(result) {
+    for (let i of Object.keys(expectedClickInfo)) {
+      is(result.info[i], expectedClickInfo[i],
+         "click info " + i + " expected to be: " + expectedClickInfo[i] + " but was: " + info[i]);
+    }
+    is(expectedClickInfo.pageSrc, result.tab.url);
+  }
+
+  let extensionMenuRoot = yield openExtensionContextMenu();
+
+  // Check some menu items
+  let items = extensionMenuRoot.getElementsByAttribute("label", "image");
+  is(items.length, 1, "contextMenu item for image was found (context=image)");
+  let image = items[0];
+
+  items = extensionMenuRoot.getElementsByAttribute("label", "selection-edited");
+  is(items.length, 0, "contextMenu item for selection was not found (context=image)");
+
+  items = extensionMenuRoot.getElementsByAttribute("label", "parentToDel");
+  is(items.length, 0, "contextMenu item for removed parent was not found (context=image)");
+
+  items = extensionMenuRoot.getElementsByAttribute("label", "parent");
+  is(items.length, 1, "contextMenu item for parent was found (context=image)");
+
+  is(items[0].childNodes[0].childNodes.length, 2, "child items for parent were found (context=image)");
+
+  // Click on ext-image item and check the click results
+  yield closeExtensionContextMenu(image);
+
+  let result = yield extension.awaitMessage("onclick");
+  checkClickInfo(result);
+  result = yield extension.awaitMessage("browser.contextMenus.onClicked");
+  checkClickInfo(result);
 
   // Select some text
   yield ContentTask.spawn(gBrowser.selectedBrowser, { }, function* (arg) {
@@ -132,44 +193,51 @@ add_task(function* () {
   });
 
   // Bring up context menu again
-  popupShownPromise = BrowserTestUtils.waitForEvent(contentAreaContextMenu, "popupshown");
-  yield BrowserTestUtils.synthesizeMouse(null, 1, 1,
-    {type: "contextmenu", button: 2}, gBrowser.selectedBrowser);
-  yield popupShownPromise;
-
-  items = contentAreaContextMenu.getElementsByAttribute("ext-type", "top-level-menu");
-  is(items.length, 1, "top level item was found (context=selection)");
-  top = items.item(0).childNodes[0];
+  extensionMenuRoot = yield openExtensionContextMenu();
 
   // Check some menu items
-  items = top.getElementsByAttribute("label", "selection is: 'just some text 123456789012345678901234567890...'");
-  is(items.length, 1, "contextMenu item for selection was found (context=selection)");
-  let selectionItem = items.item(0);
+  items = extensionMenuRoot.getElementsByAttribute("label", "Without onclick property");
+  is(items.length, 1, "contextMenu item was found (context=page)");
 
-  items = top.getElementsByAttribute("label", "selection");
+  yield closeExtensionContextMenu(items[0]);
+
+  expectedClickInfo = {
+    menuItemId: "ext-without-onclick",
+    pageUrl: "http://mochi.test:8888/browser/browser/components/extensions/test/browser/context.html",
+  };
+
+  result = yield extension.awaitMessage("browser.contextMenus.onClicked");
+  checkClickInfo(result);
+
+  // Bring up context menu again
+  extensionMenuRoot = yield openExtensionContextMenu();
+
+  // Check some menu items
+  items = extensionMenuRoot.getElementsByAttribute("label", "selection is: 'just some text 123456789012345678901234567890...'");
+  is(items.length, 1, "contextMenu item for selection was found (context=selection)");
+  let selectionItem = items[0];
+
+  items = extensionMenuRoot.getElementsByAttribute("label", "selection");
   is(items.length, 0, "contextMenu item label update worked (context=selection)");
 
-  popupHiddenPromise = BrowserTestUtils.waitForEvent(contentAreaContextMenu, "popuphidden");
+  yield closeExtensionContextMenu(selectionItem);
+
   expectedClickInfo = {
     menuItemId: "ext-selection",
     pageUrl: "http://mochi.test:8888/browser/browser/components/extensions/test/browser/context.html",
     selectionText: "just some text 1234567890123456789012345678901234567890123456789012345678901234567890123456789012",
   };
-  top.openPopup(topItem, "end_before", 0, 0, true, false);
-  EventUtils.synthesizeMouseAtCenter(selectionItem, {});
-  clickInfo = yield extension.awaitMessage("menuItemClick");
-  checkClickInfo(clickInfo);
-  yield popupHiddenPromise;
 
-  popupShownPromise = BrowserTestUtils.waitForEvent(contentAreaContextMenu, "popupshown");
-  yield BrowserTestUtils.synthesizeMouseAtCenter("#img1",
-    {type: "contextmenu", button: 2}, gBrowser.selectedBrowser);
-  yield popupShownPromise;
+  result = yield extension.awaitMessage("onclick");
+  checkClickInfo(result);
+  result = yield extension.awaitMessage("browser.contextMenus.onClicked");
+  checkClickInfo(result);
 
+  let contentAreaContextMenu = yield openContextMenu("#img1");
   items = contentAreaContextMenu.getElementsByAttribute("ext-type", "top-level-menu");
   is(items.length, 0, "top level item was not found (after removeAll()");
+  yield closeContextMenu();
 
   yield extension.unload();
-
   yield BrowserTestUtils.removeTab(tab1);
 });

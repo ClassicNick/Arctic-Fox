@@ -257,6 +257,8 @@ class JitFrameIterator
 
     inline BaselineFrame* baselineFrame() const;
 
+    // This function isn't used, but we keep it here (debug-only) because it is
+    // helpful when chasing issues with the jitcode map.
 #ifdef DEBUG
     bool verifyReturnAddressUsingNativeToBytecodeMap();
 #else
@@ -274,10 +276,10 @@ class JitProfilingFrameIterator
 
     inline JitFrameLayout* framePtr();
     inline JSScript* frameScript();
-    bool tryInitWithPC(void* pc);
-    bool tryInitWithTable(JitcodeGlobalTable* table, void* pc, JSRuntime* rt,
-                          bool forLastCallSite);
-    void fixBaselineDebugModeOSRReturnAddress();
+    MOZ_MUST_USE bool tryInitWithPC(void* pc);
+    MOZ_MUST_USE bool tryInitWithTable(JitcodeGlobalTable* table, void* pc, JSRuntime* rt,
+                                       bool forLastCallSite);
+    void fixBaselineReturnAddress();
 
     void moveToNextFrame(CommonFrameLayout* frame);
 
@@ -298,7 +300,7 @@ class JitProfilingFrameIterator
 class RInstructionResults
 {
     // Vector of results of recover instructions.
-    typedef mozilla::Vector<RelocatableValue, 1, SystemAllocPolicy> Values;
+    typedef mozilla::Vector<HeapPtr<Value>, 1, SystemAllocPolicy> Values;
     UniquePtr<Values> results_;
 
     // The frame pointer is used as a key to check if the current frame already
@@ -318,7 +320,7 @@ class RInstructionResults
 
     ~RInstructionResults();
 
-    bool init(JSContext* cx, uint32_t numResults);
+    MOZ_MUST_USE bool init(JSContext* cx, uint32_t numResults);
     bool isInitialized() const;
 #ifdef DEBUG
     size_t length() const;
@@ -326,7 +328,7 @@ class RInstructionResults
 
     JitFrameLayout* frame() const;
 
-    RelocatableValue& operator[](size_t index);
+    HeapPtr<Value>& operator[](size_t index);
 
     void trace(JSTracer* trc);
 };
@@ -442,7 +444,7 @@ class SnapshotIterator
     Value fromInstructionResult(uint32_t index) const;
 
     Value allocationValue(const RValueAllocation& a, ReadMethod rm = RM_Normal);
-    bool allocationReadable(const RValueAllocation& a, ReadMethod rm = RM_Normal);
+    MOZ_MUST_USE bool allocationReadable(const RValueAllocation& a, ReadMethod rm = RM_Normal);
     void writeAllocationValuePayload(const RValueAllocation& a, Value v);
     void warnUnreadableAllocation();
 
@@ -480,7 +482,7 @@ class SnapshotIterator
   public:
     // Exhibits frame properties contained in the snapshot.
     uint32_t pcOffset() const;
-    inline bool resumeAfter() const {
+    inline MOZ_MUST_USE bool resumeAfter() const {
         // Inline frames are inlined on calls, which are considered as being
         // resumed on the Call as baseline will push the pc once we return from
         // the call.
@@ -514,11 +516,11 @@ class SnapshotIterator
     // recover instructions. This vector should be registered before the
     // beginning of the iteration. This function is in charge of allocating
     // enough space for all instructions results, and return false iff it fails.
-    bool initInstructionResults(MaybeReadFallback& fallback);
+    MOZ_MUST_USE bool initInstructionResults(MaybeReadFallback& fallback);
 
     // This function is used internally for computing the result of the recover
     // instructions.
-    bool computeInstructionResults(JSContext* cx, RInstructionResults* results) const;
+    MOZ_MUST_USE bool computeInstructionResults(JSContext* cx, RInstructionResults* results) const;
 
   public:
     // Handle iterating over frames of the snapshots.
@@ -649,8 +651,8 @@ class InlineFrameIterator
 
   private:
     void findNextFrame();
-    JSObject* computeScopeChain(Value scopeChainValue, MaybeReadFallback& fallback,
-                                bool* hasCallObj = nullptr) const;
+    JSObject* computeEnvironmentChain(Value envChainValue, MaybeReadFallback& fallback,
+                                      bool* hasCallObj = nullptr) const;
 
   public:
     InlineFrameIterator(JSContext* cx, const JitFrameIterator* iter);
@@ -692,24 +694,24 @@ class InlineFrameIterator
 
     template <class ArgOp, class LocalOp>
     void readFrameArgsAndLocals(JSContext* cx, ArgOp& argOp, LocalOp& localOp,
-                                JSObject** scopeChain, bool* hasCallObj,
+                                JSObject** envChain, bool* hasCallObj,
                                 Value* rval, ArgumentsObject** argsObj, Value* thisv,
                                 ReadFrameArgsBehavior behavior,
                                 MaybeReadFallback& fallback) const
     {
         SnapshotIterator s(si_);
 
-        // Read the scope chain.
-        if (scopeChain) {
-            Value scopeChainValue = s.maybeRead(fallback);
-            *scopeChain = computeScopeChain(scopeChainValue, fallback, hasCallObj);
+        // Read the env chain.
+        if (envChain) {
+            Value envChainValue = s.maybeRead(fallback);
+            *envChain = computeEnvironmentChain(envChainValue, fallback, hasCallObj);
         } else {
             s.skip();
         }
 
         // Read return value.
         if (rval)
-            *rval = s.read();
+            *rval = s.maybeRead(fallback);
         else
             s.skip();
 
@@ -742,7 +744,7 @@ class InlineFrameIterator
 
                     // Skip over all slots until we get to the last slots
                     // (= arguments slots of callee) the +3 is for [this], [returnvalue],
-                    // [scopechain], and maybe +1 for [argsObj]
+                    // [envchain], and maybe +1 for [argsObj]
                     MOZ_ASSERT(parent_s.numAllocations() >= nactual + 3 + argsObjAdj + hasNewTarget);
                     unsigned skip = parent_s.numAllocations() - nactual - 3 - argsObjAdj - hasNewTarget;
                     for (unsigned j = 0; j < skip; j++)
@@ -750,7 +752,7 @@ class InlineFrameIterator
 
                     // Get the overflown arguments
                     MaybeReadFallback unusedFallback;
-                    parent_s.skip(); // scope chain
+                    parent_s.skip(); // env chain
                     parent_s.skip(); // return value
                     parent_s.readFunctionFrameArgs(argOp, nullptr, nullptr,
                                                    nformal, nactual + isConstructing(), it.script(),
@@ -793,18 +795,18 @@ class InlineFrameIterator
     bool isFunctionFrame() const;
     bool isConstructing() const;
 
-    JSObject* scopeChain(MaybeReadFallback& fallback) const {
+    JSObject* environmentChain(MaybeReadFallback& fallback) const {
         SnapshotIterator s(si_);
 
-        // scopeChain
+        // envChain
         Value v = s.maybeRead(fallback);
-        return computeScopeChain(v, fallback);
+        return computeEnvironmentChain(v, fallback);
     }
 
     Value thisArgument(MaybeReadFallback& fallback) const {
         SnapshotIterator s(si_);
 
-        // scopeChain
+        // envChain
         s.skip();
 
         // return value

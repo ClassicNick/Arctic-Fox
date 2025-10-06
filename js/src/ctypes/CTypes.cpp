@@ -8,9 +8,11 @@
 
 #include "mozilla/FloatingPoint.h"
 #include "mozilla/MemoryReporting.h"
-#include "mozilla/NumericLimits.h"
+#include "mozilla/SizePrintfMacros.h"
+#include "mozilla/Sprintf.h"
 #include "mozilla/Vector.h"
 
+#include <limits>
 #include <math.h>
 #include <stdint.h>
 
@@ -48,7 +50,6 @@
 #include "jsobjinlines.h"
 
 using namespace std;
-using mozilla::NumericLimits;
 
 using JS::AutoCheckCannotGC;
 
@@ -63,7 +64,6 @@ GetDeflatedUTF8StringLength(JSContext* maybecx, const CharT* chars,
     size_t nbytes;
     const CharT* end;
     unsigned c, c2;
-    char buffer[10];
 
     nbytes = nchars;
     for (end = chars + nchars; chars != end; chars++) {
@@ -95,7 +95,8 @@ GetDeflatedUTF8StringLength(JSContext* maybecx, const CharT* chars,
   bad_surrogate:
     if (maybecx) {
         js::gc::AutoSuppressGC suppress(maybecx);
-        JS_snprintf(buffer, 10, "0x%x", c);
+        char buffer[10];
+        SprintfLiteral(buffer, "0x%x", c);
         JS_ReportErrorFlagsAndNumber(maybecx, JSREPORT_ERROR, GetErrorMessage,
                                      nullptr, JSMSG_BAD_SURROGATE_CHAR, buffer);
     }
@@ -546,12 +547,15 @@ static const JSClass sCABIClass = {
 // Class representing ctypes.{C,Pointer,Array,Struct,Function}Type.prototype.
 // This exists to give said prototypes a class of "CType", and to provide
 // reserved slots for stashing various other prototype objects.
-static const JSClass sCTypeProtoClass = {
-  "CType",
-  JSCLASS_HAS_RESERVED_SLOTS(CTYPEPROTO_SLOTS),
+static const JSClassOps sCTypeProtoClassOps = {
   nullptr, nullptr, nullptr, nullptr,
   nullptr, nullptr, nullptr, nullptr,
   ConstructAbstract, nullptr, ConstructAbstract
+};
+static const JSClass sCTypeProtoClass = {
+  "CType",
+  JSCLASS_HAS_RESERVED_SLOTS(CTYPEPROTO_SLOTS),
+  &sCTypeProtoClassOps
 };
 
 // Class representing ctypes.CData.prototype and the 'prototype' properties
@@ -561,29 +565,41 @@ static const JSClass sCDataProtoClass = {
   0
 };
 
-static const JSClass sCTypeClass = {
-  "CType",
-  JSCLASS_HAS_RESERVED_SLOTS(CTYPE_SLOTS),
+static const JSClassOps sCTypeClassOps = {
   nullptr, nullptr, nullptr, nullptr,
   nullptr, nullptr, nullptr, CType::Finalize,
   CType::ConstructData, CType::HasInstance, CType::ConstructData,
   CType::Trace
 };
+static const JSClass sCTypeClass = {
+  "CType",
+  JSCLASS_HAS_RESERVED_SLOTS(CTYPE_SLOTS) |
+  JSCLASS_FOREGROUND_FINALIZE,
+  &sCTypeClassOps
+};
 
-static const JSClass sCDataClass = {
-  "CData",
-  JSCLASS_HAS_RESERVED_SLOTS(CDATA_SLOTS),
+static const JSClassOps sCDataClassOps = {
   nullptr, nullptr, ArrayType::Getter, ArrayType::Setter,
   nullptr, nullptr, nullptr, CData::Finalize,
   FunctionType::Call, nullptr, FunctionType::Call
 };
+static const JSClass sCDataClass = {
+  "CData",
+  JSCLASS_HAS_RESERVED_SLOTS(CDATA_SLOTS) |
+  JSCLASS_FOREGROUND_FINALIZE,
+  &sCDataClassOps
+};
 
-static const JSClass sCClosureClass = {
-  "CClosure",
-  JSCLASS_HAS_RESERVED_SLOTS(CCLOSURE_SLOTS),
+static const JSClassOps sCClosureClassOps = {
   nullptr, nullptr, nullptr, nullptr,
   nullptr, nullptr, nullptr, CClosure::Finalize,
   nullptr, nullptr, nullptr, CClosure::Trace
+};
+static const JSClass sCClosureClass = {
+  "CClosure",
+  JSCLASS_HAS_RESERVED_SLOTS(CCLOSURE_SLOTS) |
+  JSCLASS_FOREGROUND_FINALIZE,
+  &sCClosureClassOps
 };
 
 /*
@@ -600,11 +616,16 @@ static const JSClass sCDataFinalizerProtoClass = {
  * Instances of CDataFinalizer have both private data (with type
  * |CDataFinalizer::Private|) and slots (see |CDataFinalizerSlots|).
  */
-static const JSClass sCDataFinalizerClass = {
-  "CDataFinalizer",
-  JSCLASS_HAS_PRIVATE | JSCLASS_HAS_RESERVED_SLOTS(CDATAFINALIZER_SLOTS),
+static const JSClassOps sCDataFinalizerClassOps = {
   nullptr, nullptr, nullptr, nullptr,
   nullptr, nullptr, nullptr, CDataFinalizer::Finalize
+};
+static const JSClass sCDataFinalizerClass = {
+  "CDataFinalizer",
+  JSCLASS_HAS_PRIVATE |
+  JSCLASS_HAS_RESERVED_SLOTS(CDATAFINALIZER_SLOTS) |
+  JSCLASS_FOREGROUND_FINALIZE,
+  &sCDataFinalizerClassOps
 };
 
 
@@ -786,18 +807,23 @@ static const JSClass sUInt64ProtoClass = {
   0
 };
 
-static const JSClass sInt64Class = {
-  "Int64",
-  JSCLASS_HAS_RESERVED_SLOTS(INT64_SLOTS),
+static const JSClassOps sInt64ClassOps = {
   nullptr, nullptr, nullptr, nullptr,
   nullptr, nullptr, nullptr, Int64Base::Finalize
 };
 
+static const JSClass sInt64Class = {
+  "Int64",
+  JSCLASS_HAS_RESERVED_SLOTS(INT64_SLOTS) |
+  JSCLASS_FOREGROUND_FINALIZE,
+  &sInt64ClassOps
+};
+
 static const JSClass sUInt64Class = {
   "UInt64",
-  JSCLASS_HAS_RESERVED_SLOTS(INT64_SLOTS),
-  nullptr, nullptr, nullptr, nullptr,
-  nullptr, nullptr, nullptr, Int64Base::Finalize
+  JSCLASS_HAS_RESERVED_SLOTS(INT64_SLOTS) |
+  JSCLASS_FOREGROUND_FINALIZE,
+  &sInt64ClassOps
 };
 
 static const JSFunctionSpec sInt64StaticFunctions[] = {
@@ -882,7 +908,7 @@ GetABICode(JSObject* obj)
 
 static const JSErrorFormatString ErrorFormatString[CTYPESERR_LIMIT] = {
 #define MSG_DEF(name, count, exception, format) \
-  { format, count, exception } ,
+  { #name, format, count, exception } ,
 #include "ctypes/ctypes.msg"
 #undef MSG_DEF
 };
@@ -1103,7 +1129,7 @@ ConvError(JSContext* cx, const char* expectedStr, HandleValue actual,
       MOZ_ASSERT(!funObj);
 
       char indexStr[16];
-      JS_snprintf(indexStr, 16, "%u", arrIndex);
+      SprintfLiteral(indexStr, "%u", arrIndex);
 
       AutoString arrSource;
       JSAutoByteString arrBytes;
@@ -1160,7 +1186,7 @@ ConvError(JSContext* cx, const char* expectedStr, HandleValue actual,
     MOZ_ASSERT(funObj);
 
     char indexStr[16];
-    JS_snprintf(indexStr, 16, "%u", argIndex + 1);
+    SprintfLiteral(indexStr, "%u", argIndex + 1);
 
     AutoString funSource;
     JSAutoByteString funBytes;
@@ -1243,7 +1269,7 @@ ArgumentConvError(JSContext* cx, HandleValue actual, const char* funStr,
     return false;
 
   char indexStr[16];
-  JS_snprintf(indexStr, 16, "%u", argIndex + 1);
+  SprintfLiteral(indexStr, "%u", argIndex + 1);
 
   JS_ReportErrorNumber(cx, GetErrorMessage, nullptr,
                        CTYPESMSG_CONV_ERROR_ARG, valStr, indexStr, funStr);
@@ -1272,9 +1298,9 @@ ArrayLengthMismatch(JSContext* cx, unsigned expectedLength, HandleObject arrObj,
     return false;
 
   char expectedLengthStr[16];
-  JS_snprintf(expectedLengthStr, 16, "%u", expectedLength);
+  SprintfLiteral(expectedLengthStr, "%u", expectedLength);
   char actualLengthStr[16];
-  JS_snprintf(actualLengthStr, 16, "%u", actualLength);
+  SprintfLiteral(actualLengthStr, "%u", actualLength);
 
   AutoString arrSource;
   JSAutoByteString arrBytes;
@@ -1302,9 +1328,9 @@ ArrayLengthOverflow(JSContext* cx, unsigned expectedLength, HandleObject arrObj,
     return false;
 
   char expectedLengthStr[16];
-  JS_snprintf(expectedLengthStr, 16, "%u", expectedLength);
+  SprintfLiteral(expectedLengthStr, "%u", expectedLength);
   char actualLengthStr[16];
-  JS_snprintf(actualLengthStr, 16, "%u", actualLength);
+  SprintfLiteral(actualLengthStr, "%u", actualLength);
 
   AutoString arrSource;
   JSAutoByteString arrBytes;
@@ -1409,9 +1435,9 @@ FieldCountMismatch(JSContext* cx,
     return false;
 
   char expectedCountStr[16];
-  JS_snprintf(expectedCountStr, 16, "%u", expectedCount);
+  SprintfLiteral(expectedCountStr, "%u", expectedCount);
   char actualCountStr[16];
-  JS_snprintf(actualCountStr, 16, "%u", actualCount);
+  SprintfLiteral(actualCountStr, "%u", actualCount);
 
   JSAutoByteString posBytes;
   const char* posStr;
@@ -1442,7 +1468,7 @@ FieldDescriptorCountError(JSContext* cx, Value val, size_t length)
     return false;
 
   char lengthStr[16];
-  JS_snprintf(lengthStr, 16, "%u", length);
+  SprintfLiteral(lengthStr, "%" PRIuSIZE, length);
 
   JS_ReportErrorNumber(cx, GetErrorMessage, nullptr,
                        CTYPESMSG_FIELD_DESC_COUNT, valStr, lengthStr);
@@ -1577,9 +1603,9 @@ FunctionArgumentLengthMismatch(JSContext* cx,
     return false;
 
   char expectedCountStr[16];
-  JS_snprintf(expectedCountStr, 16, "%u", expectedCount);
+  SprintfLiteral(expectedCountStr, "%u", expectedCount);
   char actualCountStr[16];
-  JS_snprintf(actualCountStr, 16, "%u", actualCount);
+  SprintfLiteral(actualCountStr, "%u", actualCount);
 
   const char* variadicStr = isVariadic ? " or more": "";
 
@@ -1600,7 +1626,7 @@ FunctionArgumentTypeError(JSContext* cx,
     return false;
 
   char indexStr[16];
-  JS_snprintf(indexStr, 16, "%u", index + 1);
+  SprintfLiteral(indexStr, "%u", index + 1);
 
   JS_ReportErrorNumber(cx, GetErrorMessage, nullptr,
                        CTYPESMSG_ARG_TYPE_ERROR, indexStr, reason, valStr);
@@ -1706,10 +1732,10 @@ static bool
 InvalidIndexRangeError(JSContext* cx, size_t index, size_t length)
 {
   char indexStr[16];
-  JS_snprintf(indexStr, 16, "%u", index);
+  SprintfLiteral(indexStr, "%" PRIuSIZE, index);
 
   char lengthStr[16];
-  JS_snprintf(lengthStr, 16, "%u", length);
+  SprintfLiteral(lengthStr,"%" PRIuSIZE, length);
 
   JS_ReportErrorNumber(cx, GetErrorMessage, nullptr,
                        CTYPESMSG_INVALID_RANGE, indexStr, lengthStr);
@@ -1866,8 +1892,8 @@ SizeMismatchCastError(JSContext* cx,
 
   char sourceSizeStr[16];
   char targetSizeStr[16];
-  JS_snprintf(sourceSizeStr, 16, "%u", sourceSize);
-  JS_snprintf(targetSizeStr, 16, "%u", targetSize);
+  SprintfLiteral(sourceSizeStr, "%" PRIuSIZE, sourceSize);
+  SprintfLiteral(targetSizeStr, "%" PRIuSIZE, targetSize);
 
   JS_ReportErrorNumber(cx, GetErrorMessage, nullptr,
                        CTYPESMSG_SIZE_MISMATCH_CAST,
@@ -1899,7 +1925,7 @@ VariadicArgumentTypeError(JSContext* cx, uint32_t index, HandleValue actual)
     return false;
 
   char indexStr[16];
-  JS_snprintf(indexStr, 16, "%u", index + 1);
+  SprintfLiteral(indexStr, "%u", index + 1);
 
   JS_ReportErrorNumber(cx, GetErrorMessage, nullptr,
                        CTYPESMSG_VARG_TYPE_ERROR, indexStr, valStr);
@@ -2273,6 +2299,7 @@ InitTypeClasses(JSContext* cx, HandleObject ctypesObj)
   // Attach objects representing ABI constants.
   if (!DefineABIConstant(cx, ctypesObj, "default_abi", ABI_DEFAULT, ABIProto) ||
       !DefineABIConstant(cx, ctypesObj, "stdcall_abi", ABI_STDCALL, ABIProto) ||
+      !DefineABIConstant(cx, ctypesObj, "thiscall_abi", ABI_THISCALL, ABIProto) ||
       !DefineABIConstant(cx, ctypesObj, "winapi_abi", ABI_WINAPI, ABIProto))
     return false;
 
@@ -2479,7 +2506,7 @@ JS_STATIC_ASSERT(sizeof(long long) == 8);
 JS_STATIC_ASSERT(sizeof(size_t) == sizeof(uintptr_t));
 JS_STATIC_ASSERT(sizeof(float) == 4);
 JS_STATIC_ASSERT(sizeof(PRFuncPtr) == sizeof(void*));
-JS_STATIC_ASSERT(NumericLimits<double>::is_signed);
+JS_STATIC_ASSERT(numeric_limits<double>::is_signed);
 
 // Templated helper to convert FromType to TargetType, for the default case
 // where the trivial POD constructor will do.
@@ -2544,15 +2571,15 @@ static MOZ_ALWAYS_INLINE bool IsAlwaysExact()
   // 2) If FromType is signed, TargetType must also be signed. (Floating point
   //    types are always signed.)
   // 3) If TargetType is an exact integral type, FromType must be also.
-  if (NumericLimits<TargetType>::digits < NumericLimits<FromType>::digits)
+  if (numeric_limits<TargetType>::digits < numeric_limits<FromType>::digits)
     return false;
 
-  if (NumericLimits<FromType>::is_signed &&
-      !NumericLimits<TargetType>::is_signed)
+  if (numeric_limits<FromType>::is_signed &&
+      !numeric_limits<TargetType>::is_signed)
     return false;
 
-  if (!NumericLimits<FromType>::is_exact &&
-      NumericLimits<TargetType>::is_exact)
+  if (!numeric_limits<FromType>::is_exact &&
+      numeric_limits<TargetType>::is_exact)
     return false;
 
   return true;
@@ -2563,7 +2590,7 @@ static MOZ_ALWAYS_INLINE bool IsAlwaysExact()
 template<class TargetType, class FromType, bool TargetSigned, bool FromSigned>
 struct IsExactImpl {
   static MOZ_ALWAYS_INLINE bool Test(FromType i, TargetType j) {
-    JS_STATIC_ASSERT(NumericLimits<TargetType>::is_exact);
+    JS_STATIC_ASSERT(numeric_limits<TargetType>::is_exact);
     return FromType(j) == i;
   }
 };
@@ -2572,7 +2599,7 @@ struct IsExactImpl {
 template<class TargetType, class FromType>
 struct IsExactImpl<TargetType, FromType, false, true> {
   static MOZ_ALWAYS_INLINE bool Test(FromType i, TargetType j) {
-    JS_STATIC_ASSERT(NumericLimits<TargetType>::is_exact);
+    JS_STATIC_ASSERT(numeric_limits<TargetType>::is_exact);
     return i >= 0 && FromType(j) == i;
   }
 };
@@ -2581,7 +2608,7 @@ struct IsExactImpl<TargetType, FromType, false, true> {
 template<class TargetType, class FromType>
 struct IsExactImpl<TargetType, FromType, true, false> {
   static MOZ_ALWAYS_INLINE bool Test(FromType i, TargetType j) {
-    JS_STATIC_ASSERT(NumericLimits<TargetType>::is_exact);
+    JS_STATIC_ASSERT(numeric_limits<TargetType>::is_exact);
     return TargetType(i) >= 0 && FromType(j) == i;
   }
 };
@@ -2592,7 +2619,7 @@ template<class TargetType, class FromType>
 static MOZ_ALWAYS_INLINE bool ConvertExact(FromType i, TargetType* result)
 {
   // Require that TargetType is integral, to simplify conversion.
-  JS_STATIC_ASSERT(NumericLimits<TargetType>::is_exact);
+  JS_STATIC_ASSERT(numeric_limits<TargetType>::is_exact);
 
   *result = Convert<TargetType>(i);
 
@@ -2603,8 +2630,8 @@ static MOZ_ALWAYS_INLINE bool ConvertExact(FromType i, TargetType* result)
   // Return 'true' if 'i' is exactly representable in 'TargetType'.
   return IsExactImpl<TargetType,
                      FromType,
-                     NumericLimits<TargetType>::is_signed,
-                     NumericLimits<FromType>::is_signed>::Test(i, *result);
+                     numeric_limits<TargetType>::is_signed,
+                     numeric_limits<FromType>::is_signed>::Test(i, *result);
 }
 
 // Templated helper to determine if Type 'i' is negative. Default case
@@ -2628,7 +2655,7 @@ struct IsNegativeImpl<Type, true> {
 template<class Type>
 static MOZ_ALWAYS_INLINE bool IsNegative(Type i)
 {
-  return IsNegativeImpl<Type, NumericLimits<Type>::is_signed>::Test(i);
+  return IsNegativeImpl<Type, numeric_limits<Type>::is_signed>::Test(i);
 }
 
 // Implicitly convert val to bool, allowing bool, int, and double
@@ -2662,7 +2689,7 @@ template<class IntegerType>
 static bool
 jsvalToInteger(JSContext* cx, Value val, IntegerType* result)
 {
-  JS_STATIC_ASSERT(NumericLimits<IntegerType>::is_exact);
+  JS_STATIC_ASSERT(numeric_limits<IntegerType>::is_exact);
 
   if (val.isInt32()) {
     // Make sure the integer fits in the alotted precision, and has the right
@@ -2752,7 +2779,7 @@ template<class FloatType>
 static bool
 jsvalToFloat(JSContext* cx, Value val, FloatType* result)
 {
-  JS_STATIC_ASSERT(!NumericLimits<FloatType>::is_exact);
+  JS_STATIC_ASSERT(!numeric_limits<FloatType>::is_exact);
 
   // The following casts may silently throw away some bits, but there's
   // no good way around it. Sternly requiring that the 64-bit double
@@ -2810,7 +2837,7 @@ static bool
 StringToInteger(JSContext* cx, CharT* cp, size_t length, IntegerType* result,
                 bool* overflow)
 {
-  JS_STATIC_ASSERT(NumericLimits<IntegerType>::is_exact);
+  JS_STATIC_ASSERT(numeric_limits<IntegerType>::is_exact);
 
   const CharT* end = cp + length;
   if (cp == end)
@@ -2818,7 +2845,7 @@ StringToInteger(JSContext* cx, CharT* cp, size_t length, IntegerType* result,
 
   IntegerType sign = 1;
   if (cp[0] == '-') {
-    if (!NumericLimits<IntegerType>::is_signed)
+    if (!numeric_limits<IntegerType>::is_signed)
       return false;
 
     sign = -1;
@@ -2887,7 +2914,7 @@ jsvalToBigInteger(JSContext* cx,
                   IntegerType* result,
                   bool* overflow)
 {
-  JS_STATIC_ASSERT(NumericLimits<IntegerType>::is_exact);
+  JS_STATIC_ASSERT(numeric_limits<IntegerType>::is_exact);
 
   if (val.isInt32()) {
     // Make sure the integer fits in the alotted precision, and has the right
@@ -2959,7 +2986,7 @@ jsidToBigInteger(JSContext* cx,
                  bool allowString,
                  IntegerType* result)
 {
-  JS_STATIC_ASSERT(NumericLimits<IntegerType>::is_exact);
+  JS_STATIC_ASSERT(numeric_limits<IntegerType>::is_exact);
 
   if (JSID_IS_INT(val)) {
     // Make sure the integer fits in the alotted precision, and has the right
@@ -3008,7 +3035,7 @@ template<class IntegerType>
 static bool
 jsvalToIntegerExplicit(Value val, IntegerType* result)
 {
-  JS_STATIC_ASSERT(NumericLimits<IntegerType>::is_exact);
+  JS_STATIC_ASSERT(numeric_limits<IntegerType>::is_exact);
 
   if (val.isDouble()) {
     // Convert -Inf, Inf, and NaN to 0; otherwise, convert by C-style cast.
@@ -3089,7 +3116,7 @@ template<class IntegerType, class CharType, size_t N, class AP>
 void
 IntegerToString(IntegerType i, int radix, mozilla::Vector<CharType, N, AP>& result)
 {
-  JS_STATIC_ASSERT(NumericLimits<IntegerType>::is_exact);
+  JS_STATIC_ASSERT(numeric_limits<IntegerType>::is_exact);
 
   // The buffer must be big enough for all the bits of IntegerType to fit,
   // in base-2, including '-'.
@@ -3176,7 +3203,7 @@ ConvertToJS(JSContext* cx,
     /* Return an Int64 or UInt64 object - do not convert to a JS number. */    \
     uint64_t value;                                                            \
     RootedObject proto(cx);                                                    \
-    if (!NumericLimits<type>::is_signed) {                                     \
+    if (!numeric_limits<type>::is_signed) {                                    \
       value = *static_cast<type*>(data);                                       \
       /* Get ctypes.UInt64.prototype from ctypes.CType.prototype. */           \
       proto = CType::GetProtoFromType(cx, typeObj, SLOT_UINT64PROTO);          \
@@ -3191,7 +3218,7 @@ ConvertToJS(JSContext* cx,
     }                                                                          \
                                                                                \
     JSObject* obj = Int64Base::Construct(cx, proto, value,                     \
-      !NumericLimits<type>::is_signed);                                        \
+      !numeric_limits<type>::is_signed);                                       \
     if (!obj)                                                                  \
       return false;                                                            \
     result.setObject(*obj);                                                    \
@@ -3630,11 +3657,11 @@ ImplicitConvert(JSContext* cx,
                          arrObj, arrIndex);
       }
     } else {
-      ESClassValue cls;
+      ESClass cls;
       if (!GetClassOfValue(cx, val, &cls))
         return false;
 
-      if (cls == ESClass_Array) {
+      if (cls == ESClass::Array) {
         // Convert each element of the array by calling ImplicitConvert.
         uint32_t sourceLength;
         if (!JS_GetArrayLength(cx, valObj, &sourceLength) ||
@@ -3665,10 +3692,10 @@ ImplicitConvert(JSContext* cx,
         }
 
         memcpy(buffer, intermediate.get(), arraySize);
-      } else if (cls == ESClass_ArrayBuffer || cls == ESClass_SharedArrayBuffer) {
+      } else if (cls == ESClass::ArrayBuffer || cls == ESClass::SharedArrayBuffer) {
         // Check that array is consistent with type, then
         // copy the array.
-        const bool bufferShared = cls == ESClass_SharedArrayBuffer;
+        const bool bufferShared = cls == ESClass::SharedArrayBuffer;
         uint32_t sourceLength = bufferShared ? JS_GetSharedArrayBufferByteLength(valObj)
             : JS_GetArrayBufferByteLength(valObj);
         size_t elementSize = CType::GetSize(baseType);
@@ -3917,6 +3944,8 @@ BuildTypeName(JSContext* cx, JSObject* typeObj_)
       ABICode abi = GetABICode(fninfo->mABI);
       if (abi == ABI_STDCALL)
         PrependString(result, "__stdcall");
+      else if (abi == ABI_THISCALL)
+        PrependString(result, "__thiscall");
       else if (abi == ABI_WINAPI)
         PrependString(result, "WINAPI");
 
@@ -4021,6 +4050,9 @@ BuildTypeSource(JSContext* cx,
       break;
     case ABI_STDCALL:
       AppendString(result, "ctypes.stdcall_abi, ");
+      break;
+    case ABI_THISCALL:
+      AppendString(result, "ctypes.thiscall_abi, ");
       break;
     case ABI_WINAPI:
       AppendString(result, "ctypes.winapi_abi, ");
@@ -4148,7 +4180,7 @@ BuildDataSource(JSContext* cx,
 #define WRAPPED_INT_CASE(name, type, ffiType)                                  \
   case TYPE_##name:                                                            \
     /* Serialize as a wrapped decimal integer. */                              \
-    if (!NumericLimits<type>::is_signed)                                       \
+    if (!numeric_limits<type>::is_signed)                                      \
       AppendString(result, "ctypes.UInt64(\"");                                \
     else                                                                       \
       AppendString(result, "ctypes.Int64(\"");                                 \
@@ -5011,6 +5043,9 @@ ABI::ToSource(JSContext* cx, unsigned argc, Value* vp)
       break;
     case ABI_STDCALL:
       result = JS_NewStringCopyZ(cx, "ctypes.stdcall_abi");
+      break;
+    case ABI_THISCALL:
+      result = JS_NewStringCopyZ(cx, "ctypes.thiscall_abi");
       break;
     case ABI_WINAPI:
       result = JS_NewStringCopyZ(cx, "ctypes.winapi_abi");
@@ -6279,7 +6314,7 @@ StructType::ConstructData(JSContext* cx,
   size_t count = fields->count();
   if (count >= 2) {
     char fieldLengthStr[32];
-    JS_snprintf(fieldLengthStr, 32, "0, 1, or %u", count);
+    SprintfLiteral(fieldLengthStr, "0, 1, or %" PRIuSIZE, count);
     return ArgumentLengthError(cx, "StructType constructor", fieldLengthStr,
                                "s");
   }
@@ -6547,6 +6582,16 @@ GetABI(JSContext* cx, Value abiType, ffi_abi* result)
   case ABI_DEFAULT:
     *result = FFI_DEFAULT_ABI;
     return true;
+  case ABI_THISCALL:
+#if defined(_WIN64)
+    *result = FFI_WIN64;
+    return true;
+#elif defined(_WIN32)
+    *result = FFI_THISCALL;
+    return true;
+#else
+    break;
+#endif
   case ABI_STDCALL:
   case ABI_WINAPI:
 #if (defined(_WIN32) && !defined(_WIN64)) || defined(_OS2)
@@ -6692,6 +6737,7 @@ FunctionType::BuildSymbolName(JSString* name,
 
   switch (GetABICode(fninfo->mABI)) {
   case ABI_DEFAULT:
+  case ABI_THISCALL:
   case ABI_WINAPI:
     // For cdecl or WINAPI functions, no mangling is necessary.
     AppendString(result, name);
@@ -7286,7 +7332,7 @@ CClosure::Create(JSContext* cx,
       return nullptr;
   }
 
-  ClosureInfo* cinfo = cx->new_<ClosureInfo>(JS_GetRuntime(cx));
+  ClosureInfo* cinfo = cx->new_<ClosureInfo>(cx);
   if (!cinfo) {
     JS_ReportOutOfMemory(cx);
     return nullptr;
@@ -7364,14 +7410,10 @@ CClosure::ClosureStub(ffi_cif* cif, void* result, void** args, void* userData)
 
   // Retrieve the essentials from our closure object.
   ArgClosure argClosure(cif, result, args, static_cast<ClosureInfo*>(userData));
-  JSRuntime* rt = argClosure.cinfo->rt;
-  RootedObject fun(rt, argClosure.cinfo->jsfnObj);
+  JSContext* cx = argClosure.cinfo->cx;
+  RootedObject fun(cx, argClosure.cinfo->jsfnObj);
 
-  // Arbitrarily choose a cx in which to run this code. This is bad, as
-  // JSContexts are stateful and have options. The hope is to eliminate
-  // JSContexts (see bug 650361).
-  js::PrepareScriptEnvironmentAndInvoke(rt->contextList.getFirst(), fun,
-                                        argClosure);
+  js::PrepareScriptEnvironmentAndInvoke(cx, fun, argClosure);
 }
 
 bool CClosure::ArgClosure::operator()(JSContext* cx)
@@ -7387,7 +7429,7 @@ bool CClosure::ArgClosure::operator()(JSContext* cx)
   AssertSameCompartment(cx, cinfo->jsfnObj);
 
 
-  JS_AbortIfWrongThread(JS_GetRuntime(cx));
+  JS_AbortIfWrongThread(cx);
 
   // Assert that our CIFs agree.
   FunctionInfo* fninfo = FunctionType::GetFunctionInfo(typeObj);
@@ -7855,6 +7897,11 @@ ReadStringCommon(JSContext* cx, InflateUTF8Method inflateUTF8, unsigned argc,
       return false;
 
     result = JS_NewUCString(cx, dst, length);
+    if (!result) {
+      js_free(dst);
+      return false;
+    }
+
     break;
   }
   case TYPE_int16_t:

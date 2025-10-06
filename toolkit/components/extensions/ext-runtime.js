@@ -3,8 +3,6 @@
 var {classes: Cc, interfaces: Ci, utils: Cu} = Components;
 
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
-XPCOMUtils.defineLazyModuleGetter(this, "AppConstants",
-                                  "resource://gre/modules/AppConstants.jsm");
 
 Cu.import("resource://gre/modules/ExtensionUtils.jsm");
 var {
@@ -12,7 +10,11 @@ var {
   ignoreEvent,
 } = ExtensionUtils;
 
-extensions.registerSchemaAPI("runtime", null, (extension, context) => {
+XPCOMUtils.defineLazyModuleGetter(this, "NativeApp",
+                                  "resource://gre/modules/NativeMessaging.jsm");
+
+extensions.registerSchemaAPI("runtime", context => {
+  let {extension} = context;
   return {
     runtime: {
       onStartup: new EventManager(context, "runtime.onStartup", fire => {
@@ -54,6 +56,16 @@ extensions.registerSchemaAPI("runtime", null, (extension, context) => {
         return context.messenger.sendMessage(Services.cpmm, message, recipient, responseCallback);
       },
 
+      connectNative(application) {
+        let app = new NativeApp(extension, context, application);
+        return app.portAPI();
+      },
+
+      sendNativeMessage(application, message) {
+        let app = new NativeApp(extension, context, application);
+        return app.sendMessage(message);
+      },
+
       get lastError() {
         return context.lastError;
       },
@@ -69,21 +81,15 @@ extensions.registerSchemaAPI("runtime", null, (extension, context) => {
       },
 
       getPlatformInfo: function() {
-        let os = AppConstants.platform;
-        if (os == "macosx") {
-          os = "mac";
+        return Promise.resolve(ExtensionUtils.PlatformInfo);
+      },
+
+      openOptionsPage: function() {
+        if (!extension.manifest.options_ui) {
+          return Promise.reject({message: "No `options_ui` declared"});
         }
 
-        let abi = Services.appinfo.XPCOMABI;
-        let [arch] = abi.split("-");
-        if (arch == "x86") {
-          arch = "x86-32";
-        } else if (arch == "x86_64") {
-          arch = "x86-64";
-        }
-
-        let info = {os, arch};
-        return Promise.resolve(info);
+        return openOptionsPage(extension).then(() => {});
       },
 
       setUninstallURL: function(url) {

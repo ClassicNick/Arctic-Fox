@@ -87,7 +87,7 @@ function DeleteAllFromTree(tree, view, table, deletedTable, removeButton, remove
   table.length = 0;
 
   // clear out selections
-  view.selection.select(-1); 
+  view.selection.select(-1);
 
   // update the tree view and notify the tree
   view.rowCount = 0;
@@ -99,7 +99,7 @@ function DeleteAllFromTree(tree, view, table, deletedTable, removeButton, remove
 
   // disable buttons
   document.getElementById(removeButton).setAttribute("disabled", "true")
-  document.getElementById(removeAllButton).setAttribute("disabled","true");
+  document.getElementById(removeAllButton).setAttribute("disabled", "true");
 }
 
 function DeleteSelectedItemFromTree
@@ -138,7 +138,7 @@ function DeleteSelectedItemFromTree
   } else {
     // disable buttons
     document.getElementById(removeButton).setAttribute("disabled", "true")
-    document.getElementById(removeAllButton).setAttribute("disabled","true");
+    document.getElementById(removeAllButton).setAttribute("disabled", "true");
   }
   tree.view.selection.selectEventsSuppressed = false;
 }

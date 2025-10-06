@@ -15,6 +15,7 @@
 #include <stdint.h>
 
 #include <bitset>
+#include <unordered_map>
 
 namespace gl
 {
@@ -68,13 +69,21 @@ typedef Color<unsigned int> ColorUI;
 
 struct Rectangle
 {
+    Rectangle() : x(0), y(0), width(0), height(0) {}
+    Rectangle(int x_in, int y_in, int width_in, int height_in)
+        : x(x_in), y(y_in), width(width_in), height(height_in)
+    {
+    }
+
+    int x0() const { return x; }
+    int y0() const { return y; }
+    int x1() const { return x + width; }
+    int y1() const { return y + height; }
+
     int x;
     int y;
     int width;
     int height;
-
-    Rectangle() : x(0), y(0), width(0), height(0) { }
-    Rectangle(int x_in, int y_in, int width_in, int height_in) : x(x_in), y(y_in), width(width_in), height(height_in) { }
 };
 
 bool operator==(const Rectangle &a, const Rectangle &b);
@@ -101,8 +110,14 @@ struct Extents
     Extents() : width(0), height(0), depth(0) { }
     Extents(int width_, int height_, int depth_) : width(width_), height(height_), depth(depth_) { }
 
+    Extents(const Extents &other) = default;
+    Extents &operator=(const Extents &other) = default;
+
     bool empty() const { return (width * height * depth) == 0; }
 };
+
+bool operator==(const Extents &lhs, const Extents &rhs);
+bool operator!=(const Extents &lhs, const Extents &rhs);
 
 struct Box
 {
@@ -182,6 +197,7 @@ struct DepthStencilState
 struct SamplerState
 {
     SamplerState();
+    static SamplerState CreateDefaultForTarget(GLenum target);
 
     GLenum minFilter;
     GLenum magFilter;
@@ -202,33 +218,6 @@ struct SamplerState
 
 bool operator==(const SamplerState &a, const SamplerState &b);
 bool operator!=(const SamplerState &a, const SamplerState &b);
-
-// State from Table 6.9 (state per texture object) in the OpenGL ES 3.0.2 spec.
-struct TextureState
-{
-    TextureState();
-
-    GLenum swizzleRed;
-    GLenum swizzleGreen;
-    GLenum swizzleBlue;
-    GLenum swizzleAlpha;
-
-    SamplerState samplerState;
-
-    GLuint baseLevel;
-    GLuint maxLevel;
-
-    bool immutableFormat;
-    GLuint immutableLevels;
-
-    // From GL_ANGLE_texture_usage
-    GLenum usage;
-
-    bool swizzleRequired() const;
-};
-
-bool operator==(const TextureState &a, const TextureState &b);
-bool operator!=(const TextureState &a, const TextureState &b);
 
 struct PixelUnpackState
 {
@@ -290,16 +279,24 @@ typedef std::bitset<MAX_VERTEX_ATTRIBS> AttributesMask;
 
 // Use in Program
 typedef std::bitset<IMPLEMENTATION_MAX_COMBINED_SHADER_UNIFORM_BUFFERS> UniformBlockBindingMask;
+
+// A map of GL objects indexed by object ID. The specific map implementation may change.
+// Client code should treat it as a std::map.
+template <class ResourceT>
+using ResourceMap = std::unordered_map<GLuint, ResourceT *>;
 }
 
 namespace rx
 {
 enum VendorID : uint32_t
 {
-    VENDOR_ID_UNKNOWN = 0x0,
-    VENDOR_ID_AMD     = 0x1002,
-    VENDOR_ID_INTEL   = 0x8086,
-    VENDOR_ID_NVIDIA  = 0x10DE,
+    VENDOR_ID_UNKNOWN  = 0x0,
+    VENDOR_ID_AMD      = 0x1002,
+    VENDOR_ID_INTEL    = 0x8086,
+    VENDOR_ID_NVIDIA   = 0x10DE,
+    // This is Qualcomm PCI Vendor ID.
+    // Android doesn't have a PCI bus, but all we need is a unique id.
+    VENDOR_ID_QUALCOMM = 0x5143,
 };
 
 // A macro that determines whether an object has a given runtime type.

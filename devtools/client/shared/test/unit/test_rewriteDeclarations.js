@@ -1,14 +1,12 @@
-/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
 "use strict";
 
 var Cu = Components.utils;
-Cu.import("resource://devtools/shared/Loader.jsm");
-const {parseDeclarations, RuleRewriter} =
-      devtools.require("devtools/client/shared/css-parsing-utils");
+const {require} = Cu.import("resource://devtools/shared/Loader.jsm", {});
+const {RuleRewriter} = require("devtools/shared/css-parsing-utils");
+const {isCssPropertyKnown} = require("devtools/server/actors/css-properties");
 
 const TEST_DATA = [
   {
@@ -269,7 +267,8 @@ const TEST_DATA = [
     desc: "enable single quote termination",
     input: "/* content: 'hi */ color: red;",
     instruction: {type: "enable", name: "content", value: true, index: 0},
-    expected: "content: 'hi'; color: red;"
+    expected: "content: 'hi'; color: red;",
+    changed: {0: "'hi'"}
   },
   // Termination insertion corner case.
   {
@@ -277,7 +276,8 @@ const TEST_DATA = [
     input: "content: 'hi",
     instruction: {type: "create", name: "color", value: "red", priority: "",
                   index: 1},
-    expected: "content: 'hi';color: red;"
+    expected: "content: 'hi';color: red;",
+    changed: {0: "'hi'"}
   },
 
   // Termination insertion corner case.
@@ -285,7 +285,8 @@ const TEST_DATA = [
     desc: "enable double quote termination",
     input: "/* content: \"hi */ color: red;",
     instruction: {type: "enable", name: "content", value: true, index: 0},
-    expected: "content: \"hi\"; color: red;"
+    expected: "content: \"hi\"; color: red;",
+    changed: {0: "\"hi\""}
   },
   // Termination insertion corner case.
   {
@@ -293,7 +294,8 @@ const TEST_DATA = [
     input: "content: \"hi",
     instruction: {type: "create", name: "color", value: "red", priority: "",
                   index: 1},
-    expected: "content: \"hi\";color: red;"
+    expected: "content: \"hi\";color: red;",
+    changed: {0: "\"hi\""}
   },
 
   // Termination insertion corner case.
@@ -302,7 +304,8 @@ const TEST_DATA = [
     input: "/* background-image: url(something.jpg */ color: red;",
     instruction: {type: "enable", name: "background-image", value: true,
                   index: 0},
-    expected: "background-image: url(something.jpg); color: red;"
+    expected: "background-image: url(something.jpg); color: red;",
+    changed: {0: "url(something.jpg)"}
   },
   // Termination insertion corner case.
   {
@@ -310,7 +313,8 @@ const TEST_DATA = [
     input: "background-image: url(something.jpg",
     instruction: {type: "create", name: "color", value: "red", priority: "",
                   index: 1},
-    expected: "background-image: url(something.jpg);color: red;"
+    expected: "background-image: url(something.jpg);color: red;",
+    changed: {0: "url(something.jpg)"}
   },
 
   // Termination insertion corner case.
@@ -319,7 +323,8 @@ const TEST_DATA = [
     input: "/* background-image: url('something.jpg */ color: red;",
     instruction: {type: "enable", name: "background-image", value: true,
                   index: 0},
-    expected: "background-image: url('something.jpg'); color: red;"
+    expected: "background-image: url('something.jpg'); color: red;",
+    changed: {0: "url('something.jpg')"}
   },
   // Termination insertion corner case.
   {
@@ -327,7 +332,8 @@ const TEST_DATA = [
     input: "background-image: url('something.jpg",
     instruction: {type: "create", name: "color", value: "red", priority: "",
                   index: 1},
-    expected: "background-image: url('something.jpg');color: red;"
+    expected: "background-image: url('something.jpg');color: red;",
+    changed: {0: "url('something.jpg')"}
   },
 
   // Termination insertion corner case.
@@ -336,7 +342,8 @@ const TEST_DATA = [
     input: "/* background-image: url(\"something.jpg */ color: red;",
     instruction: {type: "enable", name: "background-image", value: true,
                   index: 0},
-    expected: "background-image: url(\"something.jpg\"); color: red;"
+    expected: "background-image: url(\"something.jpg\"); color: red;",
+    changed: {0: "url(\"something.jpg\")"}
   },
   // Termination insertion corner case.
   {
@@ -344,7 +351,8 @@ const TEST_DATA = [
     input: "background-image: url(\"something.jpg",
     instruction: {type: "create", name: "color", value: "red", priority: "",
                   index: 1},
-    expected: "background-image: url(\"something.jpg\");color: red;"
+    expected: "background-image: url(\"something.jpg\");color: red;",
+    changed: {0: "url(\"something.jpg\")"}
   },
 
   // Termination insertion corner case.
@@ -353,7 +361,10 @@ const TEST_DATA = [
     input: "something: \\",
     instruction: {type: "create", name: "color", value: "red", priority: "",
                   index: 1},
-    expected: "something: \\\\;color: red;"
+    expected: "something: \\\\;color: red;",
+    // The lexer rewrites the token before we see it.  However this is
+    // so obscure as to be inconsequential.
+    changed: {0: "\uFFFD\\"}
   },
 
   // Termination insertion corner case.
@@ -362,14 +373,16 @@ const TEST_DATA = [
     input: "something: '\\",
     instruction: {type: "create", name: "color", value: "red", priority: "",
                   index: 1},
-    expected: "something: '\\\\';color: red;"
+    expected: "something: '\\\\';color: red;",
+    changed: {0: "'\\\\'"}
   },
   {
     desc: "enable backslash double quote termination",
     input: "something: \"\\",
     instruction: {type: "create", name: "color", value: "red", priority: "",
                   index: 1},
-    expected: "something: \"\\\\\";color: red;"
+    expected: "something: \"\\\\\";color: red;",
+    changed: {0: "\"\\\\\""}
   },
 
   // Termination insertion corner case.
@@ -429,7 +442,7 @@ const TEST_DATA = [
 ];
 
 function rewriteDeclarations(inputString, instruction, defaultIndentation) {
-  let rewriter = new RuleRewriter(null, inputString);
+  let rewriter = new RuleRewriter(isCssPropertyKnown, null, inputString);
   rewriter.defaultIndentation = defaultIndentation;
 
   switch (instruction.type) {
@@ -471,8 +484,13 @@ function run_test() {
     let {changed, text} = rewriteDeclarations(test.input, test.instruction,
                                               "\t");
     equal(text, test.expected, "output for " + test.desc);
+
+    let expectChanged;
     if ("changed" in test) {
-      deepEqual(changed, test.changed, "changed result for " + test.desc);
+      expectChanged = test.changed;
+    } else {
+      expectChanged = {};
     }
+    deepEqual(changed, expectChanged, "changed result for " + test.desc);
   }
 }

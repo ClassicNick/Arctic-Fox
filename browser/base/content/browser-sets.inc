@@ -44,6 +44,7 @@
     <command id="View:PageSource" oncommand="BrowserViewSource(window.gBrowser.selectedBrowser);" observes="canViewSource"/>
     <command id="View:PageInfo" oncommand="BrowserPageInfo();"/>
     <command id="View:FullScreen" oncommand="BrowserFullScreen();"/>
+    <command id="View:ReaderView" oncommand="ReaderParent.toggleReaderMode(event);"/>
     <command id="cmd_find"
              oncommand="gFindBar.onFindCommand();"
              observes="isImage"/>
@@ -104,6 +105,7 @@
     <command id="Tools:Addons" oncommand="BrowserOpenAddonsMgr();"/>
     <command id="Tools:Permissions" oncommand="BrowserOpenPermissionsMgr();"/>
     <command id="Tools:ErrorConsole" oncommand="toJavaScriptConsole()" disabled="true" hidden="true"/>
+    <command id="Tools:ServiceWorkers" oncommand="gDevToolsBrowser.openAboutDebugging(gBrowser, 'workers')"/>
     <command id="Tools:DevToolsConnect" oncommand="gDevToolsBrowser.openConnectScreen(gBrowser)" disabled="true" hidden="true"/>
     <command id="Tools:Sanitize"
      oncommand="Cc['@mozilla.org/browser/browserglue;1'].getService(Ci.nsIBrowserGlue).sanitize(window);"/>
@@ -119,7 +121,7 @@
 
   <commandset id="placesCommands">
     <command id="Browser:ShowAllBookmarks"
-             oncommand="PlacesCommandHook.showPlacesOrganizer('AllBookmarks');"/>
+             oncommand="PlacesCommandHook.showPlacesOrganizer('UnfiledBookmarks');"/>
     <command id="Browser:ShowAllHistory"
              oncommand="PlacesCommandHook.showPlacesOrganizer('History');"/>
   </commandset>
@@ -168,11 +170,21 @@
     <broadcaster id="isFrameImage"/>
     <broadcaster id="singleFeedMenuitemState" disabled="true"/>
     <broadcaster id="multipleFeedsMenuState" hidden="true"/>
-#ifdef MOZ_SERVICES_SYNC
+
+    <!-- Sync broadcasters -->
+    <!-- A broadcaster of a number of attributes suitable for "sync now" UI -
+        A 'syncstatus' attribute is set while actively syncing, and the label
+        attribute which changes from "sync now" to "syncing" etc. -->
+    <broadcaster id="sync-status"/>
+    <!-- broadcasters of the "hidden" attribute to reflect setup state for
+         menus -->
     <broadcaster id="sync-setup-state"/>
-    <broadcaster id="sync-syncnow-state"/>
+    <broadcaster id="sync-syncnow-state" hidden="true"/>
     <broadcaster id="sync-reauth-state" hidden="true"/>
-#endif
+    <broadcaster id="viewTabsSidebar" autoCheck="false" sidebartitle="&syncedTabs.sidebar.label;"
+                 type="checkbox" group="sidebar"
+                 sidebarurl="chrome://browser/content/syncedtabs/sidebar.xhtml"
+                 oncommand="SidebarUI.toggle('viewTabsSidebar');"/>
     <broadcaster id="workOfflineMenuitemState"/>
 
     <!-- DevTools broadcasters -->
@@ -206,7 +218,7 @@
                  command="Tools:Scratchpad"
                  key="key_scratchpad"/>
     <broadcaster id="devtoolsMenuBroadcaster_ResponsiveUI"
-                 label="&responsiveDesignTool.label;"
+                 label="&responsiveDesignMode.label;"
                  type="checkbox" autocheck="false"
                  command="Tools:ResponsiveUI"
                  key="key_responsiveUI"/>
@@ -226,6 +238,9 @@
     <broadcaster id="devtoolsMenuBroadcaster_GetMoreTools"
                  label="&getMoreDevtoolsCmd.label;"
                  oncommand="openUILinkIn(gPrefService.getCharPref('browser.getdevtools.url'), 'tab');"/>
+    <broadcaster id="devtoolsMenuBroadcaster_ServiceWorkers"
+                 label="&devtoolsServiceWorkers.label;"
+                 command="Tools:ServiceWorkers"/>
     <broadcaster id="devtoolsMenuBroadcaster_connect"
                  label="&devtoolsConnect.label;"
                  command="Tools:DevToolsConnect"/>
@@ -280,7 +295,7 @@
     <key id="key_browserToolbox" key="&browserToolboxCmd.commandkey;" command="Tools:BrowserToolbox" modifiers="accel,alt,shift"/>
     <key id="key_devToolbar" keycode="&devToolbar.keycode;" modifiers="shift"
          keytext="&devToolbar.keytext;" command="Tools:DevToolbarFocus"/>
-    <key id="key_responsiveUI" key="&responsiveDesignTool.commandkey;" command="Tools:ResponsiveUI"
+    <key id="key_responsiveUI" key="&responsiveDesignMode.commandkey;" command="Tools:ResponsiveUI"
 #ifdef XP_MACOSX
         modifiers="accel,alt"
 #else
@@ -401,8 +416,8 @@
     <key id="key_sanitize" command="Tools:Sanitize" keycode="VK_DELETE" modifiers="accel,shift"/>
 #ifdef XP_MACOSX
     <key id="key_sanitize_mac" command="Tools:Sanitize" keycode="VK_BACK" modifiers="accel,shift"/>
-#endif
-#ifdef XP_UNIX
+    <key id="key_quitApplication" key="&quitApplicationCmdUnix.key;" modifiers="accel" reserved="true"/>
+#elifdef XP_UNIX
     <key id="key_quitApplication" key="&quitApplicationCmdUnix.key;" command="cmd_quitApplication" modifiers="accel"/>
 #endif
 

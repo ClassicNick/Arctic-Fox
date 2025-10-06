@@ -49,7 +49,7 @@ nsSMILCompositor::AddAnimationFunction(nsSMILAnimationFunction* aFunc)
 }
 
 void
-nsSMILCompositor::ComposeAttribute()
+nsSMILCompositor::ComposeAttribute(bool& aMightHavePendingStyleUpdates)
 {
   if (!mKey.mElement)
     return;
@@ -65,6 +65,8 @@ nsSMILCompositor::ComposeAttribute()
     // No active animation functions. (We can still have a nsSMILCompositor in
     // that case if an animation function has *just* become inactive)
     smilAttr->ClearAnimValue();
+    // Removing the animation effect may require a style update.
+    aMightHavePendingStyleUpdates = true;
     return;
   }
 
@@ -88,6 +90,7 @@ nsSMILCompositor::ComposeAttribute()
   }
 
   // FIFTH: Compose animation functions
+  aMightHavePendingStyleUpdates = true;
   uint32_t length = mAnimationFunctions.Length();
   for (uint32_t i = firstFuncToCompose; i < length; ++i) {
     mAnimationFunctions[i]->ComposeResult(*smilAttr, sandwichResultValue);
@@ -124,9 +127,9 @@ nsISMILAttr*
 nsSMILCompositor::CreateSMILAttr()
 {
   if (mKey.mIsCSS) {
-    nsCSSProperty propId =
+    nsCSSPropertyID propId =
       nsCSSProps::LookupProperty(nsDependentAtomString(mKey.mAttributeName),
-                                 nsCSSProps::eEnabledForAllContent);
+                                 CSSEnabledState::eForAllContent);
     if (nsSMILCSSProperty::IsPropertyAnimatable(propId)) {
       return new nsSMILCSSProperty(propId, mKey.mElement.get());
     }

@@ -8,8 +8,8 @@
 #define mozilla_AnimValuesStyleRule_h
 
 #include "mozilla/StyleAnimationValue.h"
-#include "nsCSSProperty.h"
-#include "nsCSSPropertySet.h"
+#include "nsCSSPropertyID.h"
+#include "nsCSSPropertyIDSet.h"
 #include "nsIStyleRule.h"
 #include "nsISupportsImpl.h" // For NS_DECL_ISUPPORTS
 #include "nsRuleNode.h" // For nsCachedStyleData
@@ -32,45 +32,33 @@ public:
   // nsIStyleRule implementation
   void MapRuleInfoInto(nsRuleData* aRuleData) override;
   bool MightMapInheritedStyleData() override;
+  bool GetDiscretelyAnimatedCSSValue(nsCSSPropertyID aProperty,
+                                     nsCSSValue* aValue) override;
 #ifdef DEBUG
   void List(FILE* out = stdout, int32_t aIndent = 0) const override;
 #endif
 
-  void AddValue(nsCSSProperty aProperty, StyleAnimationValue &aStartValue)
+  void AddValue(nsCSSPropertyID aProperty, const StyleAnimationValue &aStartValue)
   {
-    PropertyValuePair v = { aProperty, aStartValue };
-    mPropertyValuePairs.AppendElement(v);
+    PropertyStyleAnimationValuePair pair = { aProperty, aStartValue };
+    mPropertyValuePairs.AppendElement(pair);
     mStyleBits |=
       nsCachedStyleData::GetBitForSID(nsCSSProps::kSIDTable[aProperty]);
   }
 
-  // Caller must fill in returned value.
-  StyleAnimationValue* AddEmptyValue(nsCSSProperty aProperty)
+  void AddValue(nsCSSPropertyID aProperty, StyleAnimationValue&& aStartValue)
   {
-    PropertyValuePair *p = mPropertyValuePairs.AppendElement();
-    p->mProperty = aProperty;
+    PropertyStyleAnimationValuePair* pair = mPropertyValuePairs.AppendElement();
+    pair->mProperty = aProperty;
+    pair->mValue = Move(aStartValue);
     mStyleBits |=
       nsCachedStyleData::GetBitForSID(nsCSSProps::kSIDTable[aProperty]);
-    return &p->mValue;
-  }
-
-  struct PropertyValuePair {
-    nsCSSProperty mProperty;
-    StyleAnimationValue mValue;
-  };
-
-  void AddPropertiesToSet(nsCSSPropertySet& aSet) const
-  {
-    for (size_t i = 0, i_end = mPropertyValuePairs.Length(); i < i_end; ++i) {
-      const PropertyValuePair &cv = mPropertyValuePairs[i];
-      aSet.AddProperty(cv.mProperty);
-    }
   }
 
 private:
   ~AnimValuesStyleRule() {}
 
-  InfallibleTArray<PropertyValuePair> mPropertyValuePairs;
+  InfallibleTArray<PropertyStyleAnimationValuePair> mPropertyValuePairs;
   uint32_t mStyleBits;
 };
 

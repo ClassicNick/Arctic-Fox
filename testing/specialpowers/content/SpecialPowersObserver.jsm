@@ -80,6 +80,7 @@ SpecialPowersObserver.prototype._loadFrameScript = function()
     this._messageManager.addMessageListener("SPWebAppService", this);
     this._messageManager.addMessageListener("SPObserverService", this);
     this._messageManager.addMessageListener("SPLoadChromeScript", this);
+    this._messageManager.addMessageListener("SPImportInMainProcess", this);
     this._messageManager.addMessageListener("SPChromeScriptMessage", this);
     this._messageManager.addMessageListener("SPQuotaManager", this);
     this._messageManager.addMessageListener("SPSetTestPluginEnabledState", this);
@@ -88,6 +89,7 @@ SpecialPowersObserver.prototype._loadFrameScript = function()
     this._messageManager.addMessageListener("SPUnloadExtension", this);
     this._messageManager.addMessageListener("SPExtensionMessage", this);
     this._messageManager.addMessageListener("SPCleanUpSTSData", this);
+    this._messageManager.addMessageListener("SPClearAppPrivateData", this);
 
     this._messageManager.loadFrameScript(CHILD_LOGGER_SCRIPT, true);
     this._messageManager.loadFrameScript(CHILD_SCRIPT_API, true);
@@ -151,6 +153,7 @@ SpecialPowersObserver.prototype.uninit = function()
     this._messageManager.removeMessageListener("SPWebAppService", this);
     this._messageManager.removeMessageListener("SPObserverService", this);
     this._messageManager.removeMessageListener("SPLoadChromeScript", this);
+    this._messageManager.removeMessageListener("SPImportInMainProcess", this);
     this._messageManager.removeMessageListener("SPChromeScriptMessage", this);
     this._messageManager.removeMessageListener("SPQuotaManager", this);
     this._messageManager.removeMessageListener("SPSetTestPluginEnabledState", this);
@@ -159,6 +162,7 @@ SpecialPowersObserver.prototype.uninit = function()
     this._messageManager.removeMessageListener("SPUnloadExtension", this);
     this._messageManager.removeMessageListener("SPExtensionMessage", this);
     this._messageManager.removeMessageListener("SPCleanUpSTSData", this);
+    this._messageManager.removeMessageListener("SPClearAppPrivateData", this);
 
     this._messageManager.removeDelayedFrameScript(CHILD_LOGGER_SCRIPT);
     this._messageManager.removeDelayedFrameScript(CHILD_SCRIPT_API);
@@ -249,22 +253,27 @@ SpecialPowersObserver.prototype.receiveMessage = function(aMessage) {
       break;
     case "SpecialPowers.CreateFiles":
       let filePaths = new Array;
-      if (!this.createdFiles) {
+      if (!this._createdFiles) {
         this._createdFiles = new Array;
       }
       let createdFiles = this._createdFiles;
       try {
         aMessage.data.forEach(function(request) {
-              let testFile = Services.dirsvc.get("ProfD", Ci.nsIFile);
-              testFile.append(request.name);
-              let outStream = Cc["@mozilla.org/network/file-output-stream;1"].createInstance(Ci.nsIFileOutputStream);
-              outStream.init(testFile, 0x02 | 0x08 | 0x20, // PR_WRONLY | PR_CREATE_FILE | PR_TRUNCATE
-                             0666, 0);
-              if (request.data) {
+          const filePerms = 0666;
+          let testFile = Services.dirsvc.get("ProfD", Ci.nsIFile);
+          if (request.name) {
+            testFile.append(request.name);
+          } else {
+            testFile.createUnique(Ci.nsIFile.NORMAL_FILE_TYPE, filePerms);
+          }
+          let outStream = Cc["@mozilla.org/network/file-output-stream;1"].createInstance(Ci.nsIFileOutputStream);
+          outStream.init(testFile, 0x02 | 0x08 | 0x20, // PR_WRONLY | PR_CREATE_FILE | PR_TRUNCATE
+                         filePerms, 0);
+          if (request.data) {
             outStream.write(request.data, request.data.length);
             outStream.close();
           }
-          filePaths.push(new File(testFile.path));
+          filePaths.push(new File(testFile.path, request.options));
           createdFiles.push(testFile);
         });
         aMessage.target

@@ -10,10 +10,10 @@
 #include "jsapi.h"
 #include "jsatom.h"
 
+#include "builtin/SelfHostingDefines.h"
 #include "gc/Zone.h"
-
 #include "js/GCVector.h"
-
+#include "js/Id.h"
 #include "vm/NativeObject.h"
 #include "vm/ProxyObject.h"
 
@@ -117,11 +117,11 @@ class IndirectBindingMap
     struct Binding
     {
         Binding(ModuleEnvironmentObject* environment, Shape* shape);
-        RelocatablePtr<ModuleEnvironmentObject*> environment;
-        RelocatablePtrShape shape;
+        HeapPtr<ModuleEnvironmentObject*> environment;
+        HeapPtr<Shape*> shape;
     };
 
-    typedef HashMap<jsid, Binding, JsidHasher, ZoneAllocPolicy> Map;
+    typedef HashMap<jsid, Binding, DefaultHasher<jsid>, ZoneAllocPolicy> Map;
 
     Map map_;
 };
@@ -164,6 +164,8 @@ class ModuleNamespaceObject : public ProxyObject
                           MutableHandleObject protop) const override;
         bool setPrototype(JSContext* cx, HandleObject proxy, HandleObject proto,
                           ObjectOpResult& result) const override;
+        bool getPrototypeIfOrdinary(JSContext* cx, HandleObject proxy, bool* isOrdinary,
+                                    MutableHandleObject protop) const override;
         bool setImmutablePrototype(JSContext* cx, HandleObject proxy,
                                    bool* succeeded) const override;
 
@@ -191,11 +193,14 @@ struct FunctionDeclaration
     FunctionDeclaration(HandleAtom name, HandleFunction fun);
     void trace(JSTracer* trc);
 
-    RelocatablePtrAtom name;
-    RelocatablePtrFunction fun;
+    HeapPtr<JSAtom*> name;
+    HeapPtr<JSFunction*> fun;
 };
 
 using FunctionDeclarationVector = GCVector<FunctionDeclaration, 0, ZoneAllocPolicy>;
+
+// Possible values for ModuleState are defined in SelfHostingDefines.h.
+using ModuleState = int32_t;
 
 class ModuleObject : public NativeObject
 {
@@ -203,11 +208,11 @@ class ModuleObject : public NativeObject
     enum
     {
         ScriptSlot = 0,
-        StaticScopeSlot,
         InitialEnvironmentSlot,
         EnvironmentSlot,
         NamespaceSlot,
-        EvaluatedSlot,
+        StateSlot,
+        HostDefinedSlot,
         RequestedModulesSlot,
         ImportEntriesSlot,
         LocalExportEntriesSlot,
@@ -220,11 +225,14 @@ class ModuleObject : public NativeObject
         SlotCount
     };
 
+    static_assert(EnvironmentSlot == MODULE_OBJECT_ENVIRONMENT_SLOT,
+                  "EnvironmentSlot must match self-hosting define");
+
     static const Class class_;
 
     static bool isInstance(HandleValue value);
 
-    static ModuleObject* create(ExclusiveContext* cx, HandleObject enclosingStaticScope);
+    static ModuleObject* create(ExclusiveContext* cx);
     void init(HandleScript script);
     void setInitialEnvironment(Handle<ModuleEnvironmentObject*> initialEnvironment);
     void initImportExportData(HandleArrayObject requestedModules,
@@ -232,16 +240,19 @@ class ModuleObject : public NativeObject
                               HandleArrayObject localExportEntries,
                               HandleArrayObject indiretExportEntries,
                               HandleArrayObject starExportEntries);
-    static bool FreezeArrayProperties(JSContext* cx, HandleModuleObject self);
-    static void AssertArrayPropertiesFrozen(JSContext* cx, HandleModuleObject self);
-    void fixScopesAfterCompartmentMerge(JSContext* cx);
+    static bool Freeze(JSContext* cx, HandleModuleObject self);
+#ifdef DEBUG
+    static bool IsFrozen(JSContext* cx, HandleModuleObject self);
+#endif
+    void fixEnvironmentsAfterCompartmentMerge(JSContext* cx);
 
     JSScript* script() const;
-    JSObject* enclosingStaticScope() const;
+    Scope* enclosingScope() const;
     ModuleEnvironmentObject& initialEnvironment() const;
     ModuleEnvironmentObject* environment() const;
     ModuleNamespaceObject* namespace_();
-    bool evaluated() const;
+    ModuleState state() const;
+    Value hostDefinedField() const;
     ArrayObject& requestedModules() const;
     ArrayObject& importEntries() const;
     ArrayObject& localExportEntries() const;
@@ -251,18 +262,32 @@ class ModuleObject : public NativeObject
     JSObject* namespaceExports();
     IndirectBindingMap* namespaceBindings();
 
+    static bool DeclarationInstantiation(JSContext* cx, HandleModuleObject self);
+    static bool Evaluation(JSContext* cx, HandleModuleObject self);
+
+    void setHostDefinedField(JS::Value value);
+
+    // For intrinsic_CreateModuleEnvironment.
     void createEnvironment();
 
+    // For BytecodeEmitter.
     bool noteFunctionDeclaration(ExclusiveContext* cx, HandleAtom name, HandleFunction fun);
+
+    // For intrinsic_InstantiateModuleFunctionDeclarations.
     static bool instantiateFunctionDeclarations(JSContext* cx, HandleModuleObject self);
 
-    void setEvaluated();
+    void setState(ModuleState newState);
+
+    // For intrinsic_EvaluateModule.
     static bool evaluate(JSContext* cx, HandleModuleObject self, MutableHandleValue rval);
 
+    // For intrinsic_NewModuleNamespace.
     static ModuleNamespaceObject* createNamespace(JSContext* cx, HandleModuleObject self,
                                                   HandleObject exports);
 
   private:
+    static const ClassOps classOps_;
+
     static void trace(JSTracer* trc, JSObject* obj);
     static void finalize(js::FreeOp* fop, JSObject* obj);
 
@@ -320,8 +345,6 @@ class MOZ_STACK_CLASS ModuleBuilder
     template <typename T>
     ArrayObject* createArray(const GCVector<T>& vector);
 };
-
-bool InitModuleClasses(JSContext* cx, HandleObject obj);
 
 } // namespace js
 

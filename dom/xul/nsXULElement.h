@@ -29,7 +29,6 @@
 #include "nsLayoutCID.h"
 #include "nsAttrAndChildArray.h"
 #include "nsGkAtoms.h"
-#include "nsAutoPtr.h"
 #include "nsStyledElement.h"
 #include "nsIFrameLoader.h"
 #include "nsFrameLoader.h"
@@ -54,6 +53,7 @@ class StyleRule;
 } // namespace css
 namespace dom {
 class BoxObject;
+class HTMLIFrameElement;
 } // namespace dom
 } // namespace mozilla
 
@@ -341,6 +341,8 @@ class nsXULElement final : public nsStyledElement,
                            public nsIDOMXULElement
 {
 public:
+    using Element::Blur;
+    using Element::Focus;
     explicit nsXULElement(already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo);
 
     static nsresult
@@ -409,10 +411,9 @@ public:
     virtual nsresult Clone(mozilla::dom::NodeInfo *aNodeInfo, nsINode **aResult) const override;
     virtual mozilla::EventStates IntrinsicState() const override;
 
-    nsresult GetFrameLoader(nsIFrameLoader** aFrameLoader);
+    nsresult GetFrameLoaderXPCOM(nsIFrameLoader** aFrameLoader);
     nsresult GetParentApplication(mozIApplication** aApplication);
     nsresult SetIsPrerendered();
-    nsresult SwapFrameLoaders(nsIFrameLoaderOwner* aOtherOwner);
 
     virtual void RecompileScriptEventListeners() override;
 
@@ -562,8 +563,6 @@ public:
     already_AddRefed<nsIRDFResource> GetResource(mozilla::ErrorResult& rv);
     nsIControllers* GetControllers(mozilla::ErrorResult& rv);
     already_AddRefed<mozilla::dom::BoxObject> GetBoxObject(mozilla::ErrorResult& rv);
-    void Focus(mozilla::ErrorResult& rv);
-    void Blur(mozilla::ErrorResult& rv);
     void Click(mozilla::ErrorResult& rv);
     // The XPCOM DoCommand never fails, so it's OK for us.
     already_AddRefed<nsINodeList>
@@ -576,7 +575,12 @@ public:
                                mozilla::ErrorResult& rv);
     // Style() inherited from nsStyledElement
     already_AddRefed<nsFrameLoader> GetFrameLoader();
-    void SwapFrameLoaders(nsXULElement& aOtherOwner, mozilla::ErrorResult& rv);
+    void SwapFrameLoaders(mozilla::dom::HTMLIFrameElement& aOtherLoaderOwner,
+                          mozilla::ErrorResult& rv);
+    void SwapFrameLoaders(nsXULElement& aOtherLoaderOwner,
+                          mozilla::ErrorResult& rv);
+    void SwapFrameLoaders(RefPtr<nsFrameLoader>& aOtherLoader,
+                          mozilla::ErrorResult& rv);
 
     nsINode* GetScopeChainParent() const override
     {
@@ -646,7 +650,7 @@ protected:
     virtual mozilla::EventListenerManager*
       GetEventListenerManagerForAttr(nsIAtom* aAttrName,
                                      bool* aDefer) override;
-  
+
     /**
      * Add a listener for the specified attribute, if appropriate.
      */
@@ -673,7 +677,7 @@ protected:
     // appropriate value.
     nsIControllers *Controllers() {
       nsDOMSlots* slots = GetExistingDOMSlots();
-      return slots ? slots->mControllers : nullptr; 
+      return slots ? slots->mControllers : nullptr;
     }
 
     void UnregisterAccessKey(const nsAString& aOldValue);

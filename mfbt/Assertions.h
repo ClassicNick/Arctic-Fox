@@ -17,6 +17,7 @@
 #include "mozilla/Compiler.h"
 #include "mozilla/Likely.h"
 #include "mozilla/MacroArgs.h"
+#include "mozilla/StaticAnalysisFunctions.h"
 #ifdef MOZ_DUMP_ASSERTION_STACK
 #include "nsTraceRefcnt.h"
 #endif
@@ -33,7 +34,7 @@ namespace CrashReporter {
 void AnnotateMozCrashReason(const char* aReason);
 } // namespace CrashReporter
 
-#  define MOZ_CRASH_ANNOTATE(...) CrashReporter::AnnotateMozCrashReason("" __VA_ARGS__)
+#  define MOZ_CRASH_ANNOTATE(...) CrashReporter::AnnotateMozCrashReason(__VA_ARGS__)
 #else
 #  define MOZ_CRASH_ANNOTATE(...) do { /* nothing */ } while (0)
 #endif
@@ -158,7 +159,7 @@ MOZ_ReportAssertionFailure(const char* aStr, const char* aFilename, int aLine)
                       aStr, aFilename, aLine);
 #else
   fprintf(stderr, "Assertion failure: %s, at %s:%d\n", aStr, aFilename, aLine);
-#if defined (MOZ_DUMP_ASSERTION_STACK) && !defined(MOZILLA_XPCOMRT_API)
+#if defined (MOZ_DUMP_ASSERTION_STACK)
   nsTraceRefcnt::WalkTheStack(stderr);
 #endif
   fflush(stderr);
@@ -174,7 +175,7 @@ MOZ_ReportCrash(const char* aStr, const char* aFilename, int aLine)
                       "Hit MOZ_CRASH(%s) at %s:%d\n", aStr, aFilename, aLine);
 #else
   fprintf(stderr, "Hit MOZ_CRASH(%s) at %s:%d\n", aStr, aFilename, aLine);
-#if defined(MOZ_DUMP_ASSERTION_STACK) && !defined(MOZILLA_XPCOMRT_API)
+#if defined(MOZ_DUMP_ASSERTION_STACK)
   nsTraceRefcnt::WalkTheStack(stderr);
 #endif
   fflush(stderr);
@@ -368,7 +369,7 @@ struct AssertionConditionType
 #define MOZ_ASSERT_HELPER1(expr) \
   do { \
     MOZ_VALIDATE_ASSERT_CONDITION_TYPE(expr); \
-    if (MOZ_UNLIKELY(!(expr))) { \
+    if (MOZ_UNLIKELY(!MOZ_CHECK_ASSERT_ASSIGNMENT(expr))) { \
       MOZ_ReportAssertionFailure(#expr, __FILE__, __LINE__); \
       MOZ_CRASH_ANNOTATE("MOZ_RELEASE_ASSERT(" #expr ")"); \
       MOZ_REALLY_CRASH(); \
@@ -378,7 +379,7 @@ struct AssertionConditionType
 #define MOZ_ASSERT_HELPER2(expr, explain) \
   do { \
     MOZ_VALIDATE_ASSERT_CONDITION_TYPE(expr); \
-    if (MOZ_UNLIKELY(!(expr))) { \
+    if (MOZ_UNLIKELY(!MOZ_CHECK_ASSERT_ASSIGNMENT(expr))) { \
       MOZ_ReportAssertionFailure(#expr " (" explain ")", __FILE__, __LINE__); \
       MOZ_CRASH_ANNOTATE("MOZ_RELEASE_ASSERT(" #expr ") (" explain ")"); \
       MOZ_REALLY_CRASH(); \
@@ -542,21 +543,35 @@ struct AssertionConditionType
  * using MOZ_ASSERT.
  */
 #ifdef DEBUG
-#  define MOZ_ALWAYS_TRUE(expr)      MOZ_ASSERT((expr))
-#  define MOZ_ALWAYS_FALSE(expr)     MOZ_ASSERT(!(expr))
+#  define MOZ_ALWAYS_TRUE(expr) \
+     do { \
+       if ((expr)) { \
+         /* Do nothing. */ \
+       } else { \
+         MOZ_ASSERT(false, #expr); \
+       } \
+     } while (0)
+#  define MOZ_ALWAYS_FALSE(expr) \
+     do { \
+       if ((expr)) { \
+         MOZ_ASSERT(false, #expr); \
+       } else { \
+         /* Do nothing. */ \
+       } \
+     } while (0)
 #else
 #  define MOZ_ALWAYS_TRUE(expr) \
-  do { \
-    if ( ( expr ) ) {                       \
-      /* Silence MOZ_WARN_UNUSED_RESULT. */ \
-    } \
-  } while (0)
+     do { \
+       if ((expr)) { \
+          /* Silence MOZ_MUST_USE. */ \
+       } \
+     } while (0)
 #  define MOZ_ALWAYS_FALSE(expr) \
-  do { \
-    if ( ( expr ) ) {                       \
-      /* Silence MOZ_WARN_UNUSED_RESULT. */ \
-    } \
-  } while (0)
+     do { \
+       if ((expr)) { \
+         /* Silence MOZ_MUST_USE. */ \
+       } \
+     } while (0)
 #endif
 
 #undef MOZ_DUMP_ASSERTION_STACK

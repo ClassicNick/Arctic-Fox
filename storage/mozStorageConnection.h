@@ -320,7 +320,9 @@ private:
    * Tracks whether the async thread has been initialized and Shutdown() has
    * not yet been invoked on it.
    */
-  DebugOnly<bool> mAsyncExecutionThreadIsAlive;
+#ifdef DEBUG
+  bool mAsyncExecutionThreadIsAlive;
+#endif
 
   /**
    * Set to true just prior to calling sqlite3_close on the
@@ -371,7 +373,7 @@ private:
  * A Runnable designed to call a mozIStorageCompletionCallback on
  * the appropriate thread.
  */
-class CallbackComplete final : public nsRunnable
+class CallbackComplete final : public Runnable
 {
 public:
   /**
@@ -389,7 +391,7 @@ public:
   {
   }
 
-  NS_IMETHOD Run() {
+  NS_IMETHOD Run() override {
     MOZ_ASSERT(NS_IsMainThread());
     nsresult rv = mCallback->Complete(mStatus, mValue);
 
@@ -410,5 +412,15 @@ private:
 
 } // namespace storage
 } // namespace mozilla
+
+/**
+ * Casting Connection to nsISupports is ambiguous.
+ * This method handles that.
+ */
+inline nsISupports*
+ToSupports(mozilla::storage::Connection* p)
+{
+  return NS_ISUPPORTS_CAST(mozIStorageAsyncConnection*, p);
+}
 
 #endif // mozilla_storage_Connection_h

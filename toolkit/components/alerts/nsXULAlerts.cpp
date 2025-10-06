@@ -10,7 +10,7 @@
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/LookAndFeel.h"
 #include "mozilla/dom/Notification.h"
-#include "mozilla/unused.h"
+#include "mozilla/Unused.h"
 #include "nsIServiceManager.h"
 #include "nsISupportsArray.h"
 #include "nsISupportsPrimitives.h"
@@ -26,7 +26,15 @@ namespace {
 StaticRefPtr<nsXULAlerts> gXULAlerts;
 } // anonymous namespace
 
-NS_IMPL_ISUPPORTS(nsXULAlertObserver, nsIObserver)
+NS_IMPL_CYCLE_COLLECTION(nsXULAlertObserver, mAlertWindow)
+
+NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(nsXULAlertObserver)
+  NS_INTERFACE_MAP_ENTRY(nsIObserver)
+  NS_INTERFACE_MAP_ENTRY(nsISupports)
+NS_INTERFACE_MAP_END
+
+NS_IMPL_CYCLE_COLLECTING_ADDREF(nsXULAlertObserver)
+NS_IMPL_CYCLE_COLLECTING_RELEASE(nsXULAlertObserver)
 
 NS_IMETHODIMP
 nsXULAlertObserver::Observe(nsISupports* aSubject, const char* aTopic,
@@ -48,7 +56,9 @@ nsXULAlertObserver::Observe(nsISupports* aSubject, const char* aTopic,
   return rv;
 }
 
-NS_IMPL_ISUPPORTS(nsXULAlerts, nsIAlertsService, nsIAlertsDoNotDisturb)
+// We don't cycle collect nsXULAlerts since gXULAlerts will keep the instance
+// alive till shutdown anyway.
+NS_IMPL_ISUPPORTS(nsXULAlerts, nsIAlertsService, nsIAlertsDoNotDisturb, nsIAlertsIconURI)
 
 /* static */ already_AddRefed<nsXULAlerts>
 nsXULAlerts::GetInstance()
@@ -81,8 +91,24 @@ nsXULAlerts::ShowAlertNotification(const nsAString& aImageUrl, const nsAString& 
 }
 
 NS_IMETHODIMP
+nsXULAlerts::ShowPersistentNotification(const nsAString& aPersistentData,
+                                        nsIAlertNotification* aAlert,
+                                        nsIObserver* aAlertListener)
+{
+  return ShowAlert(aAlert, aAlertListener);
+}
+
+NS_IMETHODIMP
 nsXULAlerts::ShowAlert(nsIAlertNotification* aAlert,
                        nsIObserver* aAlertListener)
+{
+  return ShowAlertWithIconURI(aAlert, aAlertListener, nullptr);
+}
+
+NS_IMETHODIMP
+nsXULAlerts::ShowAlertWithIconURI(nsIAlertNotification* aAlert,
+                                  nsIObserver* aAlertListener,
+                                  nsIURI* aIconURI)
 {
   bool inPrivateBrowsing;
   nsresult rv = aAlert->GetInPrivateBrowsing(&inPrivateBrowsing);
@@ -238,6 +264,17 @@ nsXULAlerts::ShowAlert(nsIAlertNotification* aAlert,
   NS_ENSURE_TRUE(scriptableAlertSource, NS_ERROR_FAILURE);
   scriptableAlertSource->SetData(source);
   rv = argsArray->AppendElement(scriptableAlertSource);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  nsCOMPtr<nsISupportsCString> scriptableIconURL (do_CreateInstance(NS_SUPPORTS_CSTRING_CONTRACTID));
+  NS_ENSURE_TRUE(scriptableIconURL, NS_ERROR_FAILURE);
+  if (aIconURI) {
+    nsAutoCString iconURL;
+    rv = aIconURI->GetSpec(iconURL);
+    NS_ENSURE_SUCCESS(rv, rv);
+    scriptableIconURL->SetData(iconURL);
+  }
+  rv = argsArray->AppendElement(scriptableIconURL);
   NS_ENSURE_SUCCESS(rv, rv);
 
   nsCOMPtr<mozIDOMWindowProxy> newWindow;

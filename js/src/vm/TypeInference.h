@@ -145,8 +145,7 @@ enum : uint32_t {
     /* Whether any objects have been iterated over. */
     OBJECT_FLAG_ITERATED              = 0x00080000,
 
-    /* For a global object, whether flags were set on the RegExpStatics. */
-    OBJECT_FLAG_REGEXP_FLAGS_SET      = 0x00100000,
+    /* 0x00100000 is not used. */
 
     /*
      * For the function on a run-once script, whether the function has actually
@@ -267,7 +266,7 @@ class TypeSet
         void ensureTrackedProperty(JSContext* cx, jsid id);
 
         ObjectGroup* maybeGroup();
-    };
+    } JS_HAZ_GC_POINTER;
 
     // Information about a single concrete type. We pack this into one word,
     // where small values are particular primitive or other singleton types and
@@ -356,7 +355,7 @@ class TypeSet
 
         bool operator == (Type o) const { return data == o.data; }
         bool operator != (Type o) const { return data != o.data; }
-    };
+    } JS_HAZ_GC_POINTER;
 
     static inline Type UndefinedType() { return Type(JSVAL_TYPE_UNDEFINED); }
     static inline Type NullType()      { return Type(JSVAL_TYPE_NULL); }
@@ -535,7 +534,7 @@ class TypeSet
     static bool IsTypeMarked(Type* v);
     static bool IsTypeAllocatedDuringIncremental(Type v);
     static bool IsTypeAboutToBeFinalized(Type* v);
-};
+} JS_HAZ_GC_POINTER;
 
 /*
  * A constraint which listens to additions to a type set and propagates those
@@ -663,6 +662,12 @@ class TemporaryTypeSet : public TypeSet
         this->objectSet = objectSet;
     }
 
+    TemporaryTypeSet(LifoAlloc* alloc, jit::MIRType type)
+      : TemporaryTypeSet(alloc, PrimitiveType(ValueTypeFromMIRType(type)))
+    {
+        MOZ_ASSERT(type != jit::MIRType::Value);
+    }
+
     /*
      * Constraints for JIT compilation.
      *
@@ -675,7 +680,7 @@ class TemporaryTypeSet : public TypeSet
     /* Get any type tag which all values in this set must have. */
     jit::MIRType getKnownMIRType();
 
-    bool isMagicArguments() { return getKnownMIRType() == jit::MIRType_MagicOptimizedArguments; }
+    bool isMagicArguments() { return getKnownMIRType() == jit::MIRType::MagicOptimizedArguments; }
 
     /* Whether this value may be an object. */
     bool maybeObject() { return unknownObject() || baseObjectCount() > 0; }
@@ -823,7 +828,7 @@ class PreliminaryObjectArray
 
 class PreliminaryObjectArrayWithTemplate : public PreliminaryObjectArray
 {
-    RelocatablePtrShape shape_;
+    HeapPtr<Shape*> shape_;
 
   public:
     explicit PreliminaryObjectArrayWithTemplate(Shape* shape)
@@ -900,7 +905,7 @@ class TypeNewScript
 
   private:
     // Scripted function which this information was computed for.
-    RelocatablePtrFunction function_;
+    HeapPtr<JSFunction*> function_;
 
     // Any preliminary objects with the type. The analyses are not performed
     // until this array is cleared.
@@ -912,7 +917,7 @@ class TypeNewScript
     // allocation kind to use. This is null if the new objects have an unboxed
     // layout, in which case the UnboxedLayout provides the initial structure
     // of the object.
-    RelocatablePtrPlainObject templateObject_;
+    HeapPtr<PlainObject*> templateObject_;
 
     // Order in which definite properties become initialized. We need this in
     // case the definite properties are invalidated (such as by adding a setter
@@ -929,11 +934,11 @@ class TypeNewScript
     // shape contains all such additional properties (plus the definite
     // properties). When an object of this group acquires this shape, it is
     // fully initialized and its group can be changed to initializedGroup.
-    RelocatablePtrShape initializedShape_;
+    HeapPtr<Shape*> initializedShape_;
 
     // Group with definite properties set for all properties found by
     // both the definite and acquired properties analyses.
-    RelocatablePtrObjectGroup initializedGroup_;
+    HeapPtr<ObjectGroup*> initializedGroup_;
 
   public:
     TypeNewScript() { mozilla::PodZero(this); }
@@ -1305,9 +1310,6 @@ inline void InferSpew(SpewChannel which, const char* fmt, ...) {}
 
 #endif
 
-/* Print a warning, dump state and abort the program. */
-MOZ_NORETURN MOZ_COLD void TypeFailure(JSContext* cx, const char* fmt, ...);
-
 // Prints type information for a context if spew is enabled or force is set.
 void
 PrintTypes(JSContext* cx, JSCompartment* comp, bool force);
@@ -1320,14 +1322,17 @@ namespace JS {
 namespace ubi {
 
 template<>
-struct Concrete<js::ObjectGroup> : TracerConcrete<js::ObjectGroup> {
-    Size size(mozilla::MallocSizeOf mallocSizeOf) const override;
-
+class Concrete<js::ObjectGroup> : TracerConcrete<js::ObjectGroup> {
   protected:
     explicit Concrete(js::ObjectGroup *ptr) : TracerConcrete<js::ObjectGroup>(ptr) { }
 
   public:
     static void construct(void *storage, js::ObjectGroup *ptr) { new (storage) Concrete(ptr); }
+
+    Size size(mozilla::MallocSizeOf mallocSizeOf) const override;
+
+    const char16_t* typeName() const override { return concreteTypeName; }
+    static const char16_t concreteTypeName[];
 };
 
 } // namespace ubi

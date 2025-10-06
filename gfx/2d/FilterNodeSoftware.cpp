@@ -1042,7 +1042,7 @@ FilterNodeBlendSoftware::GetOutputRectInRect(const IntRect& aRect)
 }
 
 FilterNodeTransformSoftware::FilterNodeTransformSoftware()
- : mFilter(Filter::GOOD)
+  : mSamplingFilter(SamplingFilter::GOOD)
 {}
 
 int32_t
@@ -1058,7 +1058,7 @@ void
 FilterNodeTransformSoftware::SetAttribute(uint32_t aIndex, uint32_t aFilter)
 {
   MOZ_ASSERT(aIndex == ATT_TRANSFORM_FILTER);
-  mFilter = static_cast<Filter>(aFilter);
+  mSamplingFilter = static_cast<SamplingFilter>(aFilter);
   Invalidate();
 }
 
@@ -1135,7 +1135,7 @@ FilterNodeTransformSoftware::Render(const IntRect& aRect)
 
   Rect r(0, 0, srcRect.width, srcRect.height);
   dt->SetTransform(transform);
-  dt->DrawSurface(input, r, r, DrawSurfaceOptions(mFilter));
+  dt->DrawSurface(input, r, r, DrawSurfaceOptions(mSamplingFilter));
 
   dt->Flush();
   surf->Unmap();
@@ -1489,6 +1489,7 @@ FilterNodeFloodSoftware::Render(const IntRect& aRect)
       for (int32_t x = 0; x < aRect.width; x++) {
         *((uint32_t*)targetData + x) = color;
       }
+      PodZero(&targetData[aRect.width * 4], stride - aRect.width * 4);
       targetData += stride;
     }
   } else if (format == SurfaceFormat::A8) {
@@ -1497,6 +1498,7 @@ FilterNodeFloodSoftware::Render(const IntRect& aRect)
       for (int32_t x = 0; x < aRect.width; x++) {
         targetData[x] = alpha;
       }
+      PodZero(&targetData[aRect.width], stride - aRect.width);
       targetData += stride;
     }
   } else {
@@ -1713,6 +1715,8 @@ static void TransferComponents(DataSourceSurface* aInput,
   uint8_t* targetData = targetMap.GetData();
   int32_t targetStride = targetMap.GetStride();
 
+  MOZ_ASSERT(sourceStride <= targetStride, "target smaller than source");
+
   for (int32_t y = 0; y < size.height; y++) {
     for (int32_t x = 0; x < size.width; x++) {
       uint32_t sourceIndex = y * sourceStride + x * BytesPerPixel;
@@ -1721,6 +1725,10 @@ static void TransferComponents(DataSourceSurface* aInput,
         targetData[targetIndex + i] = aLookupTables[i][sourceData[sourceIndex + i]];
       }
     }
+
+    // Zero padding to keep valgrind happy.
+    PodZero(&targetData[y * targetStride + size.width * BytesPerPixel],
+            targetStride - size.width * BytesPerPixel);
   }
 }
 
@@ -2425,7 +2433,7 @@ FilterNodeConvolveMatrixSoftware::DoRender(const IntRect& aRect,
       mKernelMatrix.size() != uint32_t(mKernelSize.width * mKernelSize.height) ||
       !IntRect(IntPoint(0, 0), mKernelSize).Contains(mTarget) ||
       mDivisor == 0) {
-    return Factory::CreateDataSourceSurface(aRect.Size(), SurfaceFormat::B8G8R8A8);
+    return Factory::CreateDataSourceSurface(aRect.Size(), SurfaceFormat::B8G8R8A8, true);
   }
 
   IntRect srcRect = InflatedSourceRect(aRect);
@@ -2639,6 +2647,9 @@ FilterNodeDisplacementMapSoftware::Render(const IntRect& aRect)
       *(uint32_t*)(targetData + targIndex) =
         ColorAtPoint(sourceData, sourceStride, sourceX, sourceY);
     }
+
+    // Keep valgrind happy.
+    PodZero(&targetData[y * targetStride + 4 * aRect.width], targetStride - 4 * aRect.width);
   }
 
   return target.forget();
@@ -3538,6 +3549,9 @@ FilterNodeLightingSoftware<LightType, LightingType>::DoRender(const IntRect& aRe
 
       *(uint32_t*)(targetData + targetIndex) = mLighting.LightPixel(normal, rayDir, color);
     }
+
+    // Zero padding to keep valgrind happy.
+    PodZero(&targetData[y * targetStride + 4 * size.width], targetStride - 4 * size.width);
   }
 
   return target.forget();
@@ -3586,6 +3600,7 @@ DiffuseLightingSoftware::LightPixel(const Point3D &aNormal,
 SpecularLightingSoftware::SpecularLightingSoftware()
  : mSpecularConstant(0)
  , mSpecularExponent(0)
+ , mSpecularConstantInt(0)
 {
 }
 

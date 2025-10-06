@@ -308,7 +308,7 @@ imgRequest::CancelAndAbort(nsresult aStatus)
   }
 }
 
-class imgRequestMainThreadCancel : public nsRunnable
+class imgRequestMainThreadCancel : public Runnable
 {
 public:
   imgRequestMainThreadCancel(imgRequest* aImgRequest, nsresult aStatus)
@@ -319,7 +319,7 @@ public:
     MOZ_ASSERT(aImgRequest);
   }
 
-  NS_IMETHOD Run()
+  NS_IMETHOD Run() override
   {
     MOZ_ASSERT(NS_IsMainThread(), "I should be running on the main thread!");
     mImgRequest->ContinueCancel(mStatus);
@@ -358,7 +358,7 @@ imgRequest::ContinueCancel(nsresult aStatus)
   }
 }
 
-class imgRequestMainThreadEvict : public nsRunnable
+class imgRequestMainThreadEvict : public Runnable
 {
 public:
   explicit imgRequestMainThreadEvict(imgRequest* aImgRequest)
@@ -368,7 +368,7 @@ public:
     MOZ_ASSERT(aImgRequest);
   }
 
-  NS_IMETHOD Run()
+  NS_IMETHOD Run() override
   {
     MOZ_ASSERT(NS_IsMainThread(), "I should be running on the main thread!");
     mImgRequest->ContinueEvict();
@@ -876,7 +876,7 @@ struct mimetype_closure
 };
 
 /* prototype for these defined below */
-static NS_METHOD
+static nsresult
 sniff_mimetype_callback(nsIInputStream* in, void* closure,
                         const char* fromRawSegment, uint32_t toOffset,
                         uint32_t count, uint32_t* writeCount);
@@ -992,7 +992,7 @@ PrepareForNewPart(nsIRequest* aRequest, nsIInputStream* aInStr, uint32_t aCount,
   return result;
 }
 
-class FinishPreparingForNewPartRunnable final : public nsRunnable
+class FinishPreparingForNewPartRunnable final : public Runnable
 {
 public:
   FinishPreparingForNewPartRunnable(imgRequest* aImgRequest,
@@ -1139,7 +1139,7 @@ imgRequest::SetProperties(const nsACString& aContentType,
   }
 }
 
-static NS_METHOD
+static nsresult
 sniff_mimetype_callback(nsIInputStream* in,
                         void* data,
                         const char* fromRawSegment,

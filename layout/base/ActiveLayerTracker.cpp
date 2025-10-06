@@ -20,6 +20,7 @@
 #include "nsStyleTransformMatrix.h"
 #include "nsTransitionManager.h"
 #include "nsDisplayList.h"
+#include "nsDOMCSSDeclaration.h"
 
 namespace mozilla {
 
@@ -65,12 +66,12 @@ public:
   }
   ~LayerActivity();
   nsExpirationState* GetExpirationState() { return &mState; }
-  uint8_t& RestyleCountForProperty(nsCSSProperty aProperty)
+  uint8_t& RestyleCountForProperty(nsCSSPropertyID aProperty)
   {
     return mRestyleCounts[GetActivityIndexForProperty(aProperty)];
   }
 
-  static ActivityIndex GetActivityIndexForProperty(nsCSSProperty aProperty)
+  static ActivityIndex GetActivityIndexForProperty(nsCSSPropertyID aProperty)
   {
     switch (aProperty) {
     case eCSSProperty_opacity: return ACTIVITY_OPACITY;
@@ -84,6 +85,8 @@ public:
     case eCSSProperty_margin_right: return ACTIVITY_MARGIN_RIGHT;
     case eCSSProperty_margin_bottom: return ACTIVITY_MARGIN_BOTTOM;
     case eCSSProperty_background_position: return ACTIVITY_BACKGROUND_POSITION;
+    case eCSSProperty_background_position_x: return ACTIVITY_BACKGROUND_POSITION;
+    case eCSSProperty_background_position_y: return ACTIVITY_BACKGROUND_POSITION;
     default: MOZ_ASSERT(false); return ACTIVITY_OPACITY;
     }
   }
@@ -289,7 +292,7 @@ IncrementScaleRestyleCountIfNeeded(nsIFrame* aFrame, LayerActivity* aActivity)
 }
 
 /* static */ void
-ActiveLayerTracker::NotifyRestyle(nsIFrame* aFrame, nsCSSProperty aProperty)
+ActiveLayerTracker::NotifyRestyle(nsIFrame* aFrame, nsCSSPropertyID aProperty)
 {
   LayerActivity* layerActivity = GetLayerActivityForUpdate(aFrame);
   uint8_t& mutationCount = layerActivity->RestyleCountForProperty(aProperty);
@@ -311,16 +314,25 @@ ActiveLayerTracker::NotifyOffsetRestyle(nsIFrame* aFrame)
 }
 
 /* static */ void
-ActiveLayerTracker::NotifyAnimated(nsIFrame* aFrame, nsCSSProperty aProperty)
+ActiveLayerTracker::NotifyAnimated(nsIFrame* aFrame,
+                                   nsCSSPropertyID aProperty,
+                                   const nsAString& aNewValue,
+                                   nsDOMCSSDeclaration* aDOMCSSDecl)
 {
   LayerActivity* layerActivity = GetLayerActivityForUpdate(aFrame);
   uint8_t& mutationCount = layerActivity->RestyleCountForProperty(aProperty);
-  // We know this is animated, so just hack the mutation count.
-  mutationCount = 0xFF;
+  if (mutationCount != 0xFF) {
+    nsAutoString oldValue;
+    aDOMCSSDecl->GetPropertyValue(aProperty, oldValue);
+    if (aNewValue != oldValue) {
+      // We know this is animated, so just hack the mutation count.
+      mutationCount = 0xFF;
+    }
+  }
 }
 
 /* static */ void
-ActiveLayerTracker::NotifyAnimatedFromScrollHandler(nsIFrame* aFrame, nsCSSProperty aProperty,
+ActiveLayerTracker::NotifyAnimatedFromScrollHandler(nsIFrame* aFrame, nsCSSPropertyID aProperty,
                                                     nsIFrame* aScrollFrame)
 {
   if (aFrame->PresContext() != aScrollFrame->PresContext()) {
@@ -354,10 +366,12 @@ IsPresContextInScriptAnimationCallback(nsPresContext* aPresContext)
 
 /* static */ void
 ActiveLayerTracker::NotifyInlineStyleRuleModified(nsIFrame* aFrame,
-                                                  nsCSSProperty aProperty)
+                                                  nsCSSPropertyID aProperty,
+                                                  const nsAString& aNewValue,
+                                                  nsDOMCSSDeclaration* aDOMCSSDecl)
 {
   if (IsPresContextInScriptAnimationCallback(aFrame->PresContext())) {
-    NotifyAnimated(aFrame, aProperty);
+    NotifyAnimated(aFrame, aProperty, aNewValue, aDOMCSSDecl);
   }
   if (gLayerActivityTracker &&
       gLayerActivityTracker->mCurrentScrollHandlerFrame.IsAlive()) {
@@ -367,9 +381,17 @@ ActiveLayerTracker::NotifyInlineStyleRuleModified(nsIFrame* aFrame,
 }
 
 /* static */ bool
-ActiveLayerTracker::IsStyleMaybeAnimated(nsIFrame* aFrame, nsCSSProperty aProperty)
+ActiveLayerTracker::IsStyleMaybeAnimated(nsIFrame* aFrame, nsCSSPropertyID aProperty)
 {
   return IsStyleAnimated(nullptr, aFrame, aProperty);
+}
+
+/* static */ bool
+ActiveLayerTracker::IsBackgroundPositionAnimated(nsDisplayListBuilder* aBuilder,
+                                                 nsIFrame* aFrame)
+{
+  return IsStyleAnimated(aBuilder, aFrame, eCSSProperty_background_position_x) ||
+         IsStyleAnimated(aBuilder, aFrame, eCSSProperty_background_position_y);
 }
 
 static bool
@@ -397,7 +419,7 @@ CheckScrollInducedActivity(LayerActivity* aLayerActivity,
 
 /* static */ bool
 ActiveLayerTracker::IsStyleAnimated(nsDisplayListBuilder* aBuilder,
-                                    nsIFrame* aFrame, nsCSSProperty aProperty)
+                                    nsIFrame* aFrame, nsCSSPropertyID aProperty)
 {
   // TODO: Add some abuse restrictions
   if ((aFrame->StyleDisplay()->mWillChangeBitField & NS_STYLE_WILL_CHANGE_TRANSFORM) &&
@@ -424,7 +446,7 @@ ActiveLayerTracker::IsStyleAnimated(nsDisplayListBuilder* aBuilder,
   if (aProperty == eCSSProperty_transform && aFrame->Combines3DTransformWithAncestors()) {
     return IsStyleAnimated(aBuilder, aFrame->GetParent(), aProperty);
   }
-  return nsLayoutUtils::HasCurrentAnimationsForProperties(aFrame, &aProperty, 1);
+  return nsLayoutUtils::HasCurrentAnimationOfProperty(aFrame, aProperty);
 }
 
 /* static */ bool

@@ -74,13 +74,6 @@ this.AppConstants = Object.freeze({
   false,
 #endif
 
-  MOZ_DEVICES:
-#ifdef MOZ_DEVICES
-  true,
-#else
-  false,
-#endif
-
   MOZ_SAFE_BROWSING:
 #ifdef MOZ_SAFE_BROWSING
   true,
@@ -157,8 +150,6 @@ this.AppConstants = Object.freeze({
   platform:
 #ifdef MOZ_WIDGET_GTK
   "linux",
-#elif MOZ_WIDGET_QT
-  "linux",
 #elif XP_WIN
   "win",
 #elif XP_MACOSX
@@ -227,13 +218,6 @@ this.AppConstants = Object.freeze({
   false,
 #endif
 
-  MOZ_B2GDROID:
-#ifdef MOZ_B2GDROID
-  true,
-#else
-  false,
-#endif
-
   MOZ_GRAPHENE:
 #ifdef MOZ_GRAPHENE
   true,
@@ -241,8 +225,8 @@ this.AppConstants = Object.freeze({
   false,
 #endif
 
-  MOZ_NATIVE_NSS:
-#ifdef MOZ_NATIVE_NSS
+  MOZ_SYSTEM_NSS:
+#ifdef MOZ_SYSTEM_NSS
   true,
 #else
   false,
@@ -283,6 +267,20 @@ this.AppConstants = Object.freeze({
   false,
 #endif
 
+  MOZ_TOOLKIT_SEARCH:
+#ifdef MOZ_TOOLKIT_SEARCH
+  true,
+#else
+  false,
+#endif
+
+  MOZ_ENABLE_PROFILER_SPS:
+#ifdef MOZ_ENABLE_PROFILER_SPS
+  true,
+#else
+  false,
+#endif
+
   DLL_PREFIX: "@DLL_PREFIX@",
   DLL_SUFFIX: "@DLL_SUFFIX@",
 
@@ -290,6 +288,7 @@ this.AppConstants = Object.freeze({
   MOZ_APP_VERSION: "@MOZ_APP_VERSION@",
   MOZ_APP_VERSION_DISPLAY: "@MOZ_APP_VERSION_DISPLAY@",
   MOZ_BUILD_APP: "@MOZ_BUILD_APP@",
+  MOZ_MACBUNDLE_NAME: "@MOZ_MACBUNDLE_NAME@",
   MOZ_UPDATE_CHANNEL: "@MOZ_UPDATE_CHANNEL@",
   INSTALL_LOCALE: "@AB_CD@",
   MOZ_WIDGET_TOOLKIT: "@MOZ_WIDGET_TOOLKIT@",
@@ -297,12 +296,6 @@ this.AppConstants = Object.freeze({
   MOZ_B2G_VERSION: @MOZ_B2G_VERSION@,
   MOZ_B2G_OS_NAME: @MOZ_B2G_OS_NAME@,
 
-  MOZ_ANDROID_APZ:
-#ifdef MOZ_ANDROID_APZ
-    true,
-#else
-    false,
-#endif
   DEBUG_JS_MODULES: "@DEBUG_JS_MODULES@",
 
   // URL to the hg revision this was built from (e.g.
@@ -313,10 +306,10 @@ this.AppConstants = Object.freeze({
 #endif
   SOURCE_REVISION_URL: "@MOZ_SOURCE_URL@",
 
-  MOZ_NUWA_PROCESS:
-#ifdef MOZ_NUWA_PROCESS
-    true
+  HAVE_USR_LIB64_DIR:
+#ifdef HAVE_USR_LIB64_DIR
+    true,
 #else
-    false
+    false,
 #endif
 });

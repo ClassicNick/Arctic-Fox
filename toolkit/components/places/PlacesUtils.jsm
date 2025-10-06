@@ -263,6 +263,51 @@ this.PlacesUtils = {
   },
 
   /**
+   * Is a string a valid GUID?
+   *
+   * @param guid: (String)
+   * @return (Boolean)
+   */
+  isValidGuid(guid) {
+    return (/^[a-zA-Z0-9\-_]{12}$/.test(guid));
+  },
+
+  /**
+   * Converts a string or n URL object to an nsIURI.
+   *
+   * @param url (URL) or (String)
+   *        the URL to convert.
+   * @return nsIURI for the given URL.
+   */
+  toURI(url) {
+    url = (url instanceof URL) ? url.href : url;
+
+    return NetUtil.newURI(url);
+  },
+
+  /**
+   * Convert a Date object to a PRTime (microseconds).
+   *
+   * @param date
+   *        the Date object to convert.
+   * @return microseconds from the epoch.
+   */
+  toPRTime(date) {
+    return date * 1000;
+  },
+
+  /**
+   * Convert a PRTime to a Date object.
+   *
+   * @param time
+   *        microseconds from the epoch.
+   * @return a Date object.
+   */
+  toDate(time) {
+    return new Date(parseInt(time / 1000));
+  },
+
+  /**
    * Wraps a string in a nsISupportsString wrapper.
    * @param   aString
    *          The string to wrap.
@@ -583,11 +628,11 @@ this.PlacesUtils = {
       if (PlacesUtils.nodeIsFolder(node) &&
           node.type != Ci.nsINavHistoryResultNode.RESULT_TYPE_FOLDER_SHORTCUT &&
           asQuery(node).queryOptions.excludeItems) {
-        let node = PlacesUtils.getFolderContents(node.itemId, false, true).root;
+        let folderRoot = PlacesUtils.getFolderContents(node.itemId, false, true).root;
         try {
-          return gatherDataFunc(node);
+          return gatherDataFunc(folderRoot);
         } finally {
-          node.containerOpen = false;
+          folderRoot.containerOpen = false;
         }
       }
       // If we didn't create our own query, do not alter the node's state.
@@ -694,7 +739,7 @@ this.PlacesUtils = {
   unwrapNodes: function PU_unwrapNodes(blob, type) {
     // We split on "\n"  because the transferable system converts "\r\n" to "\n"
     var nodes = [];
-    switch(type) {
+    switch (type) {
       case this.TYPE_X_MOZ_PLACE:
       case this.TYPE_X_MOZ_PLACE_SEPARATOR:
       case this.TYPE_X_MOZ_PLACE_CONTAINER:
@@ -1387,19 +1432,28 @@ this.PlacesUtils = {
   },
 
   /**
-   * Gets the shared Sqlite.jsm readonly connection to the Places database.
-   * This is intended to be used mostly internally, and by other Places modules.
-   * Outside the Places component, it should be used only as a last resort.
+   * Gets a shared Sqlite.jsm readonly connection to the Places database,
+   * usable only for SELECT queries.
+   *
+   * This is intended to be used mostly internally, components outside of
+   * Places should, when possible, use API calls and file bugs to get proper
+   * APIs, where they are missing.
    * Keep in mind the Places DB schema is by no means frozen or even stable.
    * Your custom queries can - and will - break overtime.
+   *
+   * Example:
+   * let db = yield PlacesUtils.promiseDBConnection();
+   * let rows = yield db.executeCached(sql, params);
    */
   promiseDBConnection: () => gAsyncDBConnPromised,
 
   /**
-   * Perform a read/write operation on the Places database.
+   * Performs a read/write operation on the Places database through a Sqlite.jsm
+   * wrapped connection to the Places database.
    *
-   * Gets a Sqlite.jsm wrapped connection to the Places database.
-   * This is intended to be used mostly internally, and by other Places modules.
+   * This is intended to be used only by Places itself, always use APIs if you
+   * need to modify the Places database. Use promiseDBConnection if you need to
+   * SELECT from the database and there's no covering API.
    * Keep in mind the Places DB schema is by no means frozen or even stable.
    * Your custom queries can - and will - break overtime.
    *
@@ -1453,7 +1507,7 @@ this.PlacesUtils = {
       let conn = yield this.promiseDBConnection();
       const QUERY_STR = `SELECT b.id FROM moz_bookmarks b
                          JOIN moz_places h on h.id = b.fk
-                         WHERE h.url = :url`;
+                         WHERE h.url_hash = hash(:url) AND h.url = :url`;
       let spec = aURI instanceof Ci.nsIURI ? aURI.spec : aURI;
       yield conn.executeCached(QUERY_STR, { url: spec }, aRow => {
         if (abort)
@@ -1562,31 +1616,6 @@ this.PlacesUtils = {
 
       deferred.resolve(charset);
     }, Ci.nsIThread.DISPATCH_NORMAL);
-
-    return deferred.promise;
-  },
-
-  /**
-   * Promised wrapper for mozIAsyncHistory::updatePlaces for a single place.
-   *
-   * @param aPlaces
-   *        a single mozIPlaceInfo object
-   * @resolves {Promise}
-   */
-  promiseUpdatePlace: function PU_promiseUpdatePlaces(aPlace) {
-    let deferred = Promise.defer();
-    PlacesUtils.asyncHistory.updatePlaces(aPlace, {
-      _placeInfo: null,
-      handleResult: function handleResult(aPlaceInfo) {
-        this._placeInfo = aPlaceInfo;
-      },
-      handleError: function handleError(aResultCode, aPlaceInfo) {
-        deferred.reject(new Components.Exception("Error", aResultCode));
-      },
-      handleCompletion: function() {
-        deferred.resolve(this._placeInfo);
-      }
-    });
 
     return deferred.promise;
   },
@@ -1733,7 +1762,7 @@ this.PlacesUtils = {
    *  - guid (string): the item's GUID (same as aItemGuid for the top item).
    *  - [deprecated] id (number): the item's id. This is only if
    *    aOptions.includeItemIds is set.
-   *  - type (number):  the item's type.  @see PlacesUtils.TYPE_X_*
+   *  - type (string):  the item's type.  @see PlacesUtils.TYPE_X_*
    *  - title (string): the item's title. If it has no title, this property
    *    isn't set.
    *  - dateAdded (number, microseconds from the epoch): the date-added value of
@@ -1742,6 +1771,7 @@ this.PlacesUtils = {
    *    value of the item.
    *  - annos (see getAnnotationsForItem): the item's annotations.  This is not
    *    set if there are no annotations set for the item).
+   *  - index: the item's index under it's parent.
    *
    * The root object (i.e. the one for aItemGuid) also has the following
    * properties set:
@@ -1906,7 +1936,7 @@ this.PlacesUtils = {
                                                         , writable: true
                                                         , enumerable: false
                                                         , configurable: false });
-        } catch(ex) {
+        } catch (ex) {
           throw new Error("Failed to fetch the data for the root item " + ex);
         }
       } else {
@@ -1925,7 +1955,7 @@ this.PlacesUtils = {
             parentItem.children = [item];
 
           rootItem.itemsCount++;
-        } catch(ex) {
+        } catch (ex) {
           // This is a bogus child, report and skip it.
           Cu.reportError("Failed to fetch the data for an item " + ex);
           continue;
@@ -2045,84 +2075,74 @@ XPCOMUtils.defineLazyGetter(this, "bundle", function() {
          createBundle(PLACES_STRING_BUNDLE_URI);
 });
 
-// A promise resolved once the Sqlite.jsm connections
-// can be closed.
-var promiseCanCloseConnection = function() {
-  let TOPIC = "places-will-close-connection";
-  return new Promise(resolve => {
-    let observer = function() {
-      Services.obs.removeObserver(observer, TOPIC);
-      resolve();
-    }
-    Services.obs.addObserver(observer, TOPIC, false)
-  });
-};
-
-XPCOMUtils.defineLazyGetter(this, "gAsyncDBConnPromised",
-  () => new Promise((resolve) => {
-    Sqlite.cloneStorageConnection({
-      connection: PlacesUtils.history.DBConnection,
-      readOnly:   true
-    }).then(conn => {
+/**
+ * Setup internal databases for closing properly during shutdown.
+ *
+ * 1. Places initiates shutdown.
+ * 2. Before places can move to the step where it closes the low-level connection,
+ *   we need to make sure that we have closed `conn`.
+ * 3. Before we can close `conn`, we need to make sure that all external clients
+ *   have stopped using `conn`.
+ * 4. Before we can close Sqlite, we need to close `conn`.
+ */
+function setupDbForShutdown(conn, name) {
+  try {
+    let state = "0. Not started.";
+    let promiseClosed = new Promise((resolve, reject) => {
+      // The service initiates shutdown.
+      // Before it can safely close its connection, we need to make sure
+      // that we have closed the high-level connection.
       try {
-        let state = "0. not started";
+        AsyncShutdown.placesClosingInternalConnection.addBlocker(`${name} closing as part of Places shutdown`,
+          Task.async(function*() {
+            state = "1. Service has initiated shutdown";
 
-        let promiseReady = promiseCanCloseConnection();
-        let promiseShutdownComplete = Task.async(function*() {
-          // Don't close the connection as long as it might be used.
-          state = "1. waiting for `places-will-close-connection`";
-          yield promiseReady;
+            // At this stage, all external clients have finished using the
+            // database. We just need to close the high-level connection.
+            yield conn.close();
+            state = "2. Closed Sqlite.jsm connection.";
 
-          // But close the connection before Sqlite shutdown.
-          state = "2. closing the connection";
-          yield conn.close();
-
-          state = "3. done";
-        })();
-        Sqlite.shutdown.addBlocker("PlacesUtils read-only connection closing",
-          promiseShutdownComplete,
-          () => state);
-      } catch(ex) {
+            resolve();
+          }),
+          () => state
+        );
+      } catch (ex) {
         // It's too late to block shutdown, just close the connection.
         conn.close();
-        throw ex;
+        reject(ex);
       }
-      resolve(conn);
     });
-  })
+
+    // Make sure that Sqlite.jsm doesn't close until we are done
+    // with the high-level connection.
+    Sqlite.shutdown.addBlocker(`${name} must be closed before Sqlite.jsm`,
+      () => promiseClosed.catch(Cu.reportError),
+      () => state
+    );
+  } catch (ex) {
+    // It's too late to block shutdown, just close the connection.
+    conn.close();
+    throw ex;
+  }
+}
+
+XPCOMUtils.defineLazyGetter(this, "gAsyncDBConnPromised",
+  () => Sqlite.cloneStorageConnection({
+    connection: PlacesUtils.history.DBConnection,
+    readOnly:   true
+  }).then(conn => {
+      setupDbForShutdown(conn, "PlacesUtils read-only connection");
+      return conn;
+  }).catch(Cu.reportError)
 );
 
 XPCOMUtils.defineLazyGetter(this, "gAsyncDBWrapperPromised",
-  () => new Promise((resolve) => {
-    Sqlite.wrapStorageConnection({
+  () => Sqlite.wrapStorageConnection({
       connection: PlacesUtils.history.DBConnection,
-    }).then(conn => {
-      try {
-        let state = "0. not started";
-
-        let promiseReady = promiseCanCloseConnection();
-        let promiseShutdownComplete = Task.async(function*() {
-          // Don't close the connection as long as it might be used.
-          state = "1. waiting for `places-will-close-connection`";
-          yield promiseReady;
-
-          // But close the connection before Sqlite shutdown.
-          state = "2. closing the connection";
-          yield conn.close();
-
-          state = "3. done";
-        })();
-        Sqlite.shutdown.addBlocker("PlacesUtils wrapped connection closing",
-          promiseShutdownComplete,
-          () => state);
-      } catch(ex) {
-        // It's too late to block shutdown, just close the connection.
-        conn.close();
-        throw ex;
-      }
-      resolve(conn);
-    });
-  })
+  }).then(conn => {
+    setupDbForShutdown(conn, "PlacesUtils wrapped connection");
+    return conn;
+  }).catch(Cu.reportError)
 );
 
 /**
@@ -2250,22 +2270,24 @@ var Keywords = {
         if (oldEntry) {
           yield db.executeCached(
             `UPDATE moz_keywords
-             SET place_id = (SELECT id FROM moz_places WHERE url = :url),
+             SET place_id = (SELECT id FROM moz_places WHERE url_hash = hash(:url) AND url = :url),
                  post_data = :post_data
              WHERE keyword = :keyword
             `, { url: url.href, keyword: keyword, post_data: postData });
           yield notifyKeywordChange(oldEntry.url.href, "");
         } else {
           // An entry for the given page could be missing, in such a case we need to
-          // create it.
+          // create it.  The IGNORE conflict can trigger on `guid`.
           yield db.executeCached(
-            `INSERT OR IGNORE INTO moz_places (url, rev_host, hidden, frecency, guid)
-             VALUES (:url, :rev_host, 0, :frecency, GENERATE_GUID())
+            `INSERT OR IGNORE INTO moz_places (url, url_hash, rev_host, hidden, frecency, guid)
+             VALUES (:url, hash(:url), :rev_host, 0, :frecency,
+                     IFNULL((SELECT guid FROM moz_places WHERE url_hash = hash(:url) AND url = :url),
+                            GENERATE_GUID()))
             `, { url: url.href, rev_host: PlacesUtils.getReversedHost(url),
                  frecency: url.protocol == "place:" ? 0 : -1 });
           yield db.executeCached(
             `INSERT INTO moz_keywords (keyword, place_id, post_data)
-             VALUES (:keyword, (SELECT id FROM moz_places WHERE url = :url), :post_data)
+             VALUES (:keyword, (SELECT id FROM moz_places WHERE url_hash = hash(:url) AND url = :url), :post_data)
             `, { url: url.href, keyword: keyword, post_data: postData });
         }
 

@@ -23,7 +23,7 @@
 namespace mozilla {
 namespace net {
 
-class CallChannelOnPush final : public nsRunnable {
+class CallChannelOnPush final : public Runnable {
   public:
   CallChannelOnPush(nsIHttpChannelInternal *associatedChannel,
                     const nsACString &pushedURI,
@@ -34,7 +34,7 @@ class CallChannelOnPush final : public nsRunnable {
   {
   }
 
-  NS_IMETHOD Run()
+  NS_IMETHOD Run() override
   {
     MOZ_ASSERT(NS_IsMainThread());
     RefPtr<nsHttpChannel> channel;
@@ -77,7 +77,7 @@ Http2PushedStream::Http2PushedStream(Http2PushTransactionBuffer *aTransaction,
   mStreamID = aID;
   MOZ_ASSERT(!(aID & 1)); // must be even to be a pushed stream
   mBufferedPush->SetPushStream(this);
-  mSchedulingContext = aAssociatedStream->SchedulingContext();
+  mRequestContext = aAssociatedStream->RequestContext();
   mLastRead = TimeStamp::Now();
   SetPriority(aAssociatedStream->Priority() + 1);
 }

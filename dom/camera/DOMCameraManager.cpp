@@ -39,8 +39,8 @@ NS_IMPL_CYCLE_COLLECTING_RELEASE(nsDOMCameraManager)
 /**
  * Global camera logging object
  *
- * Set the NSPR_LOG_MODULES environment variable to enable logging
- * in a debug build, e.g. NSPR_LOG_MODULES=Camera:5
+ * Set the MOZ_LOG environment variable to enable logging
+ * in a debug build, e.g. MOZ_LOG=Camera:5
  */
 LogModule*
 GetCameraLog()
@@ -233,11 +233,11 @@ CameraPermissionRequest::DispatchCallback(uint32_t aPermission)
 {
   nsCOMPtr<nsIRunnable> callbackRunnable;
   if (aPermission == nsIPermissionManager::ALLOW_ACTION) {
-    callbackRunnable = NS_NewRunnableMethod(this, &CameraPermissionRequest::CallAllow);
+    callbackRunnable = NewRunnableMethod(this, &CameraPermissionRequest::CallAllow);
   } else {
-    callbackRunnable = NS_NewRunnableMethod(this, &CameraPermissionRequest::CallCancel);
+    callbackRunnable = NewRunnableMethod(this, &CameraPermissionRequest::CallCancel);
   }
-  return NS_DispatchToMainThread(callbackRunnable);
+  return NS_DispatchToMainThread(callbackRunnable.forget());
 }
 
 void
@@ -307,13 +307,12 @@ nsDOMCameraManager::GetCamera(const nsAString& aCamera,
   nsCOMPtr<nsIPrincipal> principal = sop->GetPrincipal();
   // If we are a CERTIFIED app, we can short-circuit the permission check,
   // which gets us a performance win.
-  uint16_t status = nsIPrincipal::APP_STATUS_NOT_INSTALLED;
-  principal->GetAppStatus(&status);
   // Unprivileged mochitests always fail the dispatched permission check,
   // even if permission to the camera has been granted.
   bool immediateCheck = false;
   CameraPreferences::GetPref("camera.control.test.permission", immediateCheck);
-  if ((status == nsIPrincipal::APP_STATUS_CERTIFIED || immediateCheck) && CheckPermission(mWindow)) {
+  if ((principal->GetAppStatus() == nsIPrincipal::APP_STATUS_CERTIFIED || immediateCheck) &&
+      CheckPermission(mWindow)) {
     PermissionAllowed(cameraId, aInitialConfig, promise);
     return promise.forget();
   }

@@ -35,14 +35,16 @@
 #include "mozilla/Preferences.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/dom/BlobBinding.h"
-#include "mozilla/dom/BlobSet.h"
 #include "mozilla/dom/DOMError.h"
 #include "mozilla/dom/FileBinding.h"
 #include "mozilla/dom/WorkerPrivate.h"
+#include "mozilla/dom/WorkerRunnable.h"
 #include "nsThreadUtils.h"
 
 namespace mozilla {
 namespace dom {
+
+using namespace workers;
 
 // XXXkhuey the input stream that we pass out of a File
 // can outlive the actual File object.  Thus, we must
@@ -227,12 +229,6 @@ Blob::IsFile() const
   return mImpl->IsFile();
 }
 
-bool
-Blob::IsDirectory() const
-{
-  return mImpl->IsDirectory();
-}
-
 const nsTArray<RefPtr<BlobImpl>>*
 Blob::GetSubBlobImpls() const
 {
@@ -259,8 +255,7 @@ Blob::ToFile()
 already_AddRefed<File>
 Blob::ToFile(const nsAString& aName, ErrorResult& aRv) const
 {
-  AutoTArray<RefPtr<BlobImpl>, 1> blobImpls;
-  blobImpls.AppendElement(mImpl);
+  AutoTArray<RefPtr<BlobImpl>, 1> blobImpls({mImpl});
 
   nsAutoString contentType;
   mImpl->GetType(contentType);
@@ -346,35 +341,24 @@ Blob::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aGivenProto)
 }
 
 /* static */ already_AddRefed<Blob>
-Blob::Constructor(const GlobalObject& aGlobal, ErrorResult& aRv)
+Blob::Constructor(const GlobalObject& aGlobal,
+                  const Optional<Sequence<BlobPart>>& aData,
+                  const BlobPropertyBag& aBag,
+                  ErrorResult& aRv)
 {
   RefPtr<MultipartBlobImpl> impl = new MultipartBlobImpl();
 
-  impl->InitializeBlob(aRv);
+  if (aData.WasPassed()) {
+    impl->InitializeBlob(aGlobal.Context(), aData.Value(), aBag.mType,
+                         aBag.mEndings == EndingTypes::Native, aRv);
+  } else {
+    impl->InitializeBlob(aRv);
+  }
+
   if (NS_WARN_IF(aRv.Failed())) {
     return nullptr;
   }
 
-  MOZ_ASSERT(!impl->IsFile());
-
-  RefPtr<Blob> blob = Blob::Create(aGlobal.GetAsSupports(), impl);
-  return blob.forget();
-}
-
-/* static */ already_AddRefed<Blob>
-Blob::Constructor(
-        const GlobalObject& aGlobal,
-        const Sequence<OwningArrayBufferOrArrayBufferViewOrBlobOrString>& aData,
-        const BlobPropertyBag& aBag,
-        ErrorResult& aRv)
-{
-  RefPtr<MultipartBlobImpl> impl = new MultipartBlobImpl();
-
-  impl->InitializeBlob(aGlobal.Context(), aData, aBag.mType,
-                       aBag.mEndings == EndingTypes::Native, aRv);
-  if (aRv.Failed()) {
-    return nullptr;
-  }
   MOZ_ASSERT(!impl->IsFile());
 
   RefPtr<Blob> blob = Blob::Create(aGlobal.GetAsSupports(), impl);
@@ -420,20 +404,10 @@ File::Create(nsISupports* aParent, BlobImpl* aImpl)
 /* static */ already_AddRefed<File>
 File::Create(nsISupports* aParent, const nsAString& aName,
              const nsAString& aContentType, uint64_t aLength,
-             int64_t aLastModifiedDate, BlobDirState aDirState)
+             int64_t aLastModifiedDate)
 {
   RefPtr<File> file = new File(aParent,
-    new BlobImplBase(aName, aContentType, aLength, aLastModifiedDate,
-                     aDirState));
-  return file.forget();
-}
-
-/* static */ already_AddRefed<File>
-File::Create(nsISupports* aParent, const nsAString& aName,
-             const nsAString& aContentType, uint64_t aLength)
-{
-  RefPtr<File> file = new File(aParent,
-    new BlobImplBase(aName, aContentType, aLength));
+    new BlobImplBase(aName, aContentType, aLength, aLastModifiedDate));
   return file.forget();
 }
 
@@ -472,15 +446,21 @@ File::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aGivenProto)
 }
 
 void
-File::GetName(nsAString& aFileName)
+File::GetName(nsAString& aFileName) const
 {
   mImpl->GetName(aFileName);
 }
 
 void
-File::GetPath(nsAString& aPath, ErrorResult& aRv)
+File::GetPath(nsAString& aPath) const
 {
-  mImpl->GetPath(aPath, aRv);
+  mImpl->GetPath(aPath);
+}
+
+void
+File::SetPath(const nsAString& aPath)
+{
+  mImpl->SetPath(aPath);
 }
 
 Date
@@ -550,12 +530,11 @@ ParseSize(int64_t aSize, int64_t& aStart, int64_t& aEnd)
 }
 
 /* static */ already_AddRefed<File>
-File::Constructor(
-        const GlobalObject& aGlobal,
-        const Sequence<OwningArrayBufferOrArrayBufferViewOrBlobOrString>& aData,
-        const nsAString& aName,
-        const FilePropertyBag& aBag,
-        ErrorResult& aRv)
+File::Constructor(const GlobalObject& aGlobal,
+                  const Sequence<BlobPart>& aData,
+                  const nsAString& aName,
+                  const FilePropertyBag& aBag,
+                  ErrorResult& aRv)
 {
   RefPtr<MultipartBlobImpl> impl = new MultipartBlobImpl(aName);
 
@@ -580,7 +559,7 @@ File::Constructor(const GlobalObject& aGlobal,
                   ErrorResult& aRv)
 {
   if (!nsContentUtils::ThreadsafeIsCallerChrome()) {
-    aRv.Throw(NS_ERROR_FAILURE);
+    aRv.ThrowTypeError<MSG_NOT_SEQUENCE>(NS_LITERAL_STRING("Argument 1 of File.constructor"));
     return nullptr;
   }
 
@@ -635,7 +614,7 @@ File::Constructor(const GlobalObject& aGlobal,
                   ErrorResult& aRv)
 {
   if (!nsContentUtils::ThreadsafeIsCallerChrome()) {
-    aRv.Throw(NS_ERROR_FAILURE);
+    aRv.ThrowTypeError<MSG_MISSING_ARGUMENTS>(NS_LITERAL_STRING("File"));
     return nullptr;
   }
 
@@ -691,17 +670,24 @@ NS_IMPL_ISUPPORTS(BlobImpl, BlobImpl)
 NS_IMPL_ISUPPORTS_INHERITED0(BlobImplFile, BlobImpl)
 
 void
-BlobImplBase::GetName(nsAString& aName)
+BlobImplBase::GetName(nsAString& aName) const
 {
   NS_ASSERTION(mIsFile, "Should only be called on files");
   aName = mName;
 }
 
 void
-BlobImplBase::GetPath(nsAString& aPath, ErrorResult& aRv)
+BlobImplBase::GetPath(nsAString& aPath) const
 {
   NS_ASSERTION(mIsFile, "Should only be called on files");
   aPath = mPath;
+}
+
+void
+BlobImplBase::SetPath(const nsAString& aPath)
+{
+  NS_ASSERTION(mIsFile, "Should only be called on files");
+  mPath = aPath;
 }
 
 void
@@ -719,8 +705,7 @@ BlobImplBase::GetMozFullPath(nsAString& aFileName, ErrorResult& aRv) const
     return;
   }
 
-  workers::WorkerPrivate* workerPrivate =
-    workers::GetCurrentThreadWorkerPrivate();
+  WorkerPrivate* workerPrivate = GetCurrentThreadWorkerPrivate();
   MOZ_ASSERT(workerPrivate);
 
   if (workerPrivate->UsesSystemPrincipal()) {
@@ -790,7 +775,11 @@ BlobImplBase::GetSendInfo(nsIInputStream** aBody, uint64_t* aContentLength,
   nsAutoString contentType;
   GetType(contentType);
 
-  CopyUTF16toUTF8(contentType, aContentType);
+  if (contentType.IsEmpty()) {
+    aContentType.SetIsVoid(true);
+  } else {
+    CopyUTF16toUTF8(contentType, aContentType);
+  }
 
   aCharset.Truncate();
 
@@ -878,17 +867,72 @@ BlobImplFile::GetSize(ErrorResult& aRv)
   return mLength;
 }
 
+namespace {
+
+class GetTypeRunnable final : public WorkerMainThreadRunnable
+{
+public:
+  GetTypeRunnable(WorkerPrivate* aWorkerPrivate,
+                  BlobImpl* aBlobImpl)
+    : WorkerMainThreadRunnable(aWorkerPrivate,
+                               NS_LITERAL_CSTRING("BlobImplFile :: GetType"))
+    , mBlobImpl(aBlobImpl)
+  {
+    MOZ_ASSERT(aBlobImpl);
+    aWorkerPrivate->AssertIsOnWorkerThread();
+  }
+
+  bool
+  MainThreadRun() override
+  {
+    MOZ_ASSERT(NS_IsMainThread());
+
+    nsAutoString type;
+    mBlobImpl->GetType(type);
+    return true;
+  }
+
+private:
+  ~GetTypeRunnable()
+  {}
+
+  RefPtr<BlobImpl> mBlobImpl;
+};
+
+} // anonymous namespace
+
 void
 BlobImplFile::GetType(nsAString& aType)
 {
+  aType.Truncate();
+
   if (mContentType.IsVoid()) {
     NS_ASSERTION(mWholeFile,
                  "Should only use lazy ContentType when using the whole file");
+
+    if (!NS_IsMainThread()) {
+      WorkerPrivate* workerPrivate = GetCurrentThreadWorkerPrivate();
+      if (!workerPrivate) {
+        // I have no idea in which thread this method is called. We cannot
+        // return any valid value.
+        return;
+      }
+
+      RefPtr<GetTypeRunnable> runnable =
+        new GetTypeRunnable(workerPrivate, this);
+
+      ErrorResult rv;
+      runnable->Dispatch(rv);
+      if (NS_WARN_IF(rv.Failed())) {
+        rv.SuppressException();
+      }
+      return;
+    }
+
     nsresult rv;
     nsCOMPtr<nsIMIMEService> mimeService =
       do_GetService(NS_MIMESERVICE_CONTRACTID, &rv);
     if (NS_WARN_IF(NS_FAILED(rv))) {
-      aType.Truncate();
       return;
     }
 
@@ -946,24 +990,14 @@ BlobImplFile::GetInternalStream(nsIInputStream** aStream, ErrorResult& aRv)
                                           -1, -1, sFileStreamFlags);
 }
 
-void
-BlobImplFile::SetPath(const nsAString& aPath)
+bool
+BlobImplFile::IsDirectory() const
 {
-  MOZ_ASSERT(aPath.IsEmpty() ||
-             aPath[aPath.Length() - 1] == char16_t('/'),
-             "Path must end with a path separator");
-  mPath = aPath;
-}
-
-void
-BlobImplFile::LookupAndCacheIsDirectory()
-{
-  MOZ_ASSERT(mIsFile,
-             "This should only be called when this object has been created "
-             "from an nsIFile to note that the nsIFile is a directory");
-  bool isDir;
-  mFile->IsDirectory(&isDir);
-  mDirState = isDir ? BlobDirState::eIsDir : BlobDirState::eIsNotDir;
+  bool isDirectory = false;
+  if (mFile) {
+    mFile->IsDirectory(&isDirectory);
+  }
+  return isDirectory;
 }
 
 ////////////////////////////////////////////////////////////////////////////
@@ -978,6 +1012,11 @@ EmptyBlobImpl::CreateSlice(uint64_t aStart, uint64_t aLength,
 {
   MOZ_ASSERT(!aStart && !aLength);
   RefPtr<BlobImpl> impl = new EmptyBlobImpl(aContentType);
+
+  DebugOnly<bool> isMutable;
+  MOZ_ASSERT(NS_SUCCEEDED(impl->GetMutable(&isMutable)));
+  MOZ_ASSERT(!isMutable);
+
   return impl.forget();
 }
 
@@ -985,6 +1024,11 @@ void
 EmptyBlobImpl::GetInternalStream(nsIInputStream** aStream,
                                  ErrorResult& aRv)
 {
+  if (NS_WARN_IF(!aStream)) {
+    aRv.Throw(NS_ERROR_FAILURE);
+    return;
+  }
+
   nsresult rv = NS_NewCStringInputStream(aStream, EmptyCString());
   if (NS_WARN_IF(NS_FAILED(rv))) {
     aRv.Throw(rv);
@@ -1037,8 +1081,8 @@ class BlobImplMemoryDataOwnerMemoryReporter final
 public:
   NS_DECL_THREADSAFE_ISUPPORTS
 
-  NS_IMETHOD CollectReports(nsIMemoryReporterCallback *aCallback,
-                            nsISupports *aClosure, bool aAnonymize) override
+  NS_IMETHOD CollectReports(nsIHandleReportCallback* aHandleReport,
+                            nsISupports* aData, bool aAnonymize) override
   {
     typedef BlobImplMemory::DataOwner DataOwner;
 
@@ -1069,7 +1113,7 @@ public:
           digestString.AppendPrintf("%02x", digest[i]);
         }
 
-        nsresult rv = aCallback->Callback(
+        aHandleReport->Callback(
           /* process */ NS_LITERAL_CSTRING(""),
           nsPrintfCString(
             "explicit/dom/memory-file-data/large/file(length=%llu, sha1=%s)",
@@ -1082,13 +1126,12 @@ public:
             "that is, an N-byte memory file may take up more than N bytes of "
             "memory.",
             owner->mLength, digestString.get()),
-          aClosure);
-        NS_ENSURE_SUCCESS(rv, rv);
+          aData);
       }
     }
 
     if (smallObjectsTotal > 0) {
-      nsresult rv = aCallback->Callback(
+      aHandleReport->Callback(
         /* process */ NS_LITERAL_CSTRING(""),
         NS_LITERAL_CSTRING("explicit/dom/memory-file-data/small"),
         KIND_HEAP, UNITS_BYTES, smallObjectsTotal,
@@ -1097,8 +1140,7 @@ public:
           "Note that the allocator may round up a memory file's length -- "
           "that is, an N-byte memory file may take up more than N bytes of "
           "memory."),
-        aClosure);
-      NS_ENSURE_SUCCESS(rv, rv);
+        aData);
     }
 
     return NS_OK;
@@ -1148,79 +1190,6 @@ BlobImplTemporaryBlob::GetInternalStream(nsIInputStream** aStream,
   nsCOMPtr<nsIInputStream> stream =
     new nsTemporaryFileInputStream(mFileDescOwner, mStartPos, mStartPos + mLength);
   stream.forget(aStream);
-}
-
-////////////////////////////////////////////////////////////////////////////
-// BlobSet implementation
-
-already_AddRefed<Blob>
-BlobSet::GetBlobInternal(nsISupports* aParent,
-                         const nsACString& aContentType,
-                         ErrorResult& aRv)
-{
-  RefPtr<BlobImpl> blobImpl =
-    MultipartBlobImpl::Create(GetBlobImpls(),
-                              NS_ConvertASCIItoUTF16(aContentType),
-                              aRv);
-  if (NS_WARN_IF(aRv.Failed())) {
-    return nullptr;
-  }
-
-  RefPtr<Blob> blob = Blob::Create(aParent, blobImpl);
-  return blob.forget();
-}
-
-nsresult
-BlobSet::AppendVoidPtr(const void* aData, uint32_t aLength)
-{
-  NS_ENSURE_ARG_POINTER(aData);
-
-  uint64_t offset = mDataLen;
-
-  if (!ExpandBufferSize(aLength))
-    return NS_ERROR_OUT_OF_MEMORY;
-
-  memcpy((char*)mData + offset, aData, aLength);
-  return NS_OK;
-}
-
-nsresult
-BlobSet::AppendString(const nsAString& aString, bool nativeEOL, JSContext* aCx)
-{
-  nsCString utf8Str = NS_ConvertUTF16toUTF8(aString);
-
-  if (nativeEOL) {
-    if (utf8Str.Contains('\r')) {
-      utf8Str.ReplaceSubstring("\r\n", "\n");
-      utf8Str.ReplaceSubstring("\r", "\n");
-    }
-#ifdef XP_WIN
-    utf8Str.ReplaceSubstring("\n", "\r\n");
-#endif
-  }
-
-  return AppendVoidPtr((void*)utf8Str.Data(),
-                       utf8Str.Length());
-}
-
-nsresult
-BlobSet::AppendBlobImpl(BlobImpl* aBlobImpl)
-{
-  NS_ENSURE_ARG_POINTER(aBlobImpl);
-
-  Flush();
-  mBlobImpls.AppendElement(aBlobImpl);
-
-  return NS_OK;
-}
-
-nsresult
-BlobSet::AppendBlobImpls(const nsTArray<RefPtr<BlobImpl>>& aBlobImpls)
-{
-  Flush();
-  mBlobImpls.AppendElements(aBlobImpls);
-
-  return NS_OK;
 }
 
 } // namespace dom

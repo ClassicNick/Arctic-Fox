@@ -7,7 +7,7 @@
 #ifndef gc_Statistics_h
 #define gc_Statistics_h
 
-#include "mozilla/DebugOnly.h"
+#include "mozilla/EnumeratedArray.h"
 #include "mozilla/IntegerRange.h"
 #include "mozilla/PodOperations.h"
 
@@ -63,6 +63,7 @@ enum Phase : uint8_t {
     PHASE_SWEEP_OBJECT,
     PHASE_SWEEP_STRING,
     PHASE_SWEEP_SCRIPT,
+    PHASE_SWEEP_SCOPE,
     PHASE_SWEEP_SHAPE,
     PHASE_SWEEP_JITCODE,
     PHASE_FINALIZE_END,
@@ -87,6 +88,8 @@ enum Phase : uint8_t {
 
     PHASE_LIMIT,
     PHASE_NONE = PHASE_LIMIT,
+    PHASE_EXPLICIT_SUSPENSION = PHASE_LIMIT,
+    PHASE_IMPLICIT_SUSPENSION,
     PHASE_MULTI_PARENTS
 };
 
@@ -113,18 +116,37 @@ struct ZoneGCStats
     /* Total number of zones in the Runtime at the start of this GC. */
     int zoneCount;
 
-    /* Total number of comaprtments in all zones collected. */
+    /* Number of zones swept in this GC. */
+    int sweptZoneCount;
+
+    /* Total number of compartments in all zones collected. */
     int collectedCompartmentCount;
 
     /* Total number of compartments in the Runtime at the start of this GC. */
     int compartmentCount;
 
+    /* Total number of compartments swept by this GC. */
+    int sweptCompartmentCount;
+
     bool isCollectingAllZones() const { return collectedZoneCount == zoneCount; }
 
     ZoneGCStats()
-      : collectedZoneCount(0), zoneCount(0), collectedCompartmentCount(0), compartmentCount(0)
+      : collectedZoneCount(0), zoneCount(0), sweptZoneCount(0),
+        collectedCompartmentCount(0), compartmentCount(0), sweptCompartmentCount(0)
     {}
 };
+
+#define FOR_EACH_GC_PROFILE_TIME(_)                                           \
+    _(BeginCallback, "beginCB",  PHASE_GC_BEGIN)                              \
+    _(WaitBgThread,  "waitBG",   PHASE_WAIT_BACKGROUND_THREAD)                \
+    _(DiscardCode,   "discard",  PHASE_MARK_DISCARD_CODE)                     \
+    _(RelazifyFunc,  "relazify", PHASE_RELAZIFY_FUNCTIONS)                    \
+    _(Purge,         "purge",    PHASE_PURGE)                                 \
+    _(Mark,          "mark",     PHASE_MARK)                                  \
+    _(Sweep,         "sweep",    PHASE_SWEEP)                                 \
+    _(Compact,       "compact",  PHASE_COMPACT)                               \
+    _(EndCallback,   "endCB",    PHASE_GC_END)                                \
+    _(Barriers,      "barriers", PHASE_BARRIER)
 
 /*
  * Struct for collecting timing statistics on a "phase tree". The tree is
@@ -161,7 +183,7 @@ struct Statistics
     /* Create a convenient type for referring to tables of phase times. */
     using PhaseTimeTable = int64_t[NumTimingArrays][PHASE_LIMIT];
 
-    static bool initialize();
+    static MOZ_MUST_USE bool initialize();
 
     explicit Statistics(JSRuntime* rt);
     ~Statistics();
@@ -170,12 +192,32 @@ struct Statistics
     void endPhase(Phase phase);
     void endParallelPhase(Phase phase, const GCParallelTask* task);
 
+    // Occasionally, we may be in the middle of something that is tracked by
+    // this class, and we need to do something unusual (eg evict the nursery)
+    // that doesn't normally nest within the current phase. Suspend the
+    // currently tracked phase stack, at which time the caller is free to do
+    // other tracked operations.
+    //
+    // This also happens internally with PHASE_GC_BEGIN and other "non-GC"
+    // phases. While in these phases, any beginPhase will automatically suspend
+    // the non-GC phase, until that inner stack is complete, at which time it
+    // will automatically resume the non-GC phase. Explicit suspensions do not
+    // get auto-resumed.
+    void suspendPhases(Phase suspension = PHASE_EXPLICIT_SUSPENSION);
+
+    // Resume a suspended stack of phases.
+    void resumePhases();
+
     void beginSlice(const ZoneGCStats& zoneStats, JSGCInvocationKind gckind,
                     SliceBudget budget, JS::gcreason::Reason reason);
     void endSlice();
 
-    bool startTimingMutator();
-    bool stopTimingMutator(double& mutator_ms, double& gc_ms);
+    MOZ_MUST_USE bool startTimingMutator();
+    MOZ_MUST_USE bool stopTimingMutator(double& mutator_ms, double& gc_ms);
+
+    // Note when we sweep a zone or compartment.
+    void sweptZone() { ++zoneStats.sweptZoneCount; }
+    void sweptCompartment() { ++zoneStats.sweptCompartmentCount; }
 
     void reset(const char* reason) {
         if (!aborted)
@@ -191,22 +233,8 @@ struct Statistics
         counts[s]++;
     }
 
-    void beginNurseryCollection(JS::gcreason::Reason reason) {
-        count(STAT_MINOR_GC);
-        if (nurseryCollectionCallback) {
-            (*nurseryCollectionCallback)(runtime,
-                                         JS::GCNurseryProgress::GC_NURSERY_COLLECTION_START,
-                                         reason);
-        }
-    }
-
-    void endNurseryCollection(JS::gcreason::Reason reason) {
-        if (nurseryCollectionCallback) {
-            (*nurseryCollectionCallback)(runtime,
-                                         JS::GCNurseryProgress::GC_NURSERY_COLLECTION_END,
-                                         reason);
-        }
-    }
+    void beginNurseryCollection(JS::gcreason::Reason reason);
+    void endNurseryCollection(JS::gcreason::Reason reason);
 
     int64_t beginSCC();
     void endSCC(unsigned scc, int64_t start);
@@ -236,8 +264,10 @@ struct Statistics
 
     struct SliceData {
         SliceData(SliceBudget budget, JS::gcreason::Reason reason, int64_t start,
-                  double startTimestamp, size_t startFaults)
+                  double startTimestamp, size_t startFaults, gc::State initialState)
           : budget(budget), reason(reason),
+            initialState(initialState),
+            finalState(gc::State::NotActive),
             resetReason(nullptr),
             start(start), startTimestamp(startTimestamp),
             startFaults(startFaults)
@@ -248,6 +278,7 @@ struct Statistics
 
         SliceBudget budget;
         JS::gcreason::Reason reason;
+        gc::State initialState, finalState;
         const char* resetReason;
         int64_t start, end;
         double startTimestamp, endTimestamp;
@@ -262,6 +293,9 @@ struct Statistics
 
     SliceRange sliceRange() const { return slices.all(); }
     size_t slicesLength() const { return slices.length(); }
+
+    /* Print total profile times on shutdown. */
+    void printTotalProfileTimes();
 
   private:
     JSRuntime* runtime;
@@ -313,13 +347,14 @@ struct Statistics
     size_t activeDagSlot;
 
     /*
-     * To avoid recursive nesting, we discontinue a callback phase when any
-     * other phases are started. Remember what phase to resume when the inner
-     * phases are complete. (And because GCs can nest within the callbacks any
-     * number of times, we need a whole stack of of phases to resume.)
+     * Certain phases can interrupt the phase stack, eg callback phases. When
+     * this happens, we move the suspended phases over to a sepearate list,
+     * terminated by a dummy PHASE_SUSPENSION phase (so that we can nest
+     * suspensions by suspending multiple stacks with a PHASE_SUSPENSION in
+     * between).
      */
-    Phase suspendedPhases[MAX_NESTING];
-    size_t suspendedPhaseNestingDepth;
+    Phase suspendedPhases[MAX_NESTING * 3];
+    size_t suspended;
 
     /* Sweep times for SCCs of compartments. */
     Vector<int64_t, 0, SystemAllocPolicy> sccTimes;
@@ -332,6 +367,25 @@ struct Statistics
      * GC will be invalid.
      */
     bool aborted;
+
+    /* Profiling data. */
+
+    enum class ProfileKey
+    {
+        Total,
+#define DEFINE_TIME_KEY(name, text, phase)                                    \
+        name,
+FOR_EACH_GC_PROFILE_TIME(DEFINE_TIME_KEY)
+#undef DEFINE_TIME_KEY
+        KeyCount
+    };
+
+    using ProfileTimes = mozilla::EnumeratedArray<ProfileKey, ProfileKey::KeyCount, int64_t>;
+
+    int64_t profileThreshold_;
+    bool enableProfiling_;
+    ProfileTimes totalTimes_;
+    uint64_t sliceCount_;
 
     void beginGC(JSGCInvocationKind kind);
     void endGC();
@@ -354,6 +408,10 @@ struct Statistics
     UniqueChars formatJsonPhaseTimes(const PhaseTimeTable phaseTimes);
 
     double computeMMU(int64_t resolution) const;
+
+    void printSliceProfile();
+    static void printProfileHeader();
+    static void printProfileTimes(const ProfileTimes& times);
 };
 
 struct MOZ_RAII AutoGCSlice

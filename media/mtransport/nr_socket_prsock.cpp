@@ -113,8 +113,13 @@ nrappkit copyright:
 #include "nsITCPSocketCallback.h"
 #include "nsIPrefService.h"
 #include "nsIPrefBranch.h"
+#include "nsISocketFilter.h"
 
-#if defined(MOZILLA_INTERNAL_API) && !defined(MOZILLA_XPCOMRT_API)
+#ifdef XP_WIN
+#include "mozilla/WindowsVersion.h"
+#endif
+
+#if defined(MOZILLA_INTERNAL_API)
 // csi_platform.h deep in nrappkit defines LOG_INFO and LOG_WARNING
 #ifdef LOG_INFO
 #define LOG_TEMP_INFO LOG_INFO
@@ -130,12 +135,6 @@ nrappkit copyright:
 #endif
 #undef strlcpy
 
-// TCPSocketChild.h doesn't include TypedArray.h
-namespace mozilla {
-namespace dom {
-class ArrayBuffer;
-}
-}
 #include "mozilla/dom/network/TCPSocketChild.h"
 
 #ifdef LOG_TEMP_INFO
@@ -172,7 +171,7 @@ extern "C" {
 // Implement the nsISupports ref counting
 namespace mozilla {
 
-#if defined(MOZILLA_INTERNAL_API) && !defined(MOZILLA_XPCOMRT_API)
+#if defined(MOZILLA_INTERNAL_API)
 class SingletonThreadHolder final
 {
 private:
@@ -260,7 +259,7 @@ static void ClearSingletonOnShutdown()
 static nsIThread* GetIOThreadAndAddUse_s()
 {
   // Always runs on STS thread!
-#if defined(MOZILLA_INTERNAL_API) && !defined(MOZILLA_XPCOMRT_API)
+#if defined(MOZILLA_INTERNAL_API)
   // We need to safely release this on shutdown to avoid leaks
   if (!sThread) {
     sThread = new SingletonThreadHolder(NS_LITERAL_CSTRING("mtransport"));
@@ -600,6 +599,53 @@ int NrSocket::create(nr_transport_addr *addr) {
               "family=%d, err=%d", naddr.raw.family, PR_GetError());
         ABORT(R_INTERNAL);
       }
+#ifdef XP_WIN
+      if (!mozilla::IsWin8OrLater()) {
+        // Increase default send and receive buffer sizes on <= Win7 to be able to
+        // receive and send an unpaced HD (>= 720p = 1280x720 - I Frame ~ 21K size)
+        // stream without losing packets.
+        // Manual testing showed that 100K buffer size was not enough and the
+        // packet loss dis-appeared with 256K buffer size.
+        // See bug 1252769 for future improvements of this.
+        PRSize min_buffer_size = 256 * 1024;
+        PRSocketOptionData opt_rcvbuf;
+        opt_rcvbuf.option = PR_SockOpt_RecvBufferSize;
+        if ((status = PR_GetSocketOption(fd_, &opt_rcvbuf)) == PR_SUCCESS) {
+          if (opt_rcvbuf.value.recv_buffer_size < min_buffer_size) {
+            opt_rcvbuf.value.recv_buffer_size = min_buffer_size;
+            if ((status = PR_SetSocketOption(fd_, &opt_rcvbuf)) != PR_SUCCESS) {
+              r_log(LOG_GENERIC, LOG_CRIT,
+                "Couldn't set socket receive buffer size: %d", status);
+            }
+          } else {
+            r_log(LOG_GENERIC, LOG_INFO,
+              "Socket receive buffer size is already: %d",
+              opt_rcvbuf.value.recv_buffer_size);
+          }
+        } else {
+          r_log(LOG_GENERIC, LOG_CRIT,
+            "Couldn't get socket receive buffer size: %d", status);
+        }
+        PRSocketOptionData opt_sndbuf;
+        opt_sndbuf.option = PR_SockOpt_SendBufferSize;
+        if ((status = PR_GetSocketOption(fd_, &opt_sndbuf)) == PR_SUCCESS) {
+          if (opt_sndbuf.value.recv_buffer_size < min_buffer_size) {
+            opt_sndbuf.value.recv_buffer_size = min_buffer_size;
+            if ((status = PR_SetSocketOption(fd_, &opt_sndbuf)) != PR_SUCCESS) {
+              r_log(LOG_GENERIC, LOG_CRIT,
+                "Couldn't set socket send buffer size: %d", status);
+            }
+          } else {
+            r_log(LOG_GENERIC, LOG_INFO,
+              "Socket send buffer size is already: %d",
+              opt_sndbuf.value.recv_buffer_size);
+          }
+        } else {
+          r_log(LOG_GENERIC, LOG_CRIT,
+            "Couldn't get socket send buffer size: %d", status);
+        }
+      }
+#endif
       break;
     case IPPROTO_TCP:
       if (!(fd_ = PR_OpenTCPSocket(naddr.raw.family))) {
@@ -686,7 +732,8 @@ int NrSocket::create(nr_transport_addr *addr) {
   // Finally, register with the STS
   rv = stservice->AttachSocket(fd_, this);
   if (!NS_SUCCEEDED(rv)) {
-    r_log(LOG_GENERIC, LOG_CRIT, "Couldn't attach socket to STS");
+    r_log(LOG_GENERIC, LOG_CRIT, "Couldn't attach socket to STS, rv=%u",
+          static_cast<unsigned>(rv));
     ABORT(R_INTERNAL);
   }
 
@@ -1076,7 +1123,7 @@ NrUdpSocketIpc::~NrUdpSocketIpc()
   // also guarantees socket_child_ is released from the io_thread, and
   // tells the SingletonThreadHolder we're done with it
 
-#if defined(MOZILLA_INTERNAL_API) && !defined(MOZILLA_XPCOMRT_API)
+#if defined(MOZILLA_INTERNAL_API)
   // close(), but transfer the socket_child_ reference to die as well
   RUN_ON_THREAD(io_thread_,
                 mozilla::WrapRunnableNM(&NrUdpSocketIpc::release_child_i,
@@ -1457,6 +1504,7 @@ int NrUdpSocketIpc::accept(nr_transport_addr *addrp, nr_socket **sockp) {
 void NrUdpSocketIpc::create_i(const nsACString &host, const uint16_t port) {
   ASSERT_ON_THREAD(io_thread_);
 
+  uint32_t minBuffSize = 0;
   nsresult rv;
   nsCOMPtr<nsIUDPSocketChild> socketChild = do_CreateInstance("@mozilla.org/udp-socket-child;1", &rv);
   if (NS_FAILED(rv)) {
@@ -1472,7 +1520,7 @@ void NrUdpSocketIpc::create_i(const nsACString &host, const uint16_t port) {
   ReentrantMonitorAutoEnter mon(monitor_);
   if (!socket_child_) {
     socket_child_ = socketChild;
-    socket_child_->SetFilterName(nsCString("stun"));
+    socket_child_->SetFilterName(nsCString(NS_NETWORK_SOCKET_FILTER_HANDLER_STUN_SUFFIX));
   } else {
     socketChild = nullptr;
   }
@@ -1485,10 +1533,23 @@ void NrUdpSocketIpc::create_i(const nsACString &host, const uint16_t port) {
     return;
   }
 
+#ifdef XP_WIN
+  if (!mozilla::IsWin8OrLater()) {
+    // Increase default receive and send buffer size on <= Win7 to be able to
+    // receive and send an unpaced HD (>= 720p = 1280x720 - I Frame ~ 21K size)
+    // stream without losing packets.
+    // Manual testing showed that 100K buffer size was not enough and the
+    // packet loss dis-appeared with 256K buffer size.
+    // See bug 1252769 for future improvements of this.
+    minBuffSize = 256 * 1024;
+  }
+#endif
   // XXX bug 1126232 - don't use null Principal!
   if (NS_FAILED(socket_child_->Bind(proxy, nullptr, host, port,
                                     /* reuse = */ false,
-                                    /* loopback = */ false))) {
+                                    /* loopback = */ false,
+                                    /* recv buffer size */ minBuffSize,
+                                    /* send buffer size */ minBuffSize))) {
     err_ = true;
     MOZ_ASSERT(false, "Failed to create UDP socket");
     mon.NotifyAll();
@@ -1544,7 +1605,7 @@ void NrUdpSocketIpc::close_i() {
   }
 }
 
-#if defined(MOZILLA_INTERNAL_API) && !defined(MOZILLA_XPCOMRT_API)
+#if defined(MOZILLA_INTERNAL_API)
 // close(), but transfer the socket_child_ reference to die as well
 // static
 void NrUdpSocketIpc::release_child_i(nsIUDPSocketChild* aChild,
@@ -1583,15 +1644,15 @@ void NrUdpSocketIpc::recv_callback_s(RefPtr<nr_udp_message> msg) {
   }
 }
 
-#if defined(MOZILLA_INTERNAL_API) && !defined(MOZILLA_XPCOMRT_API)
+#if defined(MOZILLA_INTERNAL_API)
 // TCPSocket.
-class NrTcpSocketIpc::TcpSocketReadyRunner: public nsRunnable
+class NrTcpSocketIpc::TcpSocketReadyRunner: public Runnable
 {
 public:
   explicit TcpSocketReadyRunner(NrTcpSocketIpc *sck)
     : socket_(sck) {}
 
-  NS_IMETHODIMP Run() {
+  NS_IMETHOD Run() override {
     socket_->maybe_post_socket_ready();
     return NS_OK;
   }
@@ -1703,12 +1764,6 @@ NS_IMETHODIMP NrTcpSocketIpc::FireErrorEvent(const nsAString &type,
 }
 
 // methods of nsITCPSocketCallback that we are not going to implement.
-
-NS_IMETHODIMP NrTcpSocketIpc::FireDataEvent(JSContext* aCx,
-                                            const nsAString &type,
-                                            const JS::HandleValue data) {
-  return NS_ERROR_NOT_IMPLEMENTED;
-}
 
 NS_IMETHODIMP NrTcpSocketIpc::FireDataStringEvent(const nsAString &type,
                                                   const nsACString &data) {
@@ -1880,12 +1935,10 @@ int NrTcpSocketIpc::read(void* buf, size_t maxlen, size_t *len) {
 }
 
 int NrTcpSocketIpc::listen(int backlog) {
-  MOZ_ASSERT(false);
   return R_INTERNAL;
 }
 
 int NrTcpSocketIpc::accept(nr_transport_addr *addrp, nr_socket **sockp) {
-  MOZ_ASSERT(false);
   return R_INTERNAL;
 }
 
@@ -1898,6 +1951,8 @@ void NrTcpSocketIpc::connect_i(const nsACString &remote_addr,
 
   dom::TCPSocketChild* child = new dom::TCPSocketChild(NS_ConvertUTF8toUTF16(remote_addr), remote_port);
   socket_child_ = child;
+
+  // Bug 1285330: put filtering back in here
 
   // XXX remove remote!
   socket_child_->SendWindowlessOpenBind(this,
@@ -2078,7 +2133,7 @@ NrSocketBase::CreateSocket(nr_transport_addr *addr, RefPtr<NrSocketBase> *sock)
         *sock = new NrUdpSocketIpc();
         break;
       case IPPROTO_TCP:
-#if defined(MOZILLA_INTERNAL_API) && !defined(MOZILLA_XPCOMRT_API)
+#if defined(MOZILLA_INTERNAL_API)
         {
           nsCOMPtr<nsIThread> main_thread;
           NS_GetMainThread(getter_AddRefs(main_thread));

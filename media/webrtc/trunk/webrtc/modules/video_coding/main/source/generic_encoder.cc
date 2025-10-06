@@ -77,6 +77,8 @@ void CopyCodecSpecific(const CodecSpecificInfo* info, RTPVideoHeader* rtp) {
     }
     case kVideoCodecH264:
       rtp->codec = kRtpVideoH264;
+      rtp->codecHeader.H264.packetization_mode = info->codecSpecific.H264.packetizationMode;
+      rtp->codecHeader.H264.single_nalu = info->codecSpecific.H264.single_nalu;
       rtp->simulcastIdx = info->codecSpecific.H264.simulcastIdx;
       return;
     case kVideoCodecGeneric:
@@ -113,6 +115,7 @@ int32_t VCMGenericEncoder::Release()
       rtc::CritScope lock(&rates_lock_);
       bit_rate_ = 0;
       frame_rate_ = 0;
+      encoder_->RegisterEncodeCompleteCallback(nullptr);
       vcm_encoded_frame_callback_ = nullptr;
     }
 

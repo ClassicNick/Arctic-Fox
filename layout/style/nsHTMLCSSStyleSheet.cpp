@@ -19,7 +19,8 @@
 #include "nsAttrValue.h"
 #include "nsAttrValueInlines.h"
 #include "nsCSSPseudoElements.h"
-#include "RestyleManager.h"
+#include "mozilla/RestyleManagerHandle.h"
+#include "mozilla/RestyleManagerHandleInlines.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
@@ -37,12 +38,24 @@ nsHTMLCSSStyleSheet::~nsHTMLCSSStyleSheet()
 
     // Ideally we'd just call MiscContainer::Evict, but we can't do that since
     // we're iterating the hashtable.
-    MOZ_ASSERT(value->mType == nsAttrValue::eCSSDeclaration);
+    switch (value->mType) {
+      case nsAttrValue::eGeckoCSSDeclaration: {
+        css::Declaration* declaration = value->mValue.mGeckoCSSDeclaration;
+        declaration->SetHTMLCSSStyleSheet(nullptr);
+        break;
+      }
+      case nsAttrValue::eServoCSSDeclaration: {
+        ServoDeclarationBlock* declarations =
+          value->mValue.mServoCSSDeclaration;
+        Servo_DeclarationBlock_ClearCachePointer(declarations);
+        break;
+      }
+      default:
+        MOZ_ASSERT_UNREACHABLE("unexpected cached nsAttrValue type");
+        break;
+    }
 
-    css::Declaration* declaration = value->mValue.mCSSDeclaration;
-    declaration->SetHTMLCSSStyleSheet(nullptr);
     value->mValue.mCached = 0;
-
     iter.Remove();
   }
 }
@@ -70,7 +83,10 @@ nsHTMLCSSStyleSheet::ElementRulesMatching(nsPresContext* aPresContext,
 
   declaration = aElement->GetSMILOverrideStyleDeclaration();
   if (declaration) {
-    RestyleManager* restyleManager = aPresContext->RestyleManager();
+    MOZ_ASSERT(aPresContext->RestyleManager()->IsGecko(),
+               "stylo: ElementRulesMatching must not be called when we have "
+               "a Servo-backed style system");
+    RestyleManager* restyleManager = aPresContext->RestyleManager()->AsGecko();
     if (!restyleManager->SkipAnimationRules()) {
       // Animation restyle (or non-restyle traversal of rules)
       // Now we can walk SMIL overrride style, without triggering transitions.

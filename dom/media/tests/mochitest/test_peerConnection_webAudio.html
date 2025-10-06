@@ -17,7 +17,6 @@ createHTML({
 
 runNetworkTest(function() {
   var test = new PeerConnectionTest();
-
   test.audioContext = new AudioContext();
   test.setMediaConstraints([{audio: true}], []);
   test.chain.replace("PC_LOCAL_GUM", [
@@ -28,7 +27,7 @@ runNetworkTest(function() {
       oscillator.start();
       var dest = test.audioContext.createMediaStreamDestination();
       oscillator.connect(dest);
-      test.pcLocal.attachMedia(dest.stream, 'audio', 'local');
+      test.pcLocal.attachLocalStream(dest.stream);
     }
   ]);
   test.chain.append([

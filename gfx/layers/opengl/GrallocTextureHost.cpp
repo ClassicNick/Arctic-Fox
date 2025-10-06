@@ -130,8 +130,7 @@ GrallocTextureHostOGL::~GrallocTextureHostOGL()
 void
 GrallocTextureHostOGL::SetCompositor(Compositor* aCompositor)
 {
-  MOZ_ASSERT(aCompositor);
-  mCompositor = static_cast<CompositorOGL*>(aCompositor);
+  mCompositor = AssertGLCompositor(aCompositor);
   if (mGLTextureSource) {
     mGLTextureSource->SetCompositor(mCompositor);
   }
@@ -260,6 +259,7 @@ GrallocTextureHostOGL::GetAsSurface() {
 void
 GrallocTextureHostOGL::UnbindTextureSource()
 {
+  TextureHost::UnbindTextureSource();
   // Clear the reference to the TextureSource (if any), because we know that
   // another TextureHost is being bound to the TextureSource. This means that
   // we will have to re-do gl->fEGLImageTargetTexture2D next time we go through
@@ -465,6 +465,16 @@ GrallocTextureHostOGL::BindTextureSource(CompositableTextureSourceRef& aTextureS
 #endif
   return true;
 }
+
+FenceHandle
+GrallocTextureHostOGL::GetCompositorReleaseFence()
+{
+  if (!mCompositor) {
+    return FenceHandle();
+  }
+  return mCompositor->GetReleaseFence();
+}
+
 
 } // namepsace layers
 } // namepsace mozilla

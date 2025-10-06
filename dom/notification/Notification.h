@@ -9,7 +9,7 @@
 #include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/dom/NotificationBinding.h"
-#include "mozilla/dom/workers/bindings/WorkerFeature.h"
+#include "mozilla/dom/workers/bindings/WorkerHolder.h"
 
 #include "nsIObserver.h"
 
@@ -36,17 +36,17 @@ namespace workers {
 } // namespace workers
 
 class Notification;
-class NotificationFeature final : public workers::WorkerFeature
+class NotificationWorkerHolder final : public workers::WorkerHolder
 {
   // Since the feature is strongly held by a Notification, it is ok to hold
   // a raw pointer here.
   Notification* mNotification;
 
 public:
-  explicit NotificationFeature(Notification* aNotification);
+  explicit NotificationWorkerHolder(Notification* aNotification);
 
   bool
-  Notify(JSContext* aCx, workers::Status aStatus) override;
+  Notify(workers::Status aStatus) override;
 };
 
 // Records telemetry probes at application startup, when a notification is
@@ -185,7 +185,7 @@ public:
     const nsAString& aTag,
     const nsAString& aIcon,
     const nsAString& aData,
-    const nsAString& aServiceWorkerRegistrationID,
+    const nsAString& aServiceWorkerRegistrationScope,
     ErrorResult& aRv);
 
   void GetID(nsAString& aRetval) {
@@ -259,8 +259,13 @@ public:
 
   // Notification implementation of
   // ServiceWorkerRegistration.showNotification.
+  //
+  //
+  // Note that aCx may not be in the compartment of aGlobal, but aOptions will
+  // have its JS things in the compartment of aCx.
   static already_AddRefed<Promise>
-  ShowPersistentNotification(nsIGlobalObject* aGlobal,
+  ShowPersistentNotification(JSContext* aCx,
+                             nsIGlobalObject* aGlobal,
                              const nsAString& aScope,
                              const nsAString& aTitle,
                              const NotificationOptions& aOptions,
@@ -279,7 +284,7 @@ public:
 
   void InitFromJSVal(JSContext* aCx, JS::Handle<JS::Value> aData, ErrorResult& aRv);
 
-  void InitFromBase64(JSContext* aCx, const nsAString& aData, ErrorResult& aRv);
+  void InitFromBase64(const nsAString& aData, ErrorResult& aRv);
 
   void AssertIsOnTargetThread() const
   {
@@ -311,6 +316,8 @@ public:
 
   static NotificationPermission GetPermissionInternal(nsIPrincipal* aPrincipal,
                                                       ErrorResult& rv);
+
+  static NotificationPermission TestPermission(nsIPrincipal* aPrincipal);
 
   bool DispatchClickEvent();
   bool DispatchNotificationClickEvent();
@@ -417,8 +424,12 @@ private:
   // Notification if result is NS_OK. The lifetime of this Notification is tied
   // to an underlying NotificationRef. Do not hold a non-stack raw pointer to
   // it. Be careful about thread safety if acquiring a strong reference.
+  //
+  // Note that aCx may not be in the compartment of aGlobal, but aOptions will
+  // have its JS things in the compartment of aCx.
   static already_AddRefed<Notification>
-  CreateAndShow(nsIGlobalObject* aGlobal,
+  CreateAndShow(JSContext* aCx,
+                nsIGlobalObject* aGlobal,
                 const nsAString& aTitle,
                 const NotificationOptions& aOptions,
                 const nsAString& aScope,
@@ -437,13 +448,13 @@ private:
     return NS_IsMainThread() == !mWorkerPrivate;
   }
 
-  bool RegisterFeature();
-  void UnregisterFeature();
+  bool RegisterWorkerHolder();
+  void UnregisterWorkerHolder();
 
   nsresult ResolveIconAndSoundURL(nsString&, nsString&);
 
   // Only used for Notifications on Workers, worker thread only.
-  UniquePtr<NotificationFeature> mFeature;
+  UniquePtr<NotificationWorkerHolder> mWorkerHolder;
   // Target thread only.
   uint32_t mTaskCount;
 };

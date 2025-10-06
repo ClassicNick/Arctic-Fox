@@ -82,10 +82,8 @@ ImageBitmapRenderingContext::SetDimensions(int32_t aWidth, int32_t aHeight)
 }
 
 NS_IMETHODIMP
-ImageBitmapRenderingContext::InitializeWithSurface(nsIDocShell* aDocShell,
-                                                   gfxASurface* aSurface,
-                                                   int32_t aWidth,
-                                                   int32_t aHeight)
+ImageBitmapRenderingContext::InitializeWithDrawTarget(nsIDocShell* aDocShell,
+                                                      NotNull<gfx::DrawTarget*> aTarget)
 {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
@@ -216,8 +214,14 @@ ImageBitmapRenderingContext::Reset()
 already_AddRefed<Layer>
 ImageBitmapRenderingContext::GetCanvasLayer(nsDisplayListBuilder* aBuilder,
                                             Layer* aOldLayer,
-                                            LayerManager* aManager)
+                                            LayerManager* aManager,
+                                            bool aMirror /* = false */)
 {
+  if (aMirror) {
+    // Not supported for ImageBitmapRenderingContext
+    return nullptr;
+  }
+
   if (!mImage) {
     // No DidTransactionCallback will be received, so mark the context clean
     // now so future invalidations will be dispatched.

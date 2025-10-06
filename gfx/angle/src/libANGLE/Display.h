@@ -18,7 +18,6 @@
 #include "libANGLE/Caps.h"
 #include "libANGLE/Config.h"
 #include "libANGLE/AttributeMap.h"
-#include "libANGLE/renderer/Renderer.h"
 
 namespace gl
 {
@@ -35,6 +34,7 @@ namespace egl
 class Device;
 class Image;
 class Surface;
+class Stream;
 
 class Display final : angle::NonCopyable
 {
@@ -44,7 +44,8 @@ class Display final : angle::NonCopyable
     Error initialize();
     void terminate();
 
-    static egl::Display *getDisplay(EGLNativeDisplayType displayId, const AttributeMap &attribMap);
+    static egl::Display *GetDisplayFromDevice(void *native_display);
+    static egl::Display *GetDisplayFromAttribs(void *native_display, const AttributeMap &attribMap);
 
     static const ClientExtensions &getClientExtensions();
     static const std::string &getClientExtensionString();
@@ -66,6 +67,8 @@ class Display final : angle::NonCopyable
                       const AttributeMap &attribs,
                       Image **outImage);
 
+    Error createStream(const AttributeMap &attribs, Stream **outStream);
+
     Error createContext(const Config *configuration, gl::Context *shareContext, const AttributeMap &attribs,
                         gl::Context **outContext);
 
@@ -73,6 +76,7 @@ class Display final : angle::NonCopyable
 
     void destroySurface(egl::Surface *surface);
     void destroyImage(egl::Image *image);
+    void destroyStream(egl::Stream *stream);
     void destroyContext(gl::Context *context);
 
     bool isInitialized() const;
@@ -80,6 +84,7 @@ class Display final : angle::NonCopyable
     bool isValidContext(gl::Context *context) const;
     bool isValidSurface(egl::Surface *surface) const;
     bool isValidImage(const Image *image) const;
+    bool isValidStream(const Stream *stream) const;
     bool isValidNativeWindow(EGLNativeWindowType window) const;
 
     static bool isValidDisplay(const egl::Display *display);
@@ -89,6 +94,9 @@ class Display final : angle::NonCopyable
     bool isDeviceLost() const;
     bool testDeviceLost();
     void notifyDeviceLost();
+
+    Error waitClient() const;
+    Error waitNative(EGLint engine, egl::Surface *drawSurface, egl::Surface *readSurface) const;
 
     const Caps &getCaps() const;
 
@@ -101,9 +109,10 @@ class Display final : angle::NonCopyable
 
     rx::DisplayImpl *getImplementation() { return mImplementation; }
     Device *getDevice() const;
+    EGLenum getPlatform() const { return mPlatform; }
 
   private:
-    Display(EGLNativeDisplayType displayId);
+    Display(EGLenum platform, EGLNativeDisplayType displayId, Device *eglDevice);
 
     void setAttributes(rx::DisplayImpl *impl, const AttributeMap &attribMap);
 
@@ -125,6 +134,9 @@ class Display final : angle::NonCopyable
     typedef std::set<Image *> ImageSet;
     ImageSet mImageSet;
 
+    typedef std::set<Stream *> StreamSet;
+    StreamSet mStreamSet;
+
     bool mInitialized;
 
     Caps mCaps;
@@ -135,6 +147,7 @@ class Display final : angle::NonCopyable
     std::string mVendorString;
 
     Device *mDevice;
+    EGLenum mPlatform;
 };
 
 }

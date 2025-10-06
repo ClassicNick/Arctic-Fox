@@ -80,8 +80,14 @@ class ArrayBufferObjectMaybeShared : public NativeObject
         return AnyArrayBufferByteLength(this);
     }
 
+    inline bool isDetached() const;
+
     inline SharedMem<uint8_t*> dataPointerEither();
 };
+
+typedef Rooted<ArrayBufferObjectMaybeShared*> RootedArrayBufferObjectMaybeShared;
+typedef Handle<ArrayBufferObjectMaybeShared*> HandleArrayBufferObjectMaybeShared;
+typedef MutableHandle<ArrayBufferObjectMaybeShared*> MutableHandleArrayBufferObjectMaybeShared;
 
 /*
  * ArrayBufferObject
@@ -99,6 +105,8 @@ class ArrayBufferObject : public ArrayBufferObjectMaybeShared
 {
     static bool byteLengthGetterImpl(JSContext* cx, const CallArgs& args);
     static bool fun_slice_impl(JSContext* cx, const CallArgs& args);
+
+    static const ClassOps classOps_;
 
   public:
     static const uint8_t DATA_SLOT = 0;
@@ -198,15 +206,15 @@ class ArrayBufferObject : public ArrayBufferObjectMaybeShared
     static const Class protoClass;
     static const JSFunctionSpec jsfuncs[];
     static const JSFunctionSpec jsstaticfuncs[];
+    static const JSPropertySpec jsstaticprops[];
 
     static bool byteLengthGetter(JSContext* cx, unsigned argc, Value* vp);
 
     static bool fun_slice(JSContext* cx, unsigned argc, Value* vp);
 
     static bool fun_isView(JSContext* cx, unsigned argc, Value* vp);
-#ifdef NIGHTLY_BUILD
-    static bool fun_transfer(JSContext* cx, unsigned argc, Value* vp);
-#endif
+
+    static bool fun_species(JSContext* cx, unsigned argc, Value* vp);
 
     static bool class_constructor(JSContext* cx, unsigned argc, Value* vp);
 
@@ -241,15 +249,7 @@ class ArrayBufferObject : public ArrayBufferObjectMaybeShared
 
     bool hasStealableContents() const {
         // Inline elements strictly adhere to the corresponding buffer.
-        if (!ownsData())
-            return false;
-
-        // Detached contents aren't transferrable because we want a detached
-        // buffer's contents to be backed by zeroed memory equal in length to
-        // the original buffer contents.  Transferring these contents would
-        // allocate new ones based on the current byteLength, which is 0 for a
-        // detached buffer -- not the original byteLength.
-        return !isDetached();
+        return ownsData();
     }
 
     // Return whether the buffer is allocated by js_malloc and should be freed
@@ -275,7 +275,7 @@ class ArrayBufferObject : public ArrayBufferObjectMaybeShared
 
     // Detach this buffer from its original memory.  (This necessarily makes
     // views of this buffer unusable for modifying that original memory.)
-    static MOZ_WARN_UNUSED_RESULT bool
+    static void
     detach(JSContext* cx, Handle<ArrayBufferObject*> buffer, BufferContents newContents);
 
   private:
@@ -362,6 +362,10 @@ class ArrayBufferObject : public ArrayBufferObjectMaybeShared
     }
 };
 
+typedef Rooted<ArrayBufferObject*> RootedArrayBufferObject;
+typedef Handle<ArrayBufferObject*> HandleArrayBufferObject;
+typedef MutableHandle<ArrayBufferObject*> MutableHandleArrayBufferObject;
+
 /*
  * ArrayBufferViewObject
  *
@@ -373,7 +377,7 @@ class ArrayBufferViewObject : public JSObject
   public:
     static ArrayBufferObjectMaybeShared* bufferObject(JSContext* cx, Handle<ArrayBufferViewObject*> obj);
 
-    void notifyBufferDetached(void* newData);
+    void notifyBufferDetached(JSContext* cx, void* newData);
 
 #ifdef DEBUG
     bool isSharedMemory();
@@ -493,6 +497,7 @@ class InnerViewTable
     typedef Vector<ArrayBufferViewObject*, 1, SystemAllocPolicy> ViewVector;
 
     friend class ArrayBufferObject;
+    friend class WeakCacheBase<InnerViewTable>;
 
   private:
     struct MapGCPolicy {
@@ -546,11 +551,33 @@ class InnerViewTable
     void sweep();
     void sweepAfterMinorGC();
 
-    bool needsSweepAfterMinorGC() {
+    bool needsSweepAfterMinorGC() const {
         return !nurseryKeys.empty() || !nurseryKeysValid;
     }
 
     size_t sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf);
+};
+
+template <>
+class WeakCacheBase<InnerViewTable>
+{
+    InnerViewTable& table() {
+        return static_cast<JS::WeakCache<InnerViewTable>*>(this)->get();
+    }
+    const InnerViewTable& table() const {
+        return static_cast<const JS::WeakCache<InnerViewTable>*>(this)->get();
+    }
+
+  public:
+    InnerViewTable::ViewVector* maybeViewsUnbarriered(ArrayBufferObject* obj) {
+        return table().maybeViewsUnbarriered(obj);
+    }
+    void removeViews(ArrayBufferObject* obj) { table().removeViews(obj); }
+    void sweepAfterMinorGC() { table().sweepAfterMinorGC(); }
+    bool needsSweepAfterMinorGC() const { return table().needsSweepAfterMinorGC(); }
+    size_t sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) {
+        return table().sizeOfExcludingThis(mallocSizeOf);
+    }
 };
 
 extern JSObject*

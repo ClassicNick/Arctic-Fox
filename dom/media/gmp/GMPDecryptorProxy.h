@@ -48,8 +48,6 @@ public:
                                 const nsTArray<uint8_t>& aKeyId,
                                 GMPMediaKeyStatus aStatus) = 0;
 
-  virtual void SetCaps(uint64_t aCaps) = 0;
-
   virtual void Decrypted(uint32_t aId,
                          GMPErr aResult,
                          const nsTArray<uint8_t>& aDecryptedData) = 0;
@@ -61,7 +59,9 @@ public:
 
   virtual uint32_t GetPluginId() const = 0;
 
-  virtual nsresult Init(GMPDecryptorProxyCallback* aCallback) = 0;
+  virtual nsresult Init(GMPDecryptorProxyCallback* aCallback,
+                        bool aDistinctiveIdentifierRequired,
+                        bool aPersistentStateRequired) = 0;
 
   virtual void CreateSession(uint32_t aCreateSessionToken,
                              uint32_t aPromiseId,

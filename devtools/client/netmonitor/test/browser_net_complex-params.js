@@ -16,7 +16,7 @@ function test() {
     RequestsMenu.lazyUpdate = false;
     NetworkDetails._params.lazyEmpty = false;
 
-    Task.spawn(function*() {
+    Task.spawn(function* () {
       yield waitForNetworkEvents(aMonitor, 1, 6);
 
       EventUtils.sendMouseEvent({ type: "mousedown" },
@@ -25,31 +25,31 @@ function test() {
         document.querySelectorAll("#details-pane tab")[2]);
 
       yield waitFor(aMonitor.panelWin, EVENTS.REQUEST_POST_PARAMS_DISPLAYED);
-      yield testParamsTab1('a', '""', '{ "foo": "bar" }', '""');
+      yield testParamsTab1("a", '""', '{ "foo": "bar" }', '""');
 
       RequestsMenu.selectedIndex = 1;
       yield waitFor(aMonitor.panelWin, EVENTS.REQUEST_POST_PARAMS_DISPLAYED);
-      yield testParamsTab1('a', '"b"', '{ "foo": "bar" }', '""');
+      yield testParamsTab1("a", '"b"', '{ "foo": "bar" }', '""');
 
       RequestsMenu.selectedIndex = 2;
       yield waitFor(aMonitor.panelWin, EVENTS.REQUEST_POST_PARAMS_DISPLAYED);
-      yield testParamsTab1('a', '"b"', 'foo', '"bar"');
+      yield testParamsTab1("a", '"b"', "foo", '"bar"');
 
       RequestsMenu.selectedIndex = 3;
       yield waitFor(aMonitor.panelWin, EVENTS.REQUEST_POST_PARAMS_DISPLAYED);
-      yield testParamsTab2('a', '""', '{ "foo": "bar" }', "js");
+      yield testParamsTab2("a", '""', '{ "foo": "bar" }', "js");
 
       RequestsMenu.selectedIndex = 4;
       yield waitFor(aMonitor.panelWin, EVENTS.REQUEST_POST_PARAMS_DISPLAYED);
-      yield testParamsTab2('a', '"b"', '{ "foo": "bar" }', "js");
+      yield testParamsTab2("a", '"b"', '{ "foo": "bar" }', "js");
 
       RequestsMenu.selectedIndex = 5;
       yield waitFor(aMonitor.panelWin, EVENTS.REQUEST_POST_PARAMS_DISPLAYED);
-      yield testParamsTab2('a', '"b"', '?foo=bar', "text");
+      yield testParamsTab2("a", '"b"', "?foo=bar", "text");
 
       RequestsMenu.selectedIndex = 6;
       yield waitFor(aMonitor.panelWin, EVENTS.SIDEBAR_POPULATED);
-      yield testParamsTab3('a', '"b"');
+      yield testParamsTab3("a", '"b"');
 
       yield teardown(aMonitor);
       finish();
@@ -103,12 +103,13 @@ function test() {
     function testParamsTab2(
       aQueryStringParamName, aQueryStringParamValue, aRequestPayload, aEditorMode)
     {
+      let isJSON = aEditorMode == "js";
       let tab = document.querySelectorAll("#details-pane tab")[2];
       let tabpanel = document.querySelectorAll("#details-pane tabpanel")[2];
 
       is(tabpanel.querySelectorAll(".variables-view-scope").length, 2,
         "The number of param scopes displayed in this tabpanel is incorrect.");
-      is(tabpanel.querySelectorAll(".variable-or-property").length, 1,
+      is(tabpanel.querySelectorAll(".variable-or-property").length, isJSON ? 4 : 1,
         "The number of param values displayed in this tabpanel is incorrect.");
       is(tabpanel.querySelectorAll(".variables-view-empty-notice").length, 0,
         "The empty notice should not be displayed in this tabpanel.");
@@ -117,8 +118,8 @@ function test() {
         .hasAttribute("hidden"), false,
         "The request params box should not be hidden.");
       is(tabpanel.querySelector("#request-post-data-textarea-box")
-        .hasAttribute("hidden"), false,
-        "The request post data textarea box should not be hidden.");
+        .hasAttribute("hidden"), isJSON,
+        "The request post data textarea box should be hidden.");
 
       let paramsScope = tabpanel.querySelectorAll(".variables-view-scope")[0];
       let payloadScope = tabpanel.querySelectorAll(".variables-view-scope")[1];
@@ -127,7 +128,7 @@ function test() {
         L10N.getStr("paramsQueryString"),
         "The params scope doesn't have the correct title.");
       is(payloadScope.querySelector(".name").getAttribute("value"),
-        L10N.getStr("paramsPostPayload"),
+        isJSON ? L10N.getStr("jsonScopeName") : L10N.getStr("paramsPostPayload"),
         "The request payload scope doesn't have the correct title.");
 
       is(paramsScope.querySelectorAll(".variables-view-variable .name")[0].getAttribute("value"),
@@ -137,12 +138,24 @@ function test() {
         aQueryStringParamValue,
         "The first query string param value was incorrect.");
 
-      return NetMonitorView.editor("#request-post-data-textarea").then((aEditor) => {
-        is(aEditor.getText(), aRequestPayload,
-          "The text shown in the source editor is incorrect.");
-        is(aEditor.getMode(), Editor.modes[aEditorMode],
-          "The mode active in the source editor is incorrect.");
-      });
+      if (isJSON) {
+        let requestPayloadObject = JSON.parse(aRequestPayload);
+        let requestPairs = Object.keys(requestPayloadObject).map(k => [k, requestPayloadObject[k]]);
+        let displayedNames = payloadScope.querySelectorAll(".variables-view-property.variable-or-property .name");
+        let displayedValues = payloadScope.querySelectorAll(".variables-view-property.variable-or-property .value");
+        for (let i = 0; i < requestPairs.length; i++) {
+          let [requestPayloadName, requestPayloadValue] = requestPairs[i];
+          is(requestPayloadName, displayedNames[i].getAttribute("value"), "JSON property name " + i + " should be displayed correctly");
+          is('"' + requestPayloadValue + '"', displayedValues[i].getAttribute("value"), "JSON property value " + i + " should be displayed correctly");
+        }
+      } else {
+        return NetMonitorView.editor("#request-post-data-textarea").then((aEditor) => {
+          is(aEditor.getText(), aRequestPayload,
+            "The text shown in the source editor is incorrect.");
+          is(aEditor.getMode(), Editor.modes[aEditorMode],
+            "The mode active in the source editor is incorrect.");
+        });
+      }
     }
 
     function testParamsTab3(aQueryStringParamName, aQueryStringParamValue) {

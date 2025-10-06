@@ -170,6 +170,18 @@ public:
     return NotReached("CheckValidityIsAcceptable should not be called",
                       Result::FATAL_ERROR_LIBRARY_FAILURE);
   }
+
+  Result NetscapeStepUpMatchesServerAuth(Time, bool&) override
+  {
+    ADD_FAILURE();
+    return NotReached("NetscapeStepUpMatchesServerAuth should not be called",
+                      Result::FATAL_ERROR_LIBRARY_FAILURE);
+  }
+
+  virtual void NoteAuxiliaryExtension(AuxiliaryExtension, Input) override
+  {
+    ADD_FAILURE();
+  }
 };
 
 class DefaultCryptoTrustDomain : public EverythingFailsByDefaultTrustDomain
@@ -212,6 +224,27 @@ class DefaultCryptoTrustDomain : public EverythingFailsByDefaultTrustDomain
   Result CheckValidityIsAcceptable(Time, Time, EndEntityOrCA, KeyPurposeId)
                                    override
   {
+    return Success;
+  }
+
+  Result NetscapeStepUpMatchesServerAuth(Time, /*out*/ bool& matches) override
+  {
+    matches = true;
+    return Success;
+  }
+
+  void NoteAuxiliaryExtension(AuxiliaryExtension, Input) override
+  {
+  }
+};
+
+class DefaultNameMatchingPolicy : public NameMatchingPolicy
+{
+public:
+  virtual Result FallBackToCommonName(
+    Time, /*out*/ FallBackToSearchWithinSubject& fallBackToCommonName) override
+  {
+    fallBackToCommonName = FallBackToSearchWithinSubject::Yes;
     return Success;
   }
 };

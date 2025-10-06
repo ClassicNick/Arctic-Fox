@@ -119,7 +119,7 @@ nsFormFillController::AttributeChanged(nsIDocument* aDocument,
     // to avoid ending up in an endless loop due to re-registering our
     // mutation observer (which would notify us again for *this* event).
     nsCOMPtr<nsIRunnable> event =
-      NS_NewRunnableMethodWithArg<nsCOMPtr<nsIDOMHTMLInputElement>>
+      mozilla::NewRunnableMethod<nsCOMPtr<nsIDOMHTMLInputElement>>
       (this, &nsFormFillController::MaybeStartControllingInput, focusedInput);
     NS_DispatchToCurrentThread(event);
   }
@@ -710,7 +710,7 @@ nsFormFillController::PerformInputListAutoComplete(const nsAString& aSearch,
   return NS_OK;
 }
 
-class UpdateSearchResultRunnable : public nsRunnable
+class UpdateSearchResultRunnable : public mozilla::Runnable
 {
 public:
   UpdateSearchResultRunnable(nsIAutoCompleteObserver* aObserver,
@@ -724,7 +724,7 @@ public:
     MOZ_ASSERT(mObserver, "You shouldn't call this runnable with a null observer!");
   }
 
-  NS_IMETHOD Run() {
+  NS_IMETHOD Run() override {
     mObserver->OnUpdateSearchResult(mSearch, mResult);
     return NS_OK;
   }
@@ -774,6 +774,8 @@ nsFormFillController::StopSearch()
   if (mLastFormAutoComplete) {
     mLastFormAutoComplete->StopAutoCompleteSearch();
     mLastFormAutoComplete = nullptr;
+  } else if (mLoginManager) {
+    mLoginManager->StopSearch();
   }
   return NS_OK;
 }
@@ -1191,6 +1193,14 @@ nsFormFillController::StopControllingInput()
 
   if (mFocusedInputNode) {
     MaybeRemoveMutationObserver(mFocusedInputNode);
+
+    nsresult rv;
+    nsCOMPtr <nsIFormAutoComplete> formAutoComplete =
+      do_GetService("@mozilla.org/satchel/form-autocomplete;1", &rv);
+    if (formAutoComplete) {
+      formAutoComplete->StopControllingInput(mFocusedInput);
+    }
+
     mFocusedInputNode = nullptr;
     mFocusedInput = nullptr;
   }

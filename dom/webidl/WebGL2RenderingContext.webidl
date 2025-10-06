@@ -10,27 +10,27 @@
 typedef long long GLint64; // Should this be int64?
 typedef unsigned long long GLuint64;
 
-[Pref="webgl.enable-prototype-webgl2"]
+[Pref="webgl.enable-webgl2"]
 interface WebGLQuery {
 };
 
-[Pref="webgl.enable-prototype-webgl2"]
+[Pref="webgl.enable-webgl2"]
 interface WebGLSampler {
 };
 
-[Pref="webgl.enable-prototype-webgl2"]
+[Pref="webgl.enable-webgl2"]
 interface WebGLSync {
 };
 
-[Pref="webgl.enable-prototype-webgl2"]
+[Pref="webgl.enable-webgl2"]
 interface WebGLTransformFeedback {
 };
 
-[Pref="webgl.enable-prototype-webgl2"]
+[Pref="webgl.enable-webgl2"]
 interface WebGLVertexArrayObject {
 };
 
-[Pref="webgl.enable-prototype-webgl2"]
+[Pref="webgl.enable-webgl2"]
 interface WebGL2RenderingContext : WebGLRenderingContext
 {
     const GLenum READ_BUFFER                                   = 0x0C02;
@@ -236,7 +236,6 @@ interface WebGL2RenderingContext : WebGLRenderingContext
     const GLenum RGB8_SNORM                                    = 0x8F96;
     const GLenum RGBA8_SNORM                                   = 0x8F97;
     const GLenum SIGNED_NORMALIZED                             = 0x8F9C;
-    const GLenum PRIMITIVE_RESTART_FIXED_INDEX                 = 0x8D69;
     const GLenum COPY_READ_BUFFER                              = 0x8F36;
     const GLenum COPY_WRITE_BUFFER                             = 0x8F37;
     const GLenum COPY_READ_BUFFER_BINDING                      = 0x8F36; /* Same as COPY_READ_BUFFER */
@@ -289,10 +288,6 @@ interface WebGL2RenderingContext : WebGLRenderingContext
     const GLenum ANY_SAMPLES_PASSED_CONSERVATIVE               = 0x8D6A;
     const GLenum SAMPLER_BINDING                               = 0x8919;
     const GLenum RGB10_A2UI                                    = 0x906F;
-    const GLenum TEXTURE_SWIZZLE_R                             = 0x8E42;
-    const GLenum TEXTURE_SWIZZLE_G                             = 0x8E43;
-    const GLenum TEXTURE_SWIZZLE_B                             = 0x8E44;
-    const GLenum TEXTURE_SWIZZLE_A                             = 0x8E45;
     const GLenum GREEN                                         = 0x1904;
     const GLenum BLUE                                          = 0x1905;
     const GLenum INT_2_10_10_10_REV                            = 0x8D9F;
@@ -323,8 +318,15 @@ interface WebGL2RenderingContext : WebGLRenderingContext
     /* Buffer objects */
     void copyBufferSubData(GLenum readTarget, GLenum writeTarget, GLintptr readOffset,
                            GLintptr writeOffset, GLsizeiptr size);
-    void getBufferSubData(GLenum target, GLintptr offset, ArrayBuffer? returnedData);
-    void getBufferSubData(GLenum target, GLintptr offset, SharedArrayBuffer returnedData);
+    void getBufferSubData(GLenum target, GLintptr offset, ArrayBufferView dstData);
+
+    [Throws] /* Throws on readback in a write-only context. */
+    void readPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format,
+                    GLenum type, GLintptr offset);
+    /* Include our WebGL 1 function override(s) */
+    [Throws]
+    void readPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format,
+                    GLenum type, ArrayBufferView pixels);
 
     /* Framebuffer objects */
     void blitFramebuffer(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0, GLint dstY0,
@@ -335,8 +337,8 @@ interface WebGL2RenderingContext : WebGLRenderingContext
     void invalidateFramebuffer(GLenum target, sequence<GLenum> attachments);
 
     [Throws]
-    void invalidateSubFramebuffer (GLenum target, sequence<GLenum> attachments,
-                                   GLint x, GLint y, GLsizei width, GLsizei height);
+    void invalidateSubFramebuffer(GLenum target, sequence<GLenum> attachments, GLint x,
+                                  GLint y, GLsizei width, GLsizei height);
 
     void readBuffer(GLenum src);
 
@@ -345,22 +347,28 @@ interface WebGL2RenderingContext : WebGLRenderingContext
     any getInternalformatParameter(GLenum target, GLenum internalformat, GLenum pname);
     void renderbufferStorageMultisample(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height);
 
+    ////////////////////////////////////
+
     /* Texture objects */
     void texStorage2D(GLenum target, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height);
     void texStorage3D(GLenum target, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height,
                       GLsizei depth);
 
+    //////
+
     void texImage3D(GLenum target, GLint level, GLenum internalformat, GLsizei width,
                     GLsizei height, GLsizei depth, GLint border, GLenum format,
                     GLenum type, ArrayBufferView? pixels);
+
+    //////
+
     [Throws] // Can't actually throw.
     void texSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
                        GLint zoffset, GLsizei width, GLsizei height, GLsizei depth,
-                       GLenum format, GLenum type,
-                       ArrayBufferView? pixels);
+                       GLenum format, GLenum type, ArrayBufferView pixels);
     [Throws] // Can't actually throw.
     void texSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
-                       GLint zoffset, GLenum format, GLenum type, ImageData? data);
+                       GLint zoffset, GLenum format, GLenum type, ImageData data);
     [Throws]
     void texSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
                        GLint zoffset, GLenum format, GLenum type, HTMLImageElement image);
@@ -371,6 +379,8 @@ interface WebGL2RenderingContext : WebGLRenderingContext
     [Throws]
     void texSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
                        GLint zoffset, GLenum format, GLenum type, HTMLVideoElement video);
+
+    //////
 
     void copyTexSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
                            GLint zoffset, GLint x, GLint y, GLsizei width,
@@ -383,6 +393,70 @@ interface WebGL2RenderingContext : WebGLRenderingContext
                                  GLint zoffset, GLsizei width, GLsizei height,
                                  GLsizei depth, GLenum format,
                                  ArrayBufferView data);
+
+    ////////////////
+    // Texture from PBO
+
+    [Throws] // Can't actually throw.
+    void texImage2D(GLenum target, GLint level, GLenum internalformat, GLsizei width,
+                    GLsizei height, GLint border, GLenum format, GLenum type,
+                    GLintptr offset);
+
+    [Throws] // Can't actually throw.
+    void texSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
+                       GLsizei width, GLsizei height, GLenum format, GLenum type,
+                       GLintptr offset);
+
+    void texImage3D(GLenum target, GLint level, GLenum internalformat, GLsizei width,
+                    GLsizei height, GLsizei depth, GLint border, GLenum format,
+                    GLenum type, GLintptr offset);
+
+    [Throws] // Can't actually throw.
+    void texSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
+                       GLint zoffset, GLsizei width, GLsizei height, GLsizei depth,
+                       GLenum format, GLenum type, GLintptr offset);
+
+    ////////////////
+    // WebGL 1 overloads
+
+    // Overloads must share [Throws].
+    [Throws] // Can't throw.
+    void texImage2D(GLenum target, GLint level, GLenum internalformat, GLsizei width,
+                    GLsizei height, GLint border, GLenum format, GLenum type,
+                    ArrayBufferView? pixels);
+    [Throws] // Can't throw.
+    void texImage2D(GLenum target, GLint level, GLenum internalformat, GLenum format,
+                    GLenum type, ImageData pixels);
+    [Throws] // May throw DOMException
+    void texImage2D(GLenum target, GLint level, GLenum internalformat, GLenum format,
+                    GLenum type, HTMLImageElement image);
+    [Throws] // May throw DOMException
+    void texImage2D(GLenum target, GLint level, GLenum internalformat, GLenum format,
+                    GLenum type, HTMLCanvasElement canvas);
+    [Throws] // May throw DOMException
+    void texImage2D(GLenum target, GLint level, GLenum internalformat, GLenum format,
+                    GLenum type, HTMLVideoElement video);
+
+    //////
+
+    [Throws] // Can't throw.
+    void texSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
+                       GLsizei width, GLsizei height, GLenum format, GLenum type,
+                       ArrayBufferView pixels);
+    [Throws] // Can't throw.
+    void texSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
+                       GLenum format, GLenum type, ImageData pixels);
+    [Throws]  // May throw DOMException
+    void texSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
+                       GLenum format, GLenum type, HTMLImageElement image);
+    [Throws] // May throw DOMException
+    void texSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
+                       GLenum format, GLenum type, HTMLCanvasElement canvas);
+    [Throws] // May throw DOMException
+    void texSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
+                       GLenum format, GLenum type, HTMLVideoElement video);
+
+    ////////////////////////////////////
 
     /* Programs and shaders */
     [WebGLHandlesContextLoss] GLint getFragDataLocation(WebGLProgram? program, DOMString name);
@@ -480,7 +554,7 @@ interface WebGL2RenderingContext : WebGLRenderingContext
     // GLintptr here, otherwise interface generator returns error.
     (WebGLBuffer or GLintptr)? getIndexedParameter(GLenum target, GLuint index);
     sequence<GLuint>? getUniformIndices(WebGLProgram? program, sequence<DOMString> uniformNames);
-    sequence<GLint>? getActiveUniforms(WebGLProgram? program, sequence<GLuint> uniformIndices, GLenum pname);
+    any getActiveUniforms(WebGLProgram? program, sequence<GLuint> uniformIndices, GLenum pname);
     GLuint getUniformBlockIndex(WebGLProgram? program, DOMString uniformBlockName);
     [Throws]
     (GLuint or Uint32Array or GLboolean)? getActiveUniformBlockParameter(WebGLProgram? program, GLuint uniformBlockIndex, GLenum pname);
@@ -492,4 +566,8 @@ interface WebGL2RenderingContext : WebGLRenderingContext
     void deleteVertexArray(WebGLVertexArrayObject? vertexArray);
     [WebGLHandlesContextLoss] GLboolean isVertexArray(WebGLVertexArrayObject? vertexArray);
     void bindVertexArray(WebGLVertexArrayObject? array);
+};
+
+[NoInterfaceObject]
+interface EXT_color_buffer_float {
 };

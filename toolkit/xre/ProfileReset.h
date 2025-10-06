@@ -16,7 +16,7 @@ nsresult CreateResetProfile(nsIToolkitProfileService* aProfileSvc,
 
 nsresult ProfileResetCleanup(nsIToolkitProfile* aOldProfile);
 
-class ProfileResetCleanupResultTask : public nsRunnable
+class ProfileResetCleanupResultTask : public mozilla::Runnable
 {
 public:
   ProfileResetCleanupResultTask()
@@ -25,7 +25,7 @@ public:
     MOZ_ASSERT(!NS_IsMainThread());
   }
 
-  NS_IMETHOD Run() {
+  NS_IMETHOD Run() override {
     MOZ_ASSERT(NS_IsMainThread());
     mWorkerThread->Shutdown();
     return NS_OK;
@@ -35,7 +35,7 @@ private:
   nsCOMPtr<nsIThread> mWorkerThread;
 };
 
-class ProfileResetCleanupAsyncTask : public nsRunnable
+class ProfileResetCleanupAsyncTask : public mozilla::Runnable
 {
 public:
   ProfileResetCleanupAsyncTask(nsIFile* aProfileDir, nsIFile* aProfileLocalDir,
@@ -49,7 +49,7 @@ public:
 /**
  * Copy a root profile to a backup folder before deleting it.  Then delete the local profile dir.
  */
-  NS_IMETHOD Run()
+  NS_IMETHOD Run() override
   {
     // Copy to the destination then delete the profile. A move doesn't follow links.
     nsresult rv = mProfileDir->CopyToFollowingLinks(mTargetDir, mLeafName);

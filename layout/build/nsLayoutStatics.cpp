@@ -23,7 +23,6 @@
 #include "nsCSSRendering.h"
 #include "mozilla/dom/Attr.h"
 #include "nsDOMClassInfo.h"
-#include "nsEditorEventListener.h"
 #include "mozilla/EventListenerManager.h"
 #include "nsFrame.h"
 #include "nsGlobalWindow.h"
@@ -66,12 +65,10 @@
 #include "ActiveLayerTracker.h"
 #include "CounterStyleManager.h"
 #include "FrameLayerBuilder.h"
-#include "mozilla/dom/RequestSyncWifiService.h"
 #include "AnimationCommon.h"
 #include "LayerAnimationInfo.h"
 
 #include "AudioChannelService.h"
-#include "mozilla/dom/DataStoreService.h"
 #include "mozilla/dom/PromiseDebugging.h"
 #include "mozilla/dom/WebCryptoThreadPool.h"
 
@@ -86,7 +83,6 @@
 #include "nsMenuBarListener.h"
 #endif
 
-#include "nsHTMLEditor.h"
 #include "nsTextServicesDocument.h"
 
 #ifdef MOZ_WEBSPEECH
@@ -111,7 +107,6 @@ using namespace mozilla::system;
 #include "nsJSEnvironment.h"
 #include "nsContentSink.h"
 #include "nsFrameMessageManager.h"
-#include "nsRefreshDriver.h"
 #include "nsDOMMutationObserver.h"
 #include "nsHyphenationManager.h"
 #include "nsEditorSpellCheck.h"
@@ -129,8 +124,15 @@ using namespace mozilla::system;
 #include "CameraPreferences.h"
 #include "TouchManager.h"
 #include "MediaDecoder.h"
-#include "mozilla/layers/CompositorLRU.h"
+#include "MediaPrefs.h"
 #include "mozilla/dom/devicestorage/DeviceStorageStatics.h"
+#include "mozilla/ServoBindings.h"
+#include "mozilla/StaticPresData.h"
+#include "mozilla/dom/WebIDLGlobalNameHash.h"
+
+#ifdef MOZ_B2G_BT
+#include "mozilla/dom/BluetoothUUID.h"
+#endif
 
 using namespace mozilla;
 using namespace mozilla::net;
@@ -193,9 +195,8 @@ nsLayoutStatics::Initialize()
 
   nsCellMap::Init();
 
+  StaticPresData::Init();
   nsCSSRendering::Init();
-
-  nsTextFrameTextRunCache::Init();
 
   rv = nsHTMLDNSPrefetch::Initialize();
   if (NS_FAILED(rv)) {
@@ -266,7 +267,6 @@ nsLayoutStatics::Initialize()
   nsLayoutUtils::Initialize();
   nsIPresShell::InitializeStatics();
   TouchManager::InitializeStatics();
-  nsRefreshDriver::InitializeStatics();
   nsPrincipal::InitializeStatics();
 
   nsCORSListenerProxy::Startup();
@@ -300,10 +300,6 @@ nsLayoutStatics::Initialize()
 
   ServiceWorkerRegistrar::Initialize();
 
-#ifdef MOZ_B2G
-  RequestSyncWifiService::Init();
-#endif
-
 #ifdef DEBUG
   nsStyleContext::Initialize();
   mozilla::LayerAnimationInfo::Initialize();
@@ -313,11 +309,18 @@ nsLayoutStatics::Initialize()
 
   PromiseDebugging::Init();
 
-  layers::CompositorLRU::Init();
-
   mozilla::dom::devicestorage::DeviceStorageStatics::Initialize();
 
   mozilla::dom::WebCryptoThreadPool::Initialize();
+
+  // NB: We initialize servo in nsAppRunner.cpp, because we need to do it after
+  // creating the hidden DOM window to support some current stylo hacks. We
+  // should move initialization back here once those go away.
+
+#ifndef MOZ_WIDGET_ANDROID
+  // On Android, we instantiate it when constructing AndroidBridge.
+  MediaPrefs::GetSingleton();
+#endif
 
   return NS_OK;
 }
@@ -327,6 +330,10 @@ nsLayoutStatics::Shutdown()
 {
   // Don't need to shutdown nsWindowMemoryReporter, that will be done by the
   // memory reporter manager.
+
+#ifdef MOZ_STYLO
+  Servo_Shutdown();
+#endif
 
   nsMessageManagerScriptExecutor::Shutdown();
   nsFocusManager::Shutdown();
@@ -340,9 +347,9 @@ nsLayoutStatics::Shutdown()
   IMEStateManager::Shutdown();
   nsCSSParser::Shutdown();
   nsCSSRuleProcessor::Shutdown();
-  nsTextFrameTextRunCache::Shutdown();
   nsHTMLDNSPrefetch::Shutdown();
   nsCSSRendering::Shutdown();
+  StaticPresData::Shutdown();
 #ifdef DEBUG
   nsFrame::DisplayReflowShutdown();
 #endif
@@ -381,6 +388,7 @@ nsLayoutStatics::Shutdown()
   ShutdownJSEnvironment();
   nsGlobalWindow::ShutDown();
   nsDOMClassInfo::ShutDown();
+  WebIDLGlobalNameHash::Shutdown();
   nsListControlFrame::Shutdown();
   nsXBLService::Shutdown();
   nsAutoCopyListener::Shutdown();
@@ -425,11 +433,7 @@ nsLayoutStatics::Shutdown()
   nsHyphenationManager::Shutdown();
   nsDOMMutationObserver::Shutdown();
 
-  DataStoreService::Shutdown();
-
   ContentParent::ShutDown();
-
-  nsRefreshDriver::Shutdown();
 
   DisplayItemClip::Shutdown();
 
@@ -440,4 +444,8 @@ nsLayoutStatics::Shutdown()
   CameraPreferences::Shutdown();
 
   PromiseDebugging::Shutdown();
+
+#ifdef MOZ_B2G_BT
+  BluetoothUUID::HandleShutdown();
+#endif
 }

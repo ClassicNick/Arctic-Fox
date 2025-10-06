@@ -16,6 +16,7 @@
 
 #include "jit/BaselineJIT.h"
 #include "jit/CompileWrappers.h"
+#include "threading/LockGuard.h"
 #include "vm/Runtime.h"
 #include "vm/Time.h"
 #include "vm/TraceLoggingGraph.h"
@@ -82,24 +83,6 @@ rdtsc(void)
 }
 
 #endif // defined(MOZ_HAVE_RDTSC)
-
-class AutoTraceLoggerThreadStateLock
-{
-  TraceLoggerThreadState* logging;
-
-  public:
-    explicit AutoTraceLoggerThreadStateLock(TraceLoggerThreadState* logging MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
-      : logging(logging)
-    {
-        MOZ_GUARD_OBJECT_NOTIFIER_INIT;
-        PR_Lock(logging->lock);
-    }
-    ~AutoTraceLoggerThreadStateLock() {
-        PR_Unlock(logging->lock);
-    }
-  private:
-    MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
-};
 
 static bool
 EnsureTraceLoggerState()
@@ -373,12 +356,14 @@ TraceLoggerThread::getOrCreateEventPayload(const char* text)
         return p->value();
     }
 
+    AutoTraceLog internal(this, TraceLogger_Internal);
+
     size_t len = strlen(text);
     char* str = js_pod_malloc<char>(len + 1);
     if (!str)
         return nullptr;
 
-    DebugOnly<size_t> ret = JS_snprintf(str, len + 1, "%s", text);
+    DebugOnly<size_t> ret = snprintf(str, len + 1, "%s", text);
     MOZ_ASSERT(ret == len);
     MOZ_ASSERT(strlen(str) == len);
 
@@ -395,13 +380,13 @@ TraceLoggerThread::getOrCreateEventPayload(const char* text)
         return nullptr;
     }
 
-    if (!pointerMap.add(p, text, payload))
-        return nullptr;
-
     if (graph.get())
         graph->addTextId(textId, str);
 
     nextTextId++;
+
+    if (!pointerMap.add(p, text, payload))
+        return nullptr;
 
     return payload;
 }
@@ -422,11 +407,16 @@ TraceLoggerThread::getOrCreateEventPayload(TraceLoggerTextId type, const char* f
     if (!traceLoggerState->isTextIdEnabled(type))
         return getOrCreateEventPayload(type);
 
-    PointerHashMap::AddPtr p = pointerMap.lookupForAdd(ptr);
-    if (p) {
-        MOZ_ASSERT(p->value()->textId() < nextTextId); // Sanity check.
-        return p->value();
+    PointerHashMap::AddPtr p;
+    if (ptr) {
+        p = pointerMap.lookupForAdd(ptr);
+        if (p) {
+            MOZ_ASSERT(p->value()->textId() < nextTextId); // Sanity check.
+            return p->value();
+        }
     }
+
+    AutoTraceLog internal(this, TraceLogger_Internal);
 
     // Compute the length of the string to create.
     size_t lenFilename = strlen(filename);
@@ -441,7 +431,7 @@ TraceLoggerThread::getOrCreateEventPayload(TraceLoggerTextId type, const char* f
         return nullptr;
 
     DebugOnly<size_t> ret =
-        JS_snprintf(str, len + 1, "script %s:%" PRIuSIZE ":%" PRIuSIZE, filename, lineno, colno);
+        snprintf(str, len + 1, "script %s:%" PRIuSIZE ":%" PRIuSIZE, filename, lineno, colno);
     MOZ_ASSERT(ret == len);
     MOZ_ASSERT(strlen(str) == len);
 
@@ -457,13 +447,15 @@ TraceLoggerThread::getOrCreateEventPayload(TraceLoggerTextId type, const char* f
         return nullptr;
     }
 
-    if (!pointerMap.add(p, ptr, payload))
-        return nullptr;
-
     if (graph.get())
         graph->addTextId(textId, str);
 
     nextTextId++;
+
+    if (ptr) {
+        if (!pointerMap.add(p, ptr, payload))
+            return nullptr;
+    }
 
     return payload;
 }
@@ -472,14 +464,14 @@ TraceLoggerEventPayload*
 TraceLoggerThread::getOrCreateEventPayload(TraceLoggerTextId type, JSScript* script)
 {
     return getOrCreateEventPayload(type, script->filename(), script->lineno(), script->column(),
-                                   script);
+                                   nullptr);
 }
 
 TraceLoggerEventPayload*
 TraceLoggerThread::getOrCreateEventPayload(TraceLoggerTextId type,
                                            const JS::ReadOnlyCompileOptions& script)
 {
-    return getOrCreateEventPayload(type, script.filename(), script.lineno, script.column, &script);
+    return getOrCreateEventPayload(type, script.filename(), script.lineno, script.column, nullptr);
 }
 
 void
@@ -552,19 +544,46 @@ TraceLoggerThread::log(uint32_t id)
         return;
 
     MOZ_ASSERT(traceLoggerState);
-    if (!events.ensureSpaceBeforeAdd()) {
+
+    // We request for 3 items to add, since if we don't have enough room
+    // we record the time it took to make more place. To log this information
+    // we need 2 extra free entries.
+    if (!events.hasSpaceForAdd(3)) {
         uint64_t start = rdtsc() - traceLoggerState->startupTime;
 
-        if (graph.get())
-            graph->log(events);
+        if (!events.ensureSpaceBeforeAdd(3)) {
+            if (graph.get())
+                graph->log(events);
 
-        iteration_++;
-        events.clear();
+            iteration_++;
+            events.clear();
+
+            // Remove the item in the pointerMap for which the payloads
+            // have no uses anymore
+            for (PointerHashMap::Enum e(pointerMap); !e.empty(); e.popFront()) {
+                if (e.front().value()->uses() != 0)
+                    continue;
+
+                TextIdHashMap::Ptr p = textIdPayloads.lookup(e.front().value()->textId());
+                MOZ_ASSERT(p);
+                textIdPayloads.remove(p);
+
+                e.removeFront();
+            }
+
+            // Free all payloads that have no uses anymore.
+            for (TextIdHashMap::Enum e(textIdPayloads); !e.empty(); e.popFront()) {
+                if (e.front().value()->uses() == 0) {
+                    js_delete(e.front().value());
+                    e.removeFront();
+                }
+            }
+        }
 
         // Log the time it took to flush the events as being from the
         // Tracelogger.
         if (graph.get()) {
-            MOZ_ASSERT(events.capacity() > 2);
+            MOZ_ASSERT(events.hasSpaceForAdd(2));
             EventEntry& entryStart = events.pushUninitialized();
             entryStart.time = start;
             entryStart.textId = TraceLogger_Internal;
@@ -574,26 +593,6 @@ TraceLoggerThread::log(uint32_t id)
             entryStop.textId = TraceLogger_Stop;
         }
 
-        // Remove the item in the pointerMap for which the payloads
-        // have no uses anymore
-        for (PointerHashMap::Enum e(pointerMap); !e.empty(); e.popFront()) {
-            if (e.front().value()->uses() != 0)
-                continue;
-
-            TextIdHashMap::Ptr p = textIdPayloads.lookup(e.front().value()->textId());
-            MOZ_ASSERT(p);
-            textIdPayloads.remove(p);
-
-            e.removeFront();
-        }
-
-        // Free all payloads that have no uses anymore.
-        for (TextIdHashMap::Enum e(textIdPayloads); !e.empty(); e.popFront()) {
-            if (e.front().value()->uses() == 0) {
-                js_delete(e.front().value());
-                e.removeFront();
-            }
-        }
     }
 
     uint64_t time = rdtsc() - traceLoggerState->startupTime;
@@ -617,11 +616,6 @@ TraceLoggerThreadState::~TraceLoggerThreadState()
         threadLoggers.finish();
     }
 
-    if (lock) {
-        PR_DestroyLock(lock);
-        lock = nullptr;
-    }
-
 #ifdef DEBUG
     initialized = false;
 #endif
@@ -643,10 +637,6 @@ ContainsFlag(const char* str, const char* flag)
 bool
 TraceLoggerThreadState::init()
 {
-    lock = PR_NewLock();
-    if (!lock)
-        return false;
-
     if (!threadLoggers.init())
         return false;
 
@@ -663,10 +653,10 @@ TraceLoggerThreadState::init()
             "Collections:\n"
             "  Default        Output all default. It includes:\n"
             "                 AnnotateScripts, Bailout, Baseline, BaselineCompilation, GC,\n"
-            "                 GCAllocation, GCSweeping, Interpreter, IonCompilation, IonLinking,\n"
-            "                 IonMonkey, MinorGC, ParserCompileFunction, ParserCompileScript,\n"
-            "                 ParserCompileLazy, ParserCompileModule, IrregexpCompile,\n"
-            "                 IrregexpExecute, Scripts, Engine\n"
+            "                 GCAllocation, GCSweeping, Interpreter, IonAnalysis, IonCompilation,\n"
+            "                 IonLinking, IonMonkey, MinorGC, ParserCompileFunction,\n"
+            "                 ParserCompileScript, ParserCompileLazy, ParserCompileModule,\n"
+            "                 IrregexpCompile, IrregexpExecute, Scripts, Engine, WasmCompilation\n"
             "\n"
             "  IonCompiler    Output all information about compilation. It includes:\n"
             "                 IonCompilation, IonLinking, PruneUnusedBranches, FoldTests,\n"
@@ -676,7 +666,9 @@ TraceLoggerThreadState::init()
             "                 LoopUnrolling, EffectiveAddressAnalysis, AlignmentMaskAnalysis, \n"
             "                 EliminateDeadCode, ReorderInstructions, EdgeCaseAnalysis, \n"
             "                 EliminateRedundantChecks, AddKeepAliveInstructions, GenerateLIR, \n"
-            "                 RegisterAllocation, GenerateCode, Scripts\n"
+            "                 RegisterAllocation, GenerateCode, Scripts, IonBuilderRestartLoop\n"
+            "\n"
+            "  VMSpecific     Output the specific name of the VM call"
             "\n"
             "Specific log items:\n"
         );
@@ -708,6 +700,7 @@ TraceLoggerThreadState::init()
         enabledTextIds[TraceLogger_GCAllocation] = true;
         enabledTextIds[TraceLogger_GCSweeping] = true;
         enabledTextIds[TraceLogger_Interpreter] = true;
+        enabledTextIds[TraceLogger_IonAnalysis] = true;
         enabledTextIds[TraceLogger_IonCompilation] = true;
         enabledTextIds[TraceLogger_IonLinking] = true;
         enabledTextIds[TraceLogger_IonMonkey] = true;
@@ -720,6 +713,7 @@ TraceLoggerThreadState::init()
         enabledTextIds[TraceLogger_IrregexpExecute] = true;
         enabledTextIds[TraceLogger_Scripts] = true;
         enabledTextIds[TraceLogger_Engine] = true;
+        enabledTextIds[TraceLogger_WasmCompilation] = true;
     }
 
     if (ContainsFlag(env, "IonCompiler")) {
@@ -752,6 +746,7 @@ TraceLoggerThreadState::init()
         enabledTextIds[TraceLogger_RegisterAllocation] = true;
         enabledTextIds[TraceLogger_GenerateCode] = true;
         enabledTextIds[TraceLogger_Scripts] = true;
+        enabledTextIds[TraceLogger_IonBuilderRestartLoop] = true;
     }
 
     enabledTextIds[TraceLogger_Interpreter] = enabledTextIds[TraceLogger_Engine];
@@ -800,14 +795,14 @@ TraceLoggerThreadState::enableTextId(JSContext* cx, uint32_t textId)
     if (enabledTextIds[textId])
         return;
 
+    ReleaseAllJITCode(cx->runtime()->defaultFreeOp());
+
     enabledTextIds[textId] = true;
     if (textId == TraceLogger_Engine) {
         enabledTextIds[TraceLogger_IonMonkey] = true;
         enabledTextIds[TraceLogger_Baseline] = true;
         enabledTextIds[TraceLogger_Interpreter] = true;
     }
-
-    ReleaseAllJITCode(cx->runtime()->defaultFreeOp());
 
     if (textId == TraceLogger_Scripts)
         jit::ToggleBaselineTraceLoggerScripts(cx->runtime(), true);
@@ -823,14 +818,14 @@ TraceLoggerThreadState::disableTextId(JSContext* cx, uint32_t textId)
     if (!enabledTextIds[textId])
         return;
 
+    ReleaseAllJITCode(cx->runtime()->defaultFreeOp());
+
     enabledTextIds[textId] = false;
     if (textId == TraceLogger_Engine) {
         enabledTextIds[TraceLogger_IonMonkey] = false;
         enabledTextIds[TraceLogger_Baseline] = false;
         enabledTextIds[TraceLogger_Interpreter] = false;
     }
-
-    ReleaseAllJITCode(cx->runtime()->defaultFreeOp());
 
     if (textId == TraceLogger_Scripts)
         jit::ToggleBaselineTraceLoggerScripts(cx->runtime(), false);
@@ -872,7 +867,7 @@ TraceLoggerThreadState::forMainThread(PerThreadData* mainThread)
 {
     MOZ_ASSERT(initialized);
     if (!mainThread->traceLogger) {
-        AutoTraceLoggerThreadStateLock lock(this);
+        LockGuard<Mutex> guard(lock);
 
         TraceLoggerThread* logger = create();
         if (!logger)
@@ -898,18 +893,17 @@ TraceLoggerThreadState::forMainThread(PerThreadData* mainThread)
 TraceLoggerThread*
 js::TraceLoggerForCurrentThread()
 {
-    PRThread* thread = PR_GetCurrentThread();
     if (!EnsureTraceLoggerState())
         return nullptr;
-    return traceLoggerState->forThread(thread);
+    return traceLoggerState->forThread(ThisThread::GetId());
 }
 
 TraceLoggerThread*
-TraceLoggerThreadState::forThread(PRThread* thread)
+TraceLoggerThreadState::forThread(const Thread::Id& thread)
 {
     MOZ_ASSERT(initialized);
 
-    AutoTraceLoggerThreadStateLock lock(this);
+    LockGuard<Mutex> guard(lock);
 
     ThreadLoggerHashMap::AddPtr p = threadLoggers.lookupForAdd(thread);
     if (p)
@@ -1030,4 +1024,11 @@ TraceLoggerEvent::operator=(const TraceLoggerEvent& other)
     payload_ = other.payload_;
 
     return *this;
+}
+
+TraceLoggerEvent::TraceLoggerEvent(const TraceLoggerEvent& other)
+{
+    payload_ = other.payload_;
+    if (hasPayload())
+        payload()->use();
 }

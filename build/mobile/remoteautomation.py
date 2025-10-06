@@ -7,6 +7,7 @@ import glob
 import time
 import re
 import os
+import posixpath
 import tempfile
 import shutil
 import subprocess
@@ -192,8 +193,36 @@ class RemoteAutomation(Automation):
         if javaException:
             return True
 
-        # No crash reporting
-        return False
+        # If crash reporting is disabled (MOZ_CRASHREPORTER!=1), we can't say
+        # anything.
+        if not self.CRASHREPORTER:
+            return False
+
+        try:
+            dumpDir = tempfile.mkdtemp()
+            remoteCrashDir = posixpath.join(self._remoteProfile, 'minidumps')
+            if not self._devicemanager.dirExists(remoteCrashDir):
+                # If crash reporting is enabled (MOZ_CRASHREPORTER=1), the
+                # minidumps directory is automatically created when Fennec
+                # (first) starts, so its lack of presence is a hint that
+                # something went wrong.
+                print "Automation Error: No crash directory (%s) found on remote device" % remoteCrashDir
+                # Whilst no crash was found, the run should still display as a failure
+                return True
+            self._devicemanager.getDirectory(remoteCrashDir, dumpDir)
+
+            logger = get_default_logger()
+            if logger is not None:
+                crashed = mozcrash.log_crashes(logger, dumpDir, symbolsPath, test=self.lastTestSeen)
+            else:
+                crashed = Automation.checkForCrashes(self, dumpDir, symbolsPath)
+
+        finally:
+            try:
+                shutil.rmtree(dumpDir)
+            except:
+                print "WARNING: unable to remove directory: %s" % dumpDir
+        return crashed
 
     def buildCommandLine(self, app, debuggerInfo, profileDir, testURL, extraArgs):
         # If remote profile is specified, use that instead
@@ -291,6 +320,7 @@ class RemoteAutomation(Automation):
 
             self.logBuffer += newLogContent
             lines = self.logBuffer.split('\n')
+            lines = [l for l in lines if l]
 
             if lines:
                 # We only keep the last (unfinished) line in the buffer
@@ -302,7 +332,6 @@ class RemoteAutomation(Automation):
 
             for line in lines:
                 # This passes the line to the logger (to be logged or buffered)
-                # and returns a list of structured messages (dict)
                 parsed_messages = self.messageLogger.write(line)
                 for message in parsed_messages:
                     if isinstance(message, dict) and message.get('action') == 'test_start':

@@ -7,6 +7,7 @@
 #define __NS_SVGOUTERSVGFRAME_H__
 
 #include "mozilla/Attributes.h"
+#include "nsAutoPtr.h"
 #include "nsISVGSVGFrame.h"
 #include "nsSVGContainerFrame.h"
 #include "nsRegion.h"
@@ -17,10 +18,8 @@ class nsSVGForeignObjectFrame;
 ////////////////////////////////////////////////////////////////////////
 // nsSVGOuterSVGFrame class
 
-typedef nsSVGDisplayContainerFrame nsSVGOuterSVGFrameBase;
-
-class nsSVGOuterSVGFrame final : public nsSVGOuterSVGFrameBase,
-                                 public nsISVGSVGFrame
+class nsSVGOuterSVGFrame final : public nsSVGDisplayContainerFrame
+                               , public nsISVGSVGFrame
 {
   friend nsContainerFrame*
   NS_NewSVGOuterSVGFrame(nsIPresShell* aPresShell, nsStyleContext* aContext);
@@ -56,15 +55,15 @@ public:
               ComputeSizeFlags aFlags) override;
 
   virtual void Reflow(nsPresContext*           aPresContext,
-                      nsHTMLReflowMetrics&     aDesiredSize,
-                      const nsHTMLReflowState& aReflowState,
+                      ReflowOutput&     aDesiredSize,
+                      const ReflowInput& aReflowInput,
                       nsReflowStatus&          aStatus) override;
 
   virtual void DidReflow(nsPresContext*   aPresContext,
-                         const nsHTMLReflowState*  aReflowState,
+                         const ReflowInput*  aReflowInput,
                          nsDidReflowStatus aStatus) override;
 
-  virtual bool UpdateOverflow() override;
+  virtual void UnionChildOverflow(nsOverflowAreas& aOverflowAreas) override;
 
   virtual void BuildDisplayList(nsDisplayListBuilder*   aBuilder,
                                 const nsRect&           aDirtyRect,
@@ -115,9 +114,9 @@ public:
   virtual void NotifyViewportOrTransformChanged(uint32_t aFlags) override;
 
   // nsISVGChildFrame methods:
-  virtual nsresult PaintSVG(gfxContext& aContext,
-                            const gfxMatrix& aTransform,
-                            const nsIntRect* aDirtyRect = nullptr) override;
+  virtual DrawResult PaintSVG(gfxContext& aContext,
+                              const gfxMatrix& aTransform,
+                              const nsIntRect* aDirtyRect = nullptr) override;
   virtual SVGBBox GetBBoxContribution(const Matrix &aToBBoxUserspace,
                                       uint32_t aFlags) override;
 
@@ -209,8 +208,6 @@ protected:
 ////////////////////////////////////////////////////////////////////////
 // nsSVGOuterSVGAnonChildFrame class
 
-typedef nsSVGDisplayContainerFrame nsSVGOuterSVGAnonChildFrameBase;
-
 /**
  * nsSVGOuterSVGFrames have a single direct child that is an instance of this
  * class, and which is used to wrap their real child frames. Such anonymous
@@ -234,15 +231,14 @@ typedef nsSVGDisplayContainerFrame nsSVGOuterSVGAnonChildFrameBase;
  * example, the implementations of IsSVGTransformed and GetCanvasTM assume
  * nsSVGContainerFrame instances all the way up to the nsSVGOuterSVGFrame.
  */
-class nsSVGOuterSVGAnonChildFrame
-  : public nsSVGOuterSVGAnonChildFrameBase
+class nsSVGOuterSVGAnonChildFrame : public nsSVGDisplayContainerFrame
 {
   friend nsContainerFrame*
   NS_NewSVGOuterSVGAnonChildFrame(nsIPresShell* aPresShell,
                                   nsStyleContext* aContext);
 
   explicit nsSVGOuterSVGAnonChildFrame(nsStyleContext* aContext)
-    : nsSVGOuterSVGAnonChildFrameBase(aContext)
+    : nsSVGDisplayContainerFrame(aContext)
   {}
 
 public:

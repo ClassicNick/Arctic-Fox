@@ -28,14 +28,14 @@
 #ifdef DO_STATUS_REPORT // {
 namespace {
 
-class DumpStatusInfoToTempDirRunnable : public nsRunnable
+class DumpStatusInfoToTempDirRunnable : public mozilla::Runnable
 {
 public:
   DumpStatusInfoToTempDirRunnable()
   {
   }
 
-  NS_IMETHOD Run()
+  NS_IMETHOD Run() override
   {
     nsCOMPtr<nsIStatusReporterManager> mgr =
       do_GetService("@mozilla.org/status-reporter-manager;1");

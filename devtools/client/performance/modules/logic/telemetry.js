@@ -4,7 +4,7 @@
 "use strict";
 
 const Telemetry = require("devtools/client/shared/telemetry");
-const DevToolsUtils = require("devtools/shared/DevToolsUtils");
+const flags = require("devtools/shared/flags");
 const EVENTS = require("devtools/client/performance/events");
 
 const EVENT_MAP_FLAGS = new Map([
@@ -18,21 +18,21 @@ const RECORDING_FEATURES = [
 
 const SELECTED_VIEW_HISTOGRAM_NAME = "DEVTOOLS_PERFTOOLS_SELECTED_VIEW_MS";
 
-function PerformanceTelemetry (emitter) {
+function PerformanceTelemetry(emitter) {
   this._emitter = emitter;
   this._telemetry = new Telemetry();
   this.onFlagEvent = this.onFlagEvent.bind(this);
-  this.onRecordingStopped = this.onRecordingStopped.bind(this);
+  this.onRecordingStateChange = this.onRecordingStateChange.bind(this);
   this.onViewSelected = this.onViewSelected.bind(this);
 
   for (let [event] of EVENT_MAP_FLAGS) {
     this._emitter.on(event, this.onFlagEvent);
   }
 
-  this._emitter.on(EVENTS.RECORDING_STOPPED, this.onRecordingStopped);
-  this._emitter.on(EVENTS.DETAILS_VIEW_SELECTED, this.onViewSelected);
+  this._emitter.on(EVENTS.RECORDING_STATE_CHANGE, this.onRecordingStateChange);
+  this._emitter.on(EVENTS.UI_DETAILS_VIEW_SELECTED, this.onViewSelected);
 
-  if (DevToolsUtils.testing) {
+  if (flags.testing) {
     this.recordLogs();
   }
 }
@@ -46,8 +46,8 @@ PerformanceTelemetry.prototype.destroy = function () {
   for (let [event] of EVENT_MAP_FLAGS) {
     this._emitter.off(event, this.onFlagEvent);
   }
-  this._emitter.off(EVENTS.RECORDING_STOPPED, this.onRecordingStopped);
-  this._emitter.off(EVENTS.DETAILS_VIEW_SELECTED, this.onViewSelected);
+  this._emitter.off(EVENTS.RECORDING_STATE_CHANGE, this.onRecordingStateChange);
+  this._emitter.off(EVENTS.UI_DETAILS_VIEW_SELECTED, this.onViewSelected);
   this._emitter = null;
 };
 
@@ -55,7 +55,11 @@ PerformanceTelemetry.prototype.onFlagEvent = function (eventName, ...data) {
   this._telemetry.log(EVENT_MAP_FLAGS.get(eventName), true);
 };
 
-PerformanceTelemetry.prototype.onRecordingStopped = function (_, model) {
+PerformanceTelemetry.prototype.onRecordingStateChange = function (_, status, model) {
+  if (status != "recording-stopped") {
+    return;
+  }
+
   if (model.isConsole()) {
     this._telemetry.log("DEVTOOLS_PERFTOOLS_CONSOLE_RECORDING_COUNT", true);
   } else {
@@ -67,7 +71,8 @@ PerformanceTelemetry.prototype.onRecordingStopped = function (_, model) {
   let config = model.getConfiguration();
   for (let k in config) {
     if (RECORDING_FEATURES.indexOf(k) !== -1) {
-      this._telemetry.logKeyed("DEVTOOLS_PERFTOOLS_RECORDING_FEATURES_USED", k, config[k]);
+      this._telemetry.logKeyed("DEVTOOLS_PERFTOOLS_RECORDING_FEATURES_USED", k,
+                               config[k]);
     }
   }
 };
@@ -85,7 +90,7 @@ PerformanceTelemetry.prototype.onViewSelected = function (_, viewName) {
  * Should only be used in testing mode; throws otherwise.
  */
 PerformanceTelemetry.prototype.recordLogs = function () {
-  if (!DevToolsUtils.testing) {
+  if (!flags.testing) {
     throw new Error("Can only record telemetry logs in tests.");
   }
 
@@ -107,7 +112,7 @@ PerformanceTelemetry.prototype.recordLogs = function () {
 };
 
 PerformanceTelemetry.prototype.getLogs = function () {
-  if (!DevToolsUtils.testing) {
+  if (!flags.testing) {
     throw new Error("Can only get telemetry logs in tests.");
   }
 

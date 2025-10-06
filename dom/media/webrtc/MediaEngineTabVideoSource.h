@@ -7,6 +7,7 @@
 #include "ImageContainer.h"
 #include "nsITimer.h"
 #include "mozilla/Monitor.h"
+#include "mozilla/UniquePtr.h"
 #include "nsITabSource.h"
 
 namespace mozilla {
@@ -18,54 +19,57 @@ class MediaEngineTabVideoSource : public MediaEngineVideoSource, nsIDOMEventList
     NS_DECL_NSITIMERCALLBACK
     MediaEngineTabVideoSource();
 
-    void Shutdown() override {};
-    void GetName(nsAString_internal&) override;
-    void GetUUID(nsACString_internal&) override;
+    void GetName(nsAString_internal&) const override;
+    void GetUUID(nsACString_internal&) const override;
     nsresult Allocate(const dom::MediaTrackConstraints &,
                       const mozilla::MediaEnginePrefs&,
                       const nsString& aDeviceId,
-                      const nsACString& aOrigin) override;
-    nsresult Deallocate() override;
-    nsresult Start(mozilla::SourceMediaStream*, mozilla::TrackID) override;
+                      const nsACString& aOrigin,
+                      AllocationHandle** aOutHandle,
+                      const char** aOutBadConstraint) override;
+    nsresult Deallocate(AllocationHandle* aHandle) override;
+    nsresult Start(mozilla::SourceMediaStream*, mozilla::TrackID, const mozilla::PrincipalHandle&) override;
     void SetDirectListeners(bool aHasDirectListeners) override {};
-    void NotifyPull(mozilla::MediaStreamGraph*, mozilla::SourceMediaStream*, mozilla::TrackID, mozilla::StreamTime) override;
+    void NotifyPull(mozilla::MediaStreamGraph*, mozilla::SourceMediaStream*, mozilla::TrackID, mozilla::StreamTime, const mozilla::PrincipalHandle& aPrincipalHandle) override;
     nsresult Stop(mozilla::SourceMediaStream*, mozilla::TrackID) override;
-    nsresult Restart(const dom::MediaTrackConstraints& aConstraints,
+    nsresult Restart(AllocationHandle* aHandle,
+                     const dom::MediaTrackConstraints& aConstraints,
                      const mozilla::MediaEnginePrefs& aPrefs,
-                     const nsString& aDeviceId) override;
+                     const nsString& aDeviceId,
+                     const char** aOutBadConstraint) override;
     bool IsFake() override;
     dom::MediaSourceEnum GetMediaSource() const override {
       return dom::MediaSourceEnum::Browser;
     }
     uint32_t GetBestFitnessDistance(
-      const nsTArray<const dom::MediaTrackConstraintSet*>& aConstraintSets,
-      const nsString& aDeviceId) override
+      const nsTArray<const NormalizedConstraintSet*>& aConstraintSets,
+      const nsString& aDeviceId) const override
     {
       return 0;
     }
 
-    nsresult TakePhoto(PhotoCallback* aCallback) override
+    nsresult TakePhoto(MediaEnginePhotoCallback* aCallback) override
     {
       return NS_ERROR_NOT_IMPLEMENTED;
     }
 
     void Draw();
 
-    class StartRunnable : public nsRunnable {
+    class StartRunnable : public Runnable {
     public:
       explicit StartRunnable(MediaEngineTabVideoSource *videoSource) : mVideoSource(videoSource) {}
       NS_IMETHOD Run();
       RefPtr<MediaEngineTabVideoSource> mVideoSource;
     };
 
-    class StopRunnable : public nsRunnable {
+    class StopRunnable : public Runnable {
     public:
       explicit StopRunnable(MediaEngineTabVideoSource *videoSource) : mVideoSource(videoSource) {}
       NS_IMETHOD Run();
       RefPtr<MediaEngineTabVideoSource> mVideoSource;
     };
 
-    class InitRunnable : public nsRunnable {
+    class InitRunnable : public Runnable {
     public:
       explicit InitRunnable(MediaEngineTabVideoSource *videoSource) : mVideoSource(videoSource) {}
       NS_IMETHOD Run();
@@ -85,9 +89,11 @@ private:
     int32_t mViewportWidth;
     int32_t mViewportHeight;
     int32_t mTimePerFrame;
-    ScopedFreePtr<unsigned char> mData;
+    UniquePtr<unsigned char[]> mData;
     size_t mDataSize;
     nsCOMPtr<nsPIDOMWindowOuter> mWindow;
+    // If this is set, we will run despite mWindow == nullptr.
+    bool mBlackedoutWindow;
     RefPtr<layers::SourceSurfaceImage> mImage;
     nsCOMPtr<nsITimer> mTimer;
     Monitor mMonitor;

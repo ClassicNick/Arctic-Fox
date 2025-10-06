@@ -3,9 +3,14 @@
 "use strict";
 
 /* exported CustomizableUI makeWidgetId focusWindow forceGC
+ *          getBrowserActionWidget
  *          clickBrowserAction clickPageAction
  *          getBrowserActionPopup getPageActionPopup
  *          closeBrowserAction closePageAction
+ *          promisePopupShown promisePopupHidden
+ *          openContextMenu closeContextMenu
+ *          openExtensionContextMenu closeExtensionContextMenu
+ *          imageBuffer getListStyleImage
  */
 
 var {AppConstants} = Cu.import("resource://gre/modules/AppConstants.jsm");
@@ -43,25 +48,118 @@ var focusWindow = Task.async(function* focusWindow(win) {
   yield promise;
 });
 
+let img = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQImWNgYGBgAAAABQABh6FO1AAAAABJRU5ErkJggg==";
+var imageBuffer = Uint8Array.from(atob(img), byte => byte.charCodeAt(0)).buffer;
+
+function getListStyleImage(button) {
+  let style = button.ownerDocument.defaultView.getComputedStyle(button);
+
+  let match = /^url\("(.*)"\)$/.exec(style.listStyleImage);
+
+  return match && match[1];
+}
+
+function promisePopupShown(popup) {
+  return new Promise(resolve => {
+    if (popup.state == "open") {
+      resolve();
+    } else {
+      let onPopupShown = event => {
+        popup.removeEventListener("popupshown", onPopupShown);
+        resolve();
+      };
+      popup.addEventListener("popupshown", onPopupShown);
+    }
+  });
+}
+
+function promisePopupHidden(popup) {
+  return new Promise(resolve => {
+    let onPopupHidden = event => {
+      popup.removeEventListener("popuphidden", onPopupHidden);
+      resolve();
+    };
+    popup.addEventListener("popuphidden", onPopupHidden);
+  });
+}
+
+function getBrowserActionWidget(extension) {
+  return CustomizableUI.getWidget(makeWidgetId(extension.id) + "-browser-action");
+}
+
 function getBrowserActionPopup(extension, win = window) {
-  return win.document.getElementById("customizationui-widget-panel");
+  let group = getBrowserActionWidget(extension);
+
+  if (group.areaType == CustomizableUI.TYPE_TOOLBAR) {
+    return win.document.getElementById("customizationui-widget-panel");
+  }
+  return win.PanelUI.panel;
 }
 
-function clickBrowserAction(extension, win = window) {
-  let browserActionId = makeWidgetId(extension.id) + "-browser-action";
-  let elem = win.document.getElementById(browserActionId);
+var showBrowserAction = Task.async(function* (extension, win = window) {
+  let group = getBrowserActionWidget(extension);
+  let widget = group.forWindow(win);
 
-  EventUtils.synthesizeMouseAtCenter(elem, {}, win);
-  return new Promise(SimpleTest.executeSoon);
-}
+  if (group.areaType == CustomizableUI.TYPE_TOOLBAR) {
+    ok(!widget.overflowed, "Expect widget not to be overflowed");
+  } else if (group.areaType == CustomizableUI.TYPE_MENU_PANEL) {
+    yield win.PanelUI.show();
+  }
+});
+
+var clickBrowserAction = Task.async(function* (extension, win = window) {
+  yield showBrowserAction(extension, win);
+
+  let widget = getBrowserActionWidget(extension).forWindow(win);
+
+  EventUtils.synthesizeMouseAtCenter(widget.node, {}, win);
+});
 
 function closeBrowserAction(extension, win = window) {
-  let node = getBrowserActionPopup(extension, win);
-  if (node) {
-    node.hidePopup();
-  }
+  let group = getBrowserActionWidget(extension);
+
+  let node = win.document.getElementById(group.viewId);
+  CustomizableUI.hidePanelForNode(node);
 
   return Promise.resolve();
+}
+
+function* openContextMenu(id) {
+  let contentAreaContextMenu = document.getElementById("contentAreaContextMenu");
+  let popupShownPromise = BrowserTestUtils.waitForEvent(contentAreaContextMenu, "popupshown");
+  yield BrowserTestUtils.synthesizeMouseAtCenter(id, {type: "contextmenu", button: 2}, gBrowser.selectedBrowser);
+  yield popupShownPromise;
+  return contentAreaContextMenu;
+}
+
+function* closeContextMenu() {
+  let contentAreaContextMenu = document.getElementById("contentAreaContextMenu");
+  let popupHiddenPromise = BrowserTestUtils.waitForEvent(contentAreaContextMenu, "popuphidden");
+  contentAreaContextMenu.hidePopup();
+  yield popupHiddenPromise;
+}
+
+function* openExtensionContextMenu() {
+  let contextMenu = yield openContextMenu("#img1");
+  let topLevelMenu = contextMenu.getElementsByAttribute("ext-type", "top-level-menu");
+
+  // Return null if the extension only has one item and therefore no extension menu.
+  if (topLevelMenu.length == 0) {
+    return null;
+  }
+
+  let extensionMenu = topLevelMenu[0].childNodes[0];
+  let popupShownPromise = BrowserTestUtils.waitForEvent(contextMenu, "popupshown");
+  EventUtils.synthesizeMouseAtCenter(extensionMenu, {});
+  yield popupShownPromise;
+  return extensionMenu;
+}
+
+function* closeExtensionContextMenu(itemToSelect) {
+  let contentAreaContextMenu = document.getElementById("contentAreaContextMenu");
+  let popupHiddenPromise = BrowserTestUtils.waitForEvent(contentAreaContextMenu, "popuphidden");
+  EventUtils.synthesizeMouseAtCenter(itemToSelect, {});
+  yield popupHiddenPromise;
 }
 
 function getPageActionPopup(extension, win = window) {
@@ -89,9 +187,10 @@ function clickPageAction(extension, win = window) {
 function closePageAction(extension, win = window) {
   let node = getPageActionPopup(extension, win);
   if (node) {
-    node.hidePopup();
+    return promisePopupShown(node).then(() => {
+      node.hidePopup();
+    });
   }
 
   return Promise.resolve();
 }
-

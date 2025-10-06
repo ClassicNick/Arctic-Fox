@@ -31,23 +31,32 @@ namespace jit { class MacroAssembler; class Label; }
 namespace wasm {
 
 class CallSite;
+class Code;
 class CodeRange;
-class Module;
+class Instance;
+class SigIdDesc;
 struct CallThunk;
 struct FuncOffsets;
+struct Metadata;
 struct ProfilingOffsets;
 
 // Iterates over the frames of a single WasmActivation, called synchronously
-// from C++ in the thread of the asm.js. The one exception is that this iterator
-// may be called from the interrupt callback which may be called asynchronously
-// from asm.js code; in this case, the backtrace may not be correct.
+// from C++ in the thread of the asm.js.
+//
+// The one exception is that this iterator may be called from the interrupt
+// callback which may be called asynchronously from asm.js code; in this case,
+// the backtrace may not be correct. That being said, we try our best printing
+// an informative message to the user and at least the name of the innermost
+// function stack frame.
 class FrameIterator
 {
-    JSContext* cx_;
-    const Module* module_;
+    const WasmActivation* activation_;
+    const Code* code_;
     const CallSite* callsite_;
     const CodeRange* codeRange_;
     uint8_t* fp_;
+    uint8_t* pc_;
+    bool missingFrameMessage_;
 
     void settle();
 
@@ -55,9 +64,14 @@ class FrameIterator
     explicit FrameIterator();
     explicit FrameIterator(const WasmActivation& activation);
     void operator++();
-    bool done() const { return !fp_; }
+    bool done() const;
+    const char* filename() const;
+    const char16_t* displayURL() const;
+    bool mutedErrors() const;
     JSAtom* functionDisplayAtom() const;
     unsigned lineOrBytecode() const;
+    inline void* fp() const { return fp_; }
+    inline uint8_t* pc() const { return pc_; }
 };
 
 // An ExitReason describes the possible reasons for leaving compiled wasm code
@@ -67,7 +81,6 @@ enum class ExitReason : uint32_t
     None,          // default state, the pc is in wasm code
     ImportJit,     // fast-path call directly into JIT code
     ImportInterp,  // slow-path call into C++ Invoke()
-    Error,         // call to error generation
     Native         // call to native C++ code (e.g., Math.sin, ToInt32(), interrupt)
 };
 
@@ -76,14 +89,15 @@ enum class ExitReason : uint32_t
 // module is not in profiling mode, the activation is skipped.
 class ProfilingFrameIterator
 {
-    const Module* module_;
+    const WasmActivation* activation_;
+    const Code* code_;
     const CodeRange* codeRange_;
     uint8_t* callerFP_;
     void* callerPC_;
     void* stackAddress_;
     ExitReason exitReason_;
 
-    void initFromFP(const WasmActivation& activation);
+    void initFromFP();
 
   public:
     ProfilingFrameIterator();
@@ -98,6 +112,7 @@ class ProfilingFrameIterator
 };
 
 // Prologue/epilogue code generation
+
 void
 GenerateExitPrologue(jit::MacroAssembler& masm, unsigned framePushed, ExitReason reason,
                      ProfilingOffsets* offsets);
@@ -105,20 +120,21 @@ void
 GenerateExitEpilogue(jit::MacroAssembler& masm, unsigned framePushed, ExitReason reason,
                      ProfilingOffsets* offsets);
 void
-GenerateFunctionPrologue(jit::MacroAssembler& masm, unsigned framePushed, FuncOffsets* offsets);
+GenerateFunctionPrologue(jit::MacroAssembler& masm, unsigned framePushed, const SigIdDesc& sigId,
+                         FuncOffsets* offsets);
 void
 GenerateFunctionEpilogue(jit::MacroAssembler& masm, unsigned framePushed, FuncOffsets* offsets);
 
 // Runtime patching to enable/disable profiling
 
 void
-EnableProfilingPrologue(const Module& module, const CallSite& callSite, bool enabled);
+ToggleProfiling(const Code& code, const CallSite& callSite, bool enabled);
 
 void
-EnableProfilingThunk(const Module& module, const CallThunk& callThunk, bool enabled);
+ToggleProfiling(const Code& code, const CallThunk& callThunk, bool enabled);
 
 void
-EnableProfilingEpilogue(const Module& module, const CodeRange& codeRange, bool enabled);
+ToggleProfiling(const Code& code, const CodeRange& codeRange, bool enabled);
 
 } // namespace wasm
 } // namespace js

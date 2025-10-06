@@ -8,7 +8,6 @@
 #define COMPILER_TRANSLATOR_OUTPUTHLSL_H_
 
 #include <list>
-#include <set>
 #include <map>
 #include <stack>
 
@@ -21,8 +20,9 @@ class BuiltInFunctionEmulator;
 
 namespace sh
 {
-class UnfoldShortCircuit;
 class StructureHLSL;
+class TextureFunctionHLSL;
+class UnfoldShortCircuit;
 class UniformHLSL;
 
 typedef std::map<TString, TIntermSymbol*> ReferencedSymbols;
@@ -50,7 +50,7 @@ class OutputHLSL : public TIntermTraverser
     static bool canWriteAsHLSLLiteral(TIntermTyped *expression);
 
   protected:
-    void header(const BuiltInFunctionEmulator *builtInFunctionEmulator);
+    void header(TInfoSinkBase &out, const BuiltInFunctionEmulator *builtInFunctionEmulator);
 
     // Visit AST nodes and output their code to the body stream
     void visitSymbol(TIntermSymbol*);
@@ -66,22 +66,31 @@ class OutputHLSL : public TIntermTraverser
     bool visitBranch(Visit visit, TIntermBranch*);
 
     bool isSingleStatement(TIntermNode *node);
-    bool handleExcessiveLoop(TIntermLoop *node);
+    bool handleExcessiveLoop(TInfoSinkBase &out, TIntermLoop *node);
 
     // Emit one of three strings depending on traverse phase. Called with literal strings so using const char* instead of TString.
-    void outputTriplet(Visit visit, const char *preString, const char *inString, const char *postString, TInfoSinkBase &out);
-    void outputTriplet(Visit visit, const char *preString, const char *inString, const char *postString);
-    void outputLineDirective(int line);
+    void outputTriplet(TInfoSinkBase &out,
+                       Visit visit,
+                       const char *preString,
+                       const char *inString,
+                       const char *postString);
+    void outputLineDirective(TInfoSinkBase &out, int line);
     TString argumentString(const TIntermSymbol *symbol);
     int vectorSize(const TType &type) const;
 
     // Emit constructor. Called with literal names so using const char* instead of TString.
-    void outputConstructor(Visit visit, const TType &type, const char *name, const TIntermSequence *parameters);
-    const TConstantUnion *writeConstantUnion(const TType &type, const TConstantUnion *constUnion);
+    void outputConstructor(TInfoSinkBase &out,
+                           Visit visit,
+                           const TType &type,
+                           const char *name,
+                           const TIntermSequence *parameters);
+    const TConstantUnion *writeConstantUnion(TInfoSinkBase &out,
+                                             const TType &type,
+                                             const TConstantUnion *constUnion);
 
     void outputEqual(Visit visit, const TType &type, TOperator op, TInfoSinkBase &out);
 
-    void writeEmulatedFunctionTriplet(Visit visit, const char *preStr);
+    void writeEmulatedFunctionTriplet(TInfoSinkBase &out, Visit visit, const char *preStr);
     void makeFlaggedStructMaps(const std::vector<TIntermTyped *> &flaggedStructs);
 
     // Returns true if it found a 'same symbol' initializer (initializer that references the variable it's initting)
@@ -92,7 +101,7 @@ class OutputHLSL : public TIntermTraverser
                                      TIntermTyped *expression);
 
     void writeDeferredGlobalInitializers(TInfoSinkBase &out);
-    void writeSelection(TIntermSelection *node);
+    void writeSelection(TInfoSinkBase &out, TIntermSelection *node);
 
     // Returns the function name
     TString addStructEqualityFunction(const TStructure &structure);
@@ -130,36 +139,9 @@ class OutputHLSL : public TIntermTraverser
 
     StructureHLSL *mStructureHLSL;
     UniformHLSL *mUniformHLSL;
-
-    struct TextureFunction
-    {
-        enum Method
-        {
-            IMPLICIT,   // Mipmap LOD determined implicitly (standard lookup)
-            BIAS,
-            LOD,
-            LOD0,
-            LOD0BIAS,
-            SIZE,   // textureSize()
-            FETCH,
-            GRAD
-        };
-
-        TBasicType sampler;
-        int coords;
-        bool proj;
-        bool offset;
-        Method method;
-
-        TString name() const;
-
-        bool operator<(const TextureFunction &rhs) const;
-    };
-
-    typedef std::set<TextureFunction> TextureFunctionSet;
+    TextureFunctionHLSL *mTextureFunctionHLSL;
 
     // Parameters determining what goes in the header output
-    TextureFunctionSet mUsesTexture;
     bool mUsesFragColor;
     bool mUsesFragData;
     bool mUsesDepthRange;
@@ -168,6 +150,7 @@ class OutputHLSL : public TIntermTraverser
     bool mUsesFrontFacing;
     bool mUsesPointSize;
     bool mUsesInstanceID;
+    bool mUsesVertexID;
     bool mUsesFragDepth;
     bool mUsesXor;
     bool mUsesDiscardRewriting;
@@ -192,11 +175,6 @@ class OutputHLSL : public TIntermTraverser
 
     std::map<TIntermTyped*, TString> mFlaggedStructMappedNames;
     std::map<TIntermTyped*, TString> mFlaggedStructOriginalNames;
-
-    // Some initializers may have been unfolded into if statements, thus we can't evaluate all initializers
-    // at global static scope in HLSL. Instead, we can initialize these static globals inside a helper function.
-    // This also enables initialization of globals with uniforms.
-    TIntermSequence mDeferredGlobalInitializers;
 
     struct HelperFunction
     {
@@ -230,6 +208,10 @@ class OutputHLSL : public TIntermTraverser
     // with the other N parameters of the function. This is used to work around that arrays can't be
     // return values in HLSL.
     std::vector<ArrayHelperFunction> mArrayConstructIntoFunctions;
+
+  private:
+    TString samplerNamePrefixFromStruct(TIntermTyped *node);
+    bool ancestorEvaluatesToSamplerInStruct(Visit visit);
 };
 
 }

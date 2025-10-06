@@ -115,7 +115,7 @@
             <textbox readonly="true" crop="end" id="modetext"/>
           </row>
           <row id="generalEncodingRow">
-            <label control="encodingtext" value="&generalEncoding;"/>
+            <label control="encodingtext" value="&generalEncoding2;"/>
             <separator/>
             <textbox readonly="true" id="encodingtext"/>
           </row>
@@ -232,6 +232,9 @@
             <label control="thepreviewimage" value="&mediaPreview;" class="header"/>
           </vbox>
           <spacer id="imageSaveBoxSpacer" flex="1"/>
+          <button label="&selectall.label;" accesskey="&selectall.accesskey;"
+                  id="selectallbutton"
+                  oncommand="doSelectAllMedia();"/>
           <button label="&mediaSaveAs;" accesskey="&mediaSaveAs.accesskey;"
                   icon="save" id="imagesaveasbutton"
                   oncommand="saveMedia();"/>

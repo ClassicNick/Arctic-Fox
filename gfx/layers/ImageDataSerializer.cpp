@@ -12,7 +12,7 @@
 #include "mozilla/gfx/Tools.h"          // for GetAlignedStride, etc
 #include "mozilla/gfx/Types.h"
 #include "mozilla/mozalloc.h"           // for operator delete, etc
-#include "yuv_convert.h"                // for ConvertYCbCrToRGB32, etc
+#include "YCbCrUtils.h"                 // for YCbCr conversions
 
 namespace mozilla {
 namespace layers {
@@ -73,9 +73,8 @@ ComputeYCbCrBufferSize(const gfx::IntSize& aYSize, int32_t aYStride,
   MOZ_ASSERT(aYSize.height >= 0 && aYSize.width >= 0);
 
   if (aYSize.height < 0 || aYSize.width < 0 || aCbCrSize.height < 0 || aCbCrSize.width < 0 ||
-      aYSize.width > aYStride || aCbCrSize.width > aCbCrStride ||
-      aCbCrStride > aYStride || aCbCrSize.height > aYSize.height ||
-      !gfx::Factory::AllowedSurfaceSize(IntSize(aYStride, aYSize.height))) {
+      !gfx::Factory::AllowedSurfaceSize(IntSize(aYStride, aYSize.height)) ||
+      !gfx::Factory::AllowedSurfaceSize(IntSize(aCbCrStride, aCbCrSize.height))) {
     return 0;
   }
   // Overflow checks are performed in AllowedSurfaceSize
@@ -113,7 +112,7 @@ gfx::SurfaceFormat FormatFromBufferDescriptor(const BufferDescriptor& aDescripto
     case BufferDescriptor::TYCbCrDescriptor:
       return gfx::SurfaceFormat::YUV;
     default:
-      MOZ_CRASH();
+      MOZ_CRASH("GFX: FormatFromBufferDescriptor");
   }
 }
 
@@ -125,7 +124,31 @@ gfx::IntSize SizeFromBufferDescriptor(const BufferDescriptor& aDescriptor)
     case BufferDescriptor::TYCbCrDescriptor:
       return aDescriptor.get_YCbCrDescriptor().ySize();
     default:
-      MOZ_CRASH();
+      MOZ_CRASH("GFX: SizeFromBufferDescriptor");
+  }
+}
+
+Maybe<gfx::IntSize> CbCrSizeFromBufferDescriptor(const BufferDescriptor& aDescriptor)
+{
+  switch (aDescriptor.type()) {
+    case BufferDescriptor::TRGBDescriptor:
+      return Nothing();
+    case BufferDescriptor::TYCbCrDescriptor:
+      return Some(aDescriptor.get_YCbCrDescriptor().cbCrSize());
+    default:
+      MOZ_CRASH("GFX:  CbCrSizeFromBufferDescriptor");
+  }
+}
+
+Maybe<StereoMode> StereoModeFromBufferDescriptor(const BufferDescriptor& aDescriptor)
+{
+  switch (aDescriptor.type()) {
+    case BufferDescriptor::TRGBDescriptor:
+      return Nothing();
+    case BufferDescriptor::TYCbCrDescriptor:
+      return Some(aDescriptor.get_YCbCrDescriptor().stereoMode());
+    default:
+      MOZ_CRASH("GFX:  CbCrSizeFromBufferDescriptor");
   }
 }
 
@@ -145,15 +168,27 @@ uint8_t* GetCrChannel(uint8_t* aBuffer, const YCbCrDescriptor& aDescriptor)
 }
 
 already_AddRefed<DataSourceSurface>
-DataSourceSurfaceFromYCbCrDescriptor(uint8_t* aBuffer, const YCbCrDescriptor& aDescriptor)
+DataSourceSurfaceFromYCbCrDescriptor(uint8_t* aBuffer, const YCbCrDescriptor& aDescriptor, gfx::DataSourceSurface* aSurface)
 {
   gfx::IntSize ySize = aDescriptor.ySize();
   gfx::IntSize cbCrSize = aDescriptor.cbCrSize();
   int32_t yStride = ySize.width;
   int32_t cbCrStride = cbCrSize.width;
 
-  RefPtr<DataSourceSurface> result =
-    Factory::CreateDataSourceSurface(ySize, gfx::SurfaceFormat::B8G8R8X8);
+  RefPtr<DataSourceSurface> result;
+  if (aSurface) {
+    MOZ_ASSERT(aSurface->GetSize() == ySize);
+    MOZ_ASSERT(aSurface->GetFormat() == gfx::SurfaceFormat::B8G8R8X8);
+    if (aSurface->GetSize() == ySize &&
+        aSurface->GetFormat() == gfx::SurfaceFormat::B8G8R8X8) {
+      result = aSurface;
+    }
+  }
+
+  if (!result) {
+    result =
+      Factory::CreateDataSourceSurface(ySize, gfx::SurfaceFormat::B8G8R8X8);
+  }
   if (NS_WARN_IF(!result)) {
     return nullptr;
   }
@@ -163,20 +198,52 @@ DataSourceSurfaceFromYCbCrDescriptor(uint8_t* aBuffer, const YCbCrDescriptor& aD
     return nullptr;
   }
 
-  gfx::YUVType type = TypeFromSize(ySize.width, ySize.height,
-                                   cbCrSize.width, cbCrSize.height);
-  gfx::ConvertYCbCrToRGB32(GetYChannel(aBuffer, aDescriptor),
-                           GetCbChannel(aBuffer, aDescriptor),
-                           GetCrChannel(aBuffer, aDescriptor),
-                           map.mData,
-                           0, 0, //pic x and y
-                           ySize.width, ySize.height,
-                           yStride, cbCrStride,
-                           map.mStride, type);
+  layers::PlanarYCbCrData ycbcrData;
+  ycbcrData.mYChannel     = GetYChannel(aBuffer, aDescriptor);
+  ycbcrData.mYStride      = yStride;
+  ycbcrData.mYSize        = ySize;
+  ycbcrData.mCbChannel    = GetCbChannel(aBuffer, aDescriptor);
+  ycbcrData.mCrChannel    = GetCrChannel(aBuffer, aDescriptor);
+  ycbcrData.mCbCrStride   = cbCrStride;
+  ycbcrData.mCbCrSize     = cbCrSize;
+  ycbcrData.mPicSize      = ySize;
+
+  gfx::ConvertYCbCrToRGB(ycbcrData,
+                         gfx::SurfaceFormat::B8G8R8X8,
+                         ySize,
+                         map.mData,
+                         map.mStride);
+
   result->Unmap();
   return result.forget();
 }
 
+void
+ConvertAndScaleFromYCbCrDescriptor(uint8_t* aBuffer,
+                                   const YCbCrDescriptor& aDescriptor,
+                                   const gfx::SurfaceFormat& aDestFormat,
+                                   const gfx::IntSize& aDestSize,
+                                   unsigned char* aDestBuffer,
+                                   int32_t aStride)
+{
+  MOZ_ASSERT(aBuffer);
+  gfx::IntSize ySize = aDescriptor.ySize();
+  gfx::IntSize cbCrSize = aDescriptor.cbCrSize();
+  int32_t yStride = ySize.width;
+  int32_t cbCrStride = cbCrSize.width;
+
+  layers::PlanarYCbCrData ycbcrData;
+  ycbcrData.mYChannel     = GetYChannel(aBuffer, aDescriptor);
+  ycbcrData.mYStride      = yStride;
+  ycbcrData.mYSize        = ySize;
+  ycbcrData.mCbChannel    = GetCbChannel(aBuffer, aDescriptor);
+  ycbcrData.mCrChannel    = GetCrChannel(aBuffer, aDescriptor);
+  ycbcrData.mCbCrStride   = cbCrStride;
+  ycbcrData.mCbCrSize     = cbCrSize;
+  ycbcrData.mPicSize      = ySize;
+
+  gfx::ConvertYCbCrToRGB(ycbcrData, aDestFormat, aDestSize, aDestBuffer, aStride);
+}
 
 } // namespace ImageDataSerializer
 } // namespace layers

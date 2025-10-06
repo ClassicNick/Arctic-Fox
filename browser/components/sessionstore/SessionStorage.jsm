@@ -108,7 +108,7 @@ var SessionStorageInternal = {
       let principal;
 
       try {
-        let attrs = ChromeUtils.createOriginAttributesWithUserContextId(origin, aDocShell.userContextId);
+        let attrs = aDocShell.getOriginAttributes();
         let originURI = Services.io.newURI(origin, null, null);
         principal = Services.scriptSecurityManager.createCodebasePrincipal(originURI, attrs);
       } catch (e) {
@@ -122,7 +122,7 @@ var SessionStorageInternal = {
       // There is no need to pass documentURI, it's only used to fill documentURI property of
       // domstorage event, which in this case has no consumer. Prevention of events in case
       // of missing documentURI will be solved in a followup bug to bug 600307.
-      let storage = storageManager.createStorage(window, principal, "", aDocShell.usePrivateBrowsing);
+      let storage = storageManager.createStorage(window, principal, "");
 
       for (let key of Object.keys(data)) {
         try {
@@ -151,8 +151,10 @@ var SessionStorageInternal = {
     try {
       let storageManager = aDocShell.QueryInterface(Ci.nsIDOMStorageManager);
       storage = storageManager.getStorage(window, aPrincipal);
+      storage.length; // XXX: Bug 1232955 - storage.length can throw, catch that failure
     } catch (e) {
       // sessionStorage might throw if it's turned off, see bug 458954
+      storage = null;
     }
 
     if (storage && storage.length) {

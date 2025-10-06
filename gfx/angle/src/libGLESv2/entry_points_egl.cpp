@@ -41,7 +41,7 @@ EGLDisplay EGLAPIENTRY GetDisplay(EGLNativeDisplayType display_id)
 {
     EVENT("(EGLNativeDisplayType display_id = 0x%0.8p)", display_id);
 
-    return Display::getDisplay(display_id, AttributeMap());
+    return Display::GetDisplayFromAttribs(reinterpret_cast<void *>(display_id), AttributeMap());
 }
 
 EGLBoolean EGLAPIENTRY Initialize(EGLDisplay dpy, EGLint *major, EGLint *minor)
@@ -198,7 +198,8 @@ EGLBoolean EGLAPIENTRY ChooseConfig(EGLDisplay dpy, const EGLint *attrib_list, E
         return EGL_FALSE;
     }
 
-    std::vector<const Config*> filteredConfigs = display->getConfigs(AttributeMap(attrib_list));
+    std::vector<const Config *> filteredConfigs =
+        display->getConfigs(AttributeMap::CreateFromIntArray(attrib_list));
     if (configs)
     {
         filteredConfigs.resize(std::min<size_t>(filteredConfigs.size(), config_size));
@@ -245,7 +246,7 @@ EGLSurface EGLAPIENTRY CreateWindowSurface(EGLDisplay dpy, EGLConfig config, EGL
 
     Display *display = static_cast<Display*>(dpy);
     Config *configuration = static_cast<Config*>(config);
-    AttributeMap attributes(attrib_list);
+    AttributeMap attributes = AttributeMap::CreateFromIntArray(attrib_list);
 
     Error error = ValidateCreateWindowSurface(display, configuration, win, attributes);
     if (error.isError())
@@ -272,7 +273,7 @@ EGLSurface EGLAPIENTRY CreatePbufferSurface(EGLDisplay dpy, EGLConfig config, co
 
     Display *display = static_cast<Display*>(dpy);
     Config *configuration = static_cast<Config*>(config);
-    AttributeMap attributes(attrib_list);
+    AttributeMap attributes = AttributeMap::CreateFromIntArray(attrib_list);
 
     Error error = ValidateCreatePbufferSurface(display, configuration, attributes);
     if (error.isError())
@@ -426,6 +427,37 @@ EGLBoolean EGLAPIENTRY QuerySurface(EGLDisplay dpy, EGLSurface surface, EGLint a
         }
         *value = eglSurface->isFixedSize();
         break;
+      case EGL_FLEXIBLE_SURFACE_COMPATIBILITY_SUPPORTED_ANGLE:
+          if (!display->getExtensions().flexibleSurfaceCompatibility)
+          {
+              SetGlobalError(
+                  Error(EGL_BAD_ATTRIBUTE,
+                        "EGL_FLEXIBLE_SURFACE_COMPATIBILITY_SUPPORTED_ANGLE cannot be used without "
+                        "EGL_ANGLE_flexible_surface_compatibility support."));
+              return EGL_FALSE;
+          }
+          *value = eglSurface->flexibleSurfaceCompatibilityRequested();
+          break;
+      case EGL_SURFACE_ORIENTATION_ANGLE:
+          if (!display->getExtensions().surfaceOrientation)
+          {
+              SetGlobalError(Error(EGL_BAD_ATTRIBUTE,
+                                   "EGL_SURFACE_ORIENTATION_ANGLE cannot be queried without "
+                                   "EGL_ANGLE_surface_orientation support."));
+              return EGL_FALSE;
+          }
+          *value = eglSurface->getOrientation();
+          break;
+      case EGL_DIRECT_COMPOSITION_ANGLE:
+          if (!display->getExtensions().directComposition)
+          {
+              SetGlobalError(Error(EGL_BAD_ATTRIBUTE,
+                                   "EGL_DIRECT_COMPOSITION_ANGLE cannot be used without "
+                                   "EGL_ANGLE_direct_composition support."));
+              return EGL_FALSE;
+          }
+          *value = eglSurface->directComposition();
+          break;
       default:
         SetGlobalError(Error(EGL_BAD_ATTRIBUTE));
         return EGL_FALSE;
@@ -443,7 +475,7 @@ EGLContext EGLAPIENTRY CreateContext(EGLDisplay dpy, EGLConfig config, EGLContex
     Display *display = static_cast<Display*>(dpy);
     Config *configuration = static_cast<Config*>(config);
     gl::Context* sharedGLContext = static_cast<gl::Context*>(share_context);
-    AttributeMap attributes(attrib_list);
+    AttributeMap attributes      = AttributeMap::CreateFromIntArray(attrib_list);
 
     Error error = ValidateCreateContext(display, configuration, sharedGLContext, attributes);
     if (error.isError())
@@ -589,7 +621,9 @@ EGLBoolean EGLAPIENTRY MakeCurrent(EGLDisplay dpy, EGLSurface draw, EGLSurface r
 
     if (readSurface)
     {
-        Error readCompatError = ValidateCompatibleConfigs(readSurface->getConfig(), context->getConfig(), readSurface->getType());
+        Error readCompatError =
+            ValidateCompatibleConfigs(display, readSurface->getConfig(), readSurface,
+                                      context->getConfig(), readSurface->getType());
         if (readCompatError.isError())
         {
             SetGlobalError(readCompatError);
@@ -603,7 +637,9 @@ EGLBoolean EGLAPIENTRY MakeCurrent(EGLDisplay dpy, EGLSurface draw, EGLSurface r
 
         if (drawSurface)
         {
-            Error drawCompatError = ValidateCompatibleConfigs(drawSurface->getConfig(), context->getConfig(), drawSurface->getType());
+            Error drawCompatError =
+                ValidateCompatibleConfigs(display, drawSurface->getConfig(), drawSurface,
+                                          context->getConfig(), drawSurface->getType());
             if (drawCompatError.isError())
             {
                 SetGlobalError(drawCompatError);
@@ -710,20 +746,56 @@ EGLBoolean EGLAPIENTRY WaitGL(void)
 {
     EVENT("()");
 
-    UNIMPLEMENTED();   // FIXME
+    Display *display = GetGlobalDisplay();
+
+    Error error = ValidateDisplay(display);
+    if (error.isError())
+    {
+        SetGlobalError(error);
+        return EGL_FALSE;
+    }
+
+    // eglWaitGL like calling eglWaitClient with the OpenGL ES API bound. Since we only implement
+    // OpenGL ES we can do the call directly.
+    error = display->waitClient();
+    if (error.isError())
+    {
+        SetGlobalError(error);
+        return EGL_FALSE;
+    }
 
     SetGlobalError(Error(EGL_SUCCESS));
-    return 0;
+    return EGL_TRUE;
 }
 
 EGLBoolean EGLAPIENTRY WaitNative(EGLint engine)
 {
     EVENT("(EGLint engine = %d)", engine);
 
-    UNIMPLEMENTED();   // FIXME
+    Display *display = GetGlobalDisplay();
+
+    Error error = ValidateDisplay(display);
+    if (error.isError())
+    {
+        SetGlobalError(error);
+        return EGL_FALSE;
+    }
+
+    if (engine != EGL_CORE_NATIVE_ENGINE)
+    {
+        SetGlobalError(
+            Error(EGL_BAD_PARAMETER, "the 'engine' parameter has an unrecognized value"));
+    }
+
+    error = display->waitNative(engine, GetGlobalDrawSurface(), GetGlobalReadSurface());
+    if (error.isError())
+    {
+        SetGlobalError(error);
+        return EGL_FALSE;
+    }
 
     SetGlobalError(Error(EGL_SUCCESS));
-    return 0;
+    return EGL_TRUE;
 }
 
 EGLBoolean EGLAPIENTRY SwapBuffers(EGLDisplay dpy, EGLSurface surface)
@@ -994,7 +1066,7 @@ EGLSurface EGLAPIENTRY CreatePbufferFromClientBuffer(EGLDisplay dpy, EGLenum buf
 
     Display *display = static_cast<Display*>(dpy);
     Config *configuration = static_cast<Config*>(config);
-    AttributeMap attributes(attrib_list);
+    AttributeMap attributes = AttributeMap::CreateFromIntArray(attrib_list);
 
     Error error = ValidateCreatePbufferFromClientBuffer(display, buftype, buffer, configuration, attributes);
     if (error.isError())
@@ -1028,10 +1100,24 @@ EGLBoolean EGLAPIENTRY WaitClient(void)
 {
     EVENT("()");
 
-    UNIMPLEMENTED();   // FIXME
+    Display *display = GetGlobalDisplay();
+
+    Error error = ValidateDisplay(display);
+    if (error.isError())
+    {
+        SetGlobalError(error);
+        return EGL_FALSE;
+    }
+
+    error = display->waitClient();
+    if (error.isError())
+    {
+        SetGlobalError(error);
+        return EGL_FALSE;
+    }
 
     SetGlobalError(Error(EGL_SUCCESS));
-    return 0;
+    return EGL_TRUE;
 }
 
 // EGL 1.4
@@ -1325,6 +1411,19 @@ __eglMustCastToProperFunctionPointerType EGLAPIENTRY GetProcAddress(const char *
         INSERT_PROC_ADDRESS(gl, GetQueryivEXT);
         INSERT_PROC_ADDRESS(gl, GetQueryObjectuivEXT);
 
+        // GL_EXT_disjoint_timer_query
+        INSERT_PROC_ADDRESS(gl, GenQueriesEXT);
+        INSERT_PROC_ADDRESS(gl, DeleteQueriesEXT);
+        INSERT_PROC_ADDRESS(gl, IsQueryEXT);
+        INSERT_PROC_ADDRESS(gl, BeginQueryEXT);
+        INSERT_PROC_ADDRESS(gl, EndQueryEXT);
+        INSERT_PROC_ADDRESS(gl, QueryCounterEXT);
+        INSERT_PROC_ADDRESS(gl, GetQueryivEXT);
+        INSERT_PROC_ADDRESS(gl, GetQueryObjectivEXT);
+        INSERT_PROC_ADDRESS(gl, GetQueryObjectuivEXT);
+        INSERT_PROC_ADDRESS(gl, GetQueryObjecti64vEXT);
+        INSERT_PROC_ADDRESS(gl, GetQueryObjectui64vEXT);
+
         // GL_EXT_draw_buffers
         INSERT_PROC_ADDRESS(gl, DrawBuffersEXT);
 
@@ -1360,6 +1459,22 @@ __eglMustCastToProperFunctionPointerType EGLAPIENTRY GetProcAddress(const char *
         INSERT_PROC_ADDRESS(gl, DeleteVertexArraysOES);
         INSERT_PROC_ADDRESS(gl, GenVertexArraysOES);
         INSERT_PROC_ADDRESS(gl, IsVertexArrayOES);
+
+        // GL_KHR_debug
+        INSERT_PROC_ADDRESS(gl, DebugMessageControlKHR);
+        INSERT_PROC_ADDRESS(gl, DebugMessageInsertKHR);
+        INSERT_PROC_ADDRESS(gl, DebugMessageCallbackKHR);
+        INSERT_PROC_ADDRESS(gl, GetDebugMessageLogKHR);
+        INSERT_PROC_ADDRESS(gl, PushDebugGroupKHR);
+        INSERT_PROC_ADDRESS(gl, PopDebugGroupKHR);
+        INSERT_PROC_ADDRESS(gl, ObjectLabelKHR);
+        INSERT_PROC_ADDRESS(gl, GetObjectLabelKHR);
+        INSERT_PROC_ADDRESS(gl, ObjectPtrLabelKHR);
+        INSERT_PROC_ADDRESS(gl, GetObjectPtrLabelKHR);
+        INSERT_PROC_ADDRESS(gl, GetPointervKHR);
+
+        // GL_CHROMIUM_bind_uniform_location
+        INSERT_PROC_ADDRESS(gl, BindUniformLocationCHROMIUM);
 
         // GLES3 core
         INSERT_PROC_ADDRESS(gl, ReadBuffer);
@@ -1539,6 +1654,29 @@ __eglMustCastToProperFunctionPointerType EGLAPIENTRY GetProcAddress(const char *
         // EGL_KHR_image_base/EGL_KHR_image
         INSERT_PROC_ADDRESS(egl, CreateImageKHR);
         INSERT_PROC_ADDRESS(egl, DestroyImageKHR);
+
+        // EGL_EXT_device_creation
+        INSERT_PROC_ADDRESS(egl, CreateDeviceANGLE);
+        INSERT_PROC_ADDRESS(egl, ReleaseDeviceANGLE);
+
+        // EGL_KHR_stream
+        INSERT_PROC_ADDRESS(egl, CreateStreamKHR);
+        INSERT_PROC_ADDRESS(egl, DestroyStreamKHR);
+        INSERT_PROC_ADDRESS(egl, StreamAttribKHR);
+        INSERT_PROC_ADDRESS(egl, QueryStreamKHR);
+        INSERT_PROC_ADDRESS(egl, QueryStreamu64KHR);
+
+        // EGL_KHR_stream_consumer_gltexture
+        INSERT_PROC_ADDRESS(egl, StreamConsumerGLTextureExternalKHR);
+        INSERT_PROC_ADDRESS(egl, StreamConsumerAcquireKHR);
+        INSERT_PROC_ADDRESS(egl, StreamConsumerReleaseKHR);
+
+        // EGL_NV_stream_consumer_gltexture_yuv
+        INSERT_PROC_ADDRESS(egl, StreamConsumerGLTextureExternalAttribsNV);
+
+        // EGL_ANGLE_stream_producer_d3d_texture_nv12
+        INSERT_PROC_ADDRESS(egl, CreateStreamProducerD3DTextureNV12ANGLE);
+        INSERT_PROC_ADDRESS(egl, StreamPostD3DTextureNV12ANGLE);
 
 #undef INSERT_PROC_ADDRESS
         return map;

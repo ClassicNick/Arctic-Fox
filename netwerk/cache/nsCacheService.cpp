@@ -44,6 +44,7 @@
 #include <algorithm>
 
 using namespace mozilla;
+using namespace mozilla::net;
 
 /******************************************************************************
  * nsCacheProfilePrefObserver
@@ -222,7 +223,7 @@ NS_IMPL_ISUPPORTS(nsSetDiskSmartSizeCallback, nsITimerCallback)
 
 // Runnable sent to main thread after the cache IO thread calculates available
 // disk space, so that there is no race in setting mDiskCacheCapacity.
-class nsSetSmartSizeEvent: public nsRunnable 
+class nsSetSmartSizeEvent: public Runnable 
 {
 public:
     explicit nsSetSmartSizeEvent(int32_t smartSize)
@@ -259,7 +260,7 @@ private:
 
 
 // Runnable sent from main thread to cacheIO thread
-class nsGetSmartSizeEvent: public nsRunnable
+class nsGetSmartSizeEvent: public Runnable
 {
 public:
     nsGetSmartSizeEvent(const nsAString& cachePath, uint32_t currentSize,
@@ -271,7 +272,7 @@ public:
    
     // Calculates user's disk space available on a background thread and
     // dispatches this value back to the main thread.
-    NS_IMETHOD Run()
+    NS_IMETHOD Run() override
     {
         uint32_t size;
         size = nsCacheProfilePrefObserver::GetSmartCacheSize(mCachePath,
@@ -287,15 +288,16 @@ private:
     bool     mShouldUseOldMaxSmartSize;
 };
 
-class nsBlockOnCacheThreadEvent : public nsRunnable {
+class nsBlockOnCacheThreadEvent : public Runnable {
 public:
     nsBlockOnCacheThreadEvent()
     {
     }
-    NS_IMETHOD Run()
+    NS_IMETHOD Run() override
     {
         nsCacheServiceAutoLock autoLock(LOCK_TELEM(NSBLOCKONCACHETHREADEVENT_RUN));
         CACHE_LOG_DEBUG(("nsBlockOnCacheThreadEvent [%p]\n", this));
+        nsCacheService::gService->mNotified = true;
         nsCacheService::gService->mCondVar.Notify();
         return NS_OK;
     }
@@ -410,9 +412,12 @@ nsCacheProfilePrefObserver::Observe(nsISupports *     subject,
         // profile after change
         mHaveProfile = true;
         nsCOMPtr<nsIPrefBranch> branch = do_GetService(NS_PREFSERVICE_CONTRACTID);
-        ReadPrefs(branch);
+        if (!branch) {
+            return NS_ERROR_FAILURE;
+        }
+        (void)ReadPrefs(branch);
         nsCacheService::OnProfileChanged();
-    
+
     } else if (!strcmp(NS_PREFBRANCH_PREFCHANGE_TOPIC_ID, topic)) {
 
         // ignore pref changes until we're done switch profiles
@@ -852,9 +857,12 @@ nsCacheService::SyncWithCacheIOThread()
     }
 
     // wait until notified, then return
-    rv = gService->mCondVar.Wait();
+    gService->mNotified = false;
+    while (!gService->mNotified) {
+      gService->mCondVar.Wait();
+    }
 
-    return rv;
+    return NS_OK;
 }
 
 
@@ -966,14 +974,14 @@ nsCacheProfilePrefObserver::CacheCompressionLevel()
  * nsProcessRequestEvent
  *****************************************************************************/
 
-class nsProcessRequestEvent : public nsRunnable {
+class nsProcessRequestEvent : public Runnable {
 public:
     explicit nsProcessRequestEvent(nsCacheRequest *aRequest)
     {
         mRequest = aRequest;
     }
 
-    NS_IMETHOD Run()
+    NS_IMETHOD Run() override
     {
         nsresult rv;
 
@@ -1004,7 +1012,7 @@ private:
  * nsDoomEvent
  *****************************************************************************/
 
-class nsDoomEvent : public nsRunnable {
+class nsDoomEvent : public Runnable {
 public:
     nsDoomEvent(nsCacheSession *session,
                 const nsACString &key,
@@ -1023,9 +1031,9 @@ public:
         NS_IF_ADDREF(mListener);
     }
 
-    NS_IMETHOD Run()
+    NS_IMETHOD Run() override
     {
-        nsCacheServiceAutoLock lock(LOCK_TELEM(NSDOOMEVENT_RUN));
+        nsCacheServiceAutoLock lock;
 
         bool foundActive = true;
         nsresult status = NS_ERROR_NOT_AVAILABLE;
@@ -1073,6 +1081,7 @@ nsCacheService::nsCacheService()
     : mObserver(nullptr),
       mLock("nsCacheService.mLock"),
       mCondVar(mLock, "nsCacheService.mCondVar"),
+      mNotified(false),
       mTimeStampLock("nsCacheService.mTimeStampLock"),
       mInitialized(false),
       mClearingEntries(false),
@@ -1321,7 +1330,7 @@ nsCacheService::EvictEntriesForSession(nsCacheSession * session)
 
 namespace {
 
-class EvictionNotifierRunnable : public nsRunnable
+class EvictionNotifierRunnable : public Runnable
 {
 public:
     explicit EvictionNotifierRunnable(nsISupports* aSubject)
@@ -1525,8 +1534,8 @@ nsresult nsCacheService::EvictEntriesInternal(nsCacheStoragePolicy storagePolicy
     if (storagePolicy == nsICache::STORE_ANYWHERE) {
         // if not called on main thread, dispatch the notification to the main thread to notify observers
         if (!NS_IsMainThread()) { 
-            nsCOMPtr<nsIRunnable> event = NS_NewRunnableMethod(this,
-                                                               &nsCacheService::FireClearNetworkCacheStoredAnywhereNotification);
+            nsCOMPtr<nsIRunnable> event = NewRunnableMethod(this,
+                                                            &nsCacheService::FireClearNetworkCacheStoredAnywhereNotification);
             NS_DispatchToMainThread(event);
         } else {
             // else you're already on main thread - notify observers
@@ -1611,9 +1620,6 @@ nsCacheService::CreateDiskDevice()
         return rv;
     }
 
-    Telemetry::Accumulate(Telemetry::DISK_CACHE_SMART_SIZE_USING_OLD_MAX,
-                          mObserver->ShouldUseOldMaxSmartSize());
-
     NS_ASSERTION(!mSmartSizeTimer, "Smartsize timer was already fired!");
 
     // Disk device is usually created during the startup. Delay smart size
@@ -1638,12 +1644,12 @@ nsCacheService::CreateDiskDevice()
 }
 
 // Runnable sent from cache thread to main thread
-class nsDisableOldMaxSmartSizePrefEvent: public nsRunnable
+class nsDisableOldMaxSmartSizePrefEvent: public Runnable
 {
 public:
     nsDisableOldMaxSmartSizePrefEvent() {}
 
-    NS_IMETHOD Run()
+    NS_IMETHOD Run() override
     {
         // Main thread may have already called nsCacheService::Shutdown
         if (!nsCacheService::IsInitialized())
@@ -1848,7 +1854,7 @@ nsCacheService::CreateRequest(nsCacheSession *   session,
 }
 
 
-class nsCacheListenerEvent : public nsRunnable
+class nsCacheListenerEvent : public Runnable
 {
 public:
     nsCacheListenerEvent(nsICacheListener *listener,
@@ -1861,7 +1867,7 @@ public:
         , mStatus(status)
     {}
 
-    NS_IMETHOD Run()
+    NS_IMETHOD Run() override
     {
         mListener->OnCacheEntryAvailable(mDescriptor, mAccessGranted, mStatus);
 
@@ -3194,21 +3200,13 @@ nsCacheService::CollectReports(nsIHandleReportCallback* aHandleReport,
 
     size_t memory = mMemoryDevice ? mMemoryDevice->TotalSize() : 0;
 
-#define REPORT(_path, _amount, _desc)                                         \
-    do {                                                                      \
-        nsresult rv;                                                          \
-        rv = aHandleReport->Callback(EmptyCString(),                          \
-                                     NS_LITERAL_CSTRING(_path),               \
-                                     KIND_HEAP, UNITS_BYTES, _amount,         \
-                                     NS_LITERAL_CSTRING(_desc), aData);       \
-        NS_ENSURE_SUCCESS(rv, rv);                                            \
-    } while (0)
+    MOZ_COLLECT_REPORT(
+        "explicit/network/disk-cache", KIND_HEAP, UNITS_BYTES, disk,
+        "Memory used by the network disk cache.");
 
-    REPORT("explicit/network/disk-cache", disk,
-           "Memory used by the network disk cache.");
-
-    REPORT("explicit/network/memory-cache", memory,
-           "Memory used by the network memory cache.");
+    MOZ_COLLECT_REPORT(
+        "explicit/network/memory-cache", KIND_HEAP, UNITS_BYTES, memory,
+        "Memory used by the network memory cache.");
 
     return NS_OK;
 }

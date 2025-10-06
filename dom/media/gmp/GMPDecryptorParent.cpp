@@ -6,7 +6,7 @@
 #include "GMPDecryptorParent.h"
 #include "GMPContentParent.h"
 #include "MediaData.h"
-#include "mozilla/unused.h"
+#include "mozilla/Unused.h"
 
 namespace mozilla {
 
@@ -41,7 +41,9 @@ GMPDecryptorParent::~GMPDecryptorParent()
 }
 
 nsresult
-GMPDecryptorParent::Init(GMPDecryptorProxyCallback* aCallback)
+GMPDecryptorParent::Init(GMPDecryptorProxyCallback* aCallback,
+                         bool aDistinctiveIdentifierRequired,
+                         bool aPersistentStateRequired)
 {
   LOGD(("GMPDecryptorParent[%p]::Init()", this));
 
@@ -50,7 +52,7 @@ GMPDecryptorParent::Init(GMPDecryptorProxyCallback* aCallback)
     return NS_ERROR_FAILURE;
   }
   mCallback = aCallback;
-  if (!SendInit()) {
+  if (!SendInit(aDistinctiveIdentifierRequired, aPersistentStateRequired)) {
     return NS_ERROR_FAILURE;
   }
   mIsOpen = true;
@@ -169,15 +171,20 @@ GMPDecryptorParent::Decrypt(uint32_t aId,
   }
 
   // Caller should ensure parameters passed in are valid.
-  MOZ_ASSERT(!aBuffer.IsEmpty() && aCrypto.mValid);
+  MOZ_ASSERT(!aBuffer.IsEmpty());
 
-  GMPDecryptionData data(aCrypto.mKeyId,
-                         aCrypto.mIV,
-                         aCrypto.mPlainSizes,
-                         aCrypto.mEncryptedSizes,
-                         aCrypto.mSessionIds);
+  if (aCrypto.mValid) {
+    GMPDecryptionData data(aCrypto.mKeyId,
+                           aCrypto.mIV,
+                           aCrypto.mPlainSizes,
+                           aCrypto.mEncryptedSizes,
+                           aCrypto.mSessionIds);
 
-  Unused << SendDecrypt(aId, aBuffer, data);
+    Unused << SendDecrypt(aId, aBuffer, data);
+  } else {
+    GMPDecryptionData data;
+    Unused << SendDecrypt(aId, aBuffer, data);
+  }
 }
 
 bool
@@ -339,19 +346,6 @@ GMPDecryptorParent::RecvKeyStatusChanged(const nsCString& aSessionId,
 }
 
 bool
-GMPDecryptorParent::RecvSetCaps(const uint64_t& aCaps)
-{
-  LOGD(("GMPDecryptorParent[%p]::RecvSetCaps(caps=0x%llx)", this, aCaps));
-
-  if (!mIsOpen) {
-    NS_WARNING("Trying to use a dead GMP decrypter!");
-    return false;
-  }
-  mCallback->SetCaps(aCaps);
-  return true;
-}
-
-bool
 GMPDecryptorParent::RecvDecrypted(const uint32_t& aId,
                                   const GMPErr& aErr,
                                   InfallibleTArray<uint8_t>&& aBuffer)
@@ -434,6 +428,7 @@ GMPDecryptorParent::ActorDestroy(ActorDestroyReason aWhy)
     mPlugin->DecryptorDestroyed(this);
     mPlugin = nullptr;
   }
+  MaybeDisconnect(aWhy == AbnormalShutdown);
 }
 
 bool

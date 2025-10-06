@@ -11,10 +11,9 @@ browser.jar:
   skin/classic/browser/aboutCertError_sectionCollapsed.png
   skin/classic/browser/aboutCertError_sectionCollapsed-rtl.png
   skin/classic/browser/aboutCertError_sectionExpanded.png
-#ifdef MOZ_SERVICES_SYNC
   skin/classic/browser/aboutSyncTabs.css
-#endif
   skin/classic/browser/aboutTabCrashed.css                     (../shared/aboutTabCrashed.css)
+* skin/classic/browser/syncedtabs/sidebar.css     (syncedtabs/sidebar.css)
   skin/classic/browser/actionicon-tab.png
   skin/classic/browser/appmenu-icons.png
   skin/classic/browser/appmenu-dropmarker.png
@@ -38,8 +37,6 @@ browser.jar:
   skin/classic/browser/KUI-background.png
   skin/classic/browser/KUI-close.png
   skin/classic/browser/livemark-folder.png
-  skin/classic/browser/mask.png                               (../shared/mask.png)
-  skin/classic/browser/mask@2x.png                            (../shared/mask@2x.png)
   skin/classic/browser/menu-back.png
   skin/classic/browser/menu-forward.png
   skin/classic/browser/bad-content-blocked-16.png
@@ -76,26 +73,15 @@ browser.jar:
   skin/classic/browser/webapps-16.png
   skin/classic/browser/webapps-64.png
 * skin/classic/browser/controlcenter/panel.css                 (controlcenter/panel.css)
-  skin/classic/browser/customizableui/thumburger-XP.png             (customizableui/thumburger-XP.png)
-  skin/classic/browser/customizableui/thumburger-XP@2x.png          (customizableui/thumburger-XP@2x.png)
-  skin/classic/browser/customizableui/thumburger-aero.png           (customizableui/thumburger-aero.png)
-  skin/classic/browser/customizableui/thumburger-aero@2x.png        (customizableui/thumburger-aero@2x.png)
-  skin/classic/browser/customizableui/thumburger-inverted.png       (customizableui/thumburger-inverted.png)
-  skin/classic/browser/customizableui/thumburger-inverted@2x.png    (customizableui/thumburger-inverted@2x.png)
-  skin/classic/browser/customizableui/thumburger-lunaSilver.png     (customizableui/thumburger-lunaSilver.png)
-  skin/classic/browser/customizableui/thumburger-lunaSilver@2x.png  (customizableui/thumburger-lunaSilver@2x.png)
-  skin/classic/browser/customizableui/thumburger-win8.png           (customizableui/thumburger-win8.png)
-  skin/classic/browser/customizableui/thumburger-win8@2x.png        (customizableui/thumburger-win8@2x.png)
-  skin/classic/browser/customizableui/thumburger.png                (customizableui/thumburger.png)
-  skin/classic/browser/customizableui/thumburger@2x.png             (customizableui/thumburger@2x.png)
-  skin/classic/browser/downloads/allDownloadsViewOverlay.css   (downloads/allDownloadsViewOverlay.css)
+* skin/classic/browser/customizableui/panelUIOverlay.css       (customizableui/panelUIOverlay.css)
+* skin/classic/browser/downloads/allDownloadsViewOverlay.css   (downloads/allDownloadsViewOverlay.css)
   skin/classic/browser/downloads/buttons.png                   (downloads/buttons.png)
   skin/classic/browser/downloads/contentAreaDownloadsView.css  (downloads/contentAreaDownloadsView.css)
   skin/classic/browser/downloads/download-glow.png             (downloads/download-glow.png)
   skin/classic/browser/downloads/download-notification-finish.png (downloads/download-notification-finish.png)
   skin/classic/browser/downloads/download-notification-start.png (downloads/download-notification-start.png)
   skin/classic/browser/downloads/download-summary.png          (downloads/download-summary.png)
-  skin/classic/browser/downloads/downloads.css                 (downloads/downloads.css)
+* skin/classic/browser/downloads/downloads.css                 (downloads/downloads.css)
   skin/classic/browser/downloads/indicator.css                 (downloads/indicator.css)
   skin/classic/browser/feeds/feedIcon.png                      (feeds/feedIcon.png)
   skin/classic/browser/feeds/feedIcon16.png                    (feeds/feedIcon16.png)
@@ -127,14 +113,18 @@ browser.jar:
   skin/classic/browser/preferences/application.png             (preferences/application.png)
   skin/classic/browser/preferences/mail.png                    (preferences/mail.png)
   skin/classic/browser/preferences/Options.png                 (preferences/Options.png)
-#ifdef MOZ_SERVICES_SYNC
   skin/classic/browser/preferences/Options-sync.png            (preferences/Options-sync.png)
-#endif
   skin/classic/browser/preferences/saveFile.png                (preferences/saveFile.png)
 * skin/classic/browser/preferences/preferences.css             (preferences/preferences.css)
   skin/classic/browser/preferences/applications.css            (preferences/applications.css)
   skin/classic/browser/preferences/aboutPermissions.css        (preferences/aboutPermissions.css)
-#ifdef MOZ_BROWSER_STATUSBAR
+  skin/classic/browser/privatebrowsing/attention.png           (../shared/privatebrowsing/attention.png)
+  skin/classic/browser/privatebrowsing/attention@2x.png        (../shared/privatebrowsing/attention@2x.png)
+  skin/classic/browser/privatebrowsing/check.png               (../shared/privatebrowsing/check.png)
+  skin/classic/browser/privatebrowsing/check@2x.png            (../shared/privatebrowsing/check@2x.png)
+  skin/classic/browser/privatebrowsing/mask.svg                (../shared/privatebrowsing/mask.svg)
+  skin/classic/browser/privatebrowsing/shield-page.png         (../shared/privatebrowsing/shield-page.png)
+  skin/classic/browser/privatebrowsing/shield-page@2x.png      (../shared/privatebrowsing/shield-page@2x.png)
   skin/classic/browser/statusbar/dynamic.css                   (../shared/statusbar/dynamic.css)
 * skin/classic/browser/statusbar/overlay.css                   (statusbar/overlay.css)
 * skin/classic/browser/statusbar/prefs.css                     (statusbar/prefs.css)
@@ -143,7 +133,6 @@ browser.jar:
   skin/classic/browser/statusbar/pms24.png                     (../shared/statusbar/pms24.png)
   skin/classic/browser/statusbar/throbber-idle.png             (../shared/statusbar/throbber-idle.png)
   skin/classic/browser/statusbar/throbberStatic.png            (../shared/statusbar/throbberStatic.png)
-#endif
   skin/classic/browser/tabbrowser/alltabs.png                  (tabbrowser/alltabs.png)
   skin/classic/browser/tabbrowser/alltabs-inverted.png         (tabbrowser/alltabs-inverted.png)
   skin/classic/browser/tabbrowser/newtab.png                   (tabbrowser/newtab.png)
@@ -156,7 +145,6 @@ browser.jar:
   skin/classic/browser/tabbrowser/tab-arrow-left-inverted.png  (tabbrowser/tab-arrow-left-inverted.png)
   skin/classic/browser/tabbrowser/tab-overflow-border.png      (tabbrowser/tab-overflow-border.png)
   skin/classic/browser/tabbrowser/tabDragIndicator.png         (tabbrowser/tabDragIndicator.png)
-#ifdef MOZ_SERVICES_SYNC
   skin/classic/browser/sync-throbber.png
   skin/classic/browser/sync-16.png
   skin/classic/browser/sync-32.png
@@ -168,7 +156,6 @@ browser.jar:
   skin/classic/browser/syncSetup.css
   skin/classic/browser/syncCommon.css
   skin/classic/browser/syncQuota.css
-#endif
 
 [extensions/{972ce4c6-7e08-4474-a285-3208198ce6fd}] chrome.jar:
 % override chrome://browser/skin/page-livemarks.png                   chrome://browser/skin/feeds/feedIcon16.png
@@ -239,16 +226,6 @@ browser.jar:
 % override chrome://browser/skin/Toolbar.png                          chrome://browser/skin/Toolbar-aero.png                            os=WINNT osversion=6
 % override chrome://browser/skin/Toolbar.png                          chrome://browser/skin/Toolbar-aero.png                            os=WINNT osversion=6.1
 % override chrome://browser/skin/Toolbar.png                          chrome://browser/skin/Toolbar-XP.png                              os=WINNT osversion=5.2
-% override chrome://browser/skin/customizableui/thumburger.png        chrome://browser/skin/customizableui/thumburger-XP.png            os=WINNT osversion<6
-% override chrome://browser/skin/customizableui/thumburger.png        chrome://browser/skin/customizableui/thumburger-aero.png          os=WINNT osversion=6
-% override chrome://browser/skin/customizableui/thumburger.png        chrome://browser/skin/customizableui/thumburger-aero.png          os=WINNT osversion=6.1
-% override chrome://browser/skin/customizableui/thumburger.png        chrome://browser/skin/customizableui/thumburger-win8.png          os=WINNT osversion=6.2
-% override chrome://browser/skin/customizableui/thumburger.png        chrome://browser/skin/customizableui/thumburger-win8.png          os=WINNT osversion=6.3
-% override chrome://browser/skin/customizableui/thumburger@2x.png     chrome://browser/skin/customizableui/thumburger-XP@2x.png         os=WINNT osversion<6
-% override chrome://browser/skin/customizableui/thumburger@2x.png     chrome://browser/skin/customizableui/thumburger-aero@2x.png       os=WINNT osversion=6
-% override chrome://browser/skin/customizableui/thumburger@2x.png     chrome://browser/skin/customizableui/thumburger-aero@2x.png       os=WINNT osversion=6.1
-% override chrome://browser/skin/customizableui/thumburger@2x.png     chrome://browser/skin/customizableui/thumburger-win8@2x.png       os=WINNT osversion=6.2
-% override chrome://browser/skin/customizableui/thumburger@2x.png     chrome://browser/skin/customizableui/thumburger-win8@2x.png       os=WINNT osversion=6.3
 % override chrome://browser/skin/loop/toolbar.png                     chrome://browser/skin/loop/toolbar-aero.png                       os=WINNT osversion=6
 % override chrome://browser/skin/loop/toolbar.png                     chrome://browser/skin/loop/toolbar-aero.png                       os=WINNT osversion=6.1
 % override chrome://browser/skin/loop/toolbar.png                     chrome://browser/skin/loop/toolbar-XP.png                         os=WINNT osversion=5.2

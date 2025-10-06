@@ -457,8 +457,6 @@ PlacesController.prototype = {
           uri = NetUtil.newURI(node.uri);
           if (PlacesUtils.nodeIsBookmark(node)) {
             nodeData["bookmark"] = true;
-            PlacesUtils.nodeIsTagQuery(node.parent)
-
             var parentNode = node.parent;
             if (parentNode) {
               if (PlacesUtils.nodeIsTagQuery(parentNode))
@@ -973,7 +971,7 @@ PlacesController.prototype = {
         PlacesUtils.bhistory.removePages(URIslice, URIslice.length);
         Services.tm.mainThread.dispatch(() => gen.next(),
                                         Ci.nsIThread.DISPATCH_NORMAL);
-        yield unefined;
+        yield undefined;
       }
     }
     let gen = pagesChunkGenerator(URIs);
@@ -1108,7 +1106,7 @@ PlacesController.prototype = {
       xferable.getTransferData(PlacesUtils.TYPE_X_MOZ_PLACE_ACTION, action, {});
       [action, actionOwner] =
         action.value.QueryInterface(Ci.nsISupportsString).data.split(",");
-    } catch(ex) {
+    } catch (ex) {
       // Paste from external sources don't have any associated action, just
       // fallback to a copy action.
       return "copy";
@@ -1286,7 +1284,7 @@ PlacesController.prototype = {
       data = data.value.QueryInterface(Ci.nsISupportsString).data;
       type = type.value;
       items = PlacesUtils.unwrapNodes(data, type);
-    } catch(ex) {
+    } catch (ex) {
       // No supported data exists or nodes unwrap failed, just bail out.
       return;
     }
@@ -1591,7 +1589,7 @@ var PlacesControllerDragHelper = {
         unwrapped = PlacesUtils.unwrapNodes(data, flavor)[0];
       }
       else if (data instanceof XULElement && data.localName == "tab" &&
-               data.ownerDocument.defaultView instanceof ChromeWindow) {
+               data.ownerGlobal instanceof ChromeWindow) {
         let uri = data.linkedBrowser.currentURI;
         let spec = uri ? uri.spec : "about:blank";
         let title = data.label;
@@ -1600,7 +1598,7 @@ var PlacesControllerDragHelper = {
                       type: PlacesUtils.TYPE_X_MOZ_URL};
       }
       else
-        throw("bogus data was passed as a tab")
+        throw new Error("bogus data was passed as a tab");
 
       let index = insertionPoint.index;
 

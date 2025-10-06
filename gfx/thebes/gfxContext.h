@@ -14,13 +14,11 @@
 #include "gfxMatrix.h"
 #include "gfxPattern.h"
 #include "nsTArray.h"
-#include "nsAutoPtr.h"
 
 #include "mozilla/gfx/2D.h"
 
 typedef struct _cairo cairo_t;
 class GlyphBufferAzure;
-template <typename T> class FallibleTArray;
 
 namespace mozilla {
 namespace gfx {
@@ -58,27 +56,26 @@ class gfxContext final {
     NS_INLINE_DECL_REFCOUNTING(gfxContext)
 
 public:
-
     /**
      * Initialize this context from a DrawTarget.
      * Strips any transform from aTarget.
      * aTarget will be flushed in the gfxContext's destructor.
+     * If aTarget is null or invalid, nullptr is returned.  The caller
+     * is responsible for handling this scenario as appropriate.
      */
-    explicit gfxContext(mozilla::gfx::DrawTarget *aTarget,
-                        const mozilla::gfx::Point& aDeviceOffset = mozilla::gfx::Point());
+    static already_AddRefed<gfxContext>
+        CreateOrNull(mozilla::gfx::DrawTarget* aTarget,
+                     const mozilla::gfx::Point& aDeviceOffset = mozilla::gfx::Point());
 
     /**
      * Create a new gfxContext wrapping aTarget and preserving aTarget's
      * transform. Note that the transform is moved from aTarget to the resulting
      * gfxContext, aTarget will no longer have its transform.
+     * If aTarget is null or invalid, nullptr is returned.  The caller
+     * is responsible for handling this scenario as appropriate.
      */
-    static already_AddRefed<gfxContext> ContextForDrawTarget(mozilla::gfx::DrawTarget* aTarget);
-
-    /**
-     * Return the current transparency group target, if any. If no group is
-     * active, returns the surface the gfxContext was created with.
-     */
-    already_AddRefed<gfxASurface> CurrentSurface();
+    static already_AddRefed<gfxContext>
+        CreatePreservingTransformOrNull(mozilla::gfx::DrawTarget* aTarget);
 
     mozilla::gfx::DrawTarget *GetDrawTarget() { return mDT; }
 
@@ -215,7 +212,7 @@ public:
     /**
      * Takes the given rect and tries to align it to device pixels.  If
      * this succeeds, the method will return true, and the rect will
-     * be in device coordinates (already transformed by the CTM).  If it 
+     * be in device coordinates (already transformed by the CTM).  If it
      * fails, the method will return false, and the rect will not be
      * changed.
      *
@@ -228,7 +225,7 @@ public:
     /**
      * Takes the given point and tries to align it to device pixels.  If
      * this succeeds, the method will return true, and the point will
-     * be in device coordinates (already transformed by the CTM).  If it 
+     * be in device coordinates (already transformed by the CTM).  If it
      * fails, the method will return false, and the point will not be
      * changed.
      *
@@ -306,13 +303,6 @@ public:
      */
     void Mask(mozilla::gfx::SourceSurface *aSurface, mozilla::gfx::Float aAlpha, const mozilla::gfx::Matrix& aTransform);
     void Mask(mozilla::gfx::SourceSurface *aSurface, const mozilla::gfx::Matrix& aTransform) { Mask(aSurface, 1.0f, aTransform); }
-
-    /**
-     * Shorthand for creating a pattern and calling the pattern-taking
-     * variant of Mask.
-     */
-    void Mask(gfxASurface *surface, const gfxPoint& offset = gfxPoint(0.0, 0.0));
-
     void Mask(mozilla::gfx::SourceSurface *surface, float alpha = 1.0f, const mozilla::gfx::Point& offset = mozilla::gfx::Point());
 
     /**
@@ -399,8 +389,8 @@ public:
     bool HasComplexClip() const;
 
     /**
-     * Returns true if the given rectangle is fully contained in the current clip. 
-     * This is conservative; it may return false even when the given rectangle is 
+     * Returns true if the given rectangle is fully contained in the current clip.
+     * This is conservative; it may return false even when the given rectangle is
      * fully contained by the current clip.
      */
     bool ClipContainsRect(const gfxRect& aRect);
@@ -458,6 +448,16 @@ public:
     static mozilla::gfx::UserDataKey sDontUseAsSourceKey;
 
 private:
+
+    /**
+     * Initialize this context from a DrawTarget.
+     * Strips any transform from aTarget.
+     * aTarget will be flushed in the gfxContext's destructor.  Use the static
+     * ContextForDrawTargetNoTransform() when you want this behavior, as that
+     * version deals with null DrawTarget better.
+     */
+    explicit gfxContext(mozilla::gfx::DrawTarget *aTarget,
+                        const mozilla::gfx::Point& aDeviceOffset = mozilla::gfx::Point());
     ~gfxContext();
 
   friend class PatternFromState;
@@ -470,7 +470,7 @@ private:
   typedef mozilla::gfx::Float Float;
   typedef mozilla::gfx::PathBuilder PathBuilder;
   typedef mozilla::gfx::SourceSurface SourceSurface;
-  
+
   struct AzureState {
     AzureState()
       : op(mozilla::gfx::CompositionOp::OP_OVER)
@@ -507,7 +507,9 @@ private:
     mozilla::gfx::Float mBlendOpacity;
     RefPtr<SourceSurface> mBlendMask;
     Matrix mBlendMaskTransform;
-    mozilla::DebugOnly<bool> mWasPushedForBlendBack;
+#ifdef DEBUG
+    bool mWasPushedForBlendBack;
+#endif
   };
 
   // This ensures mPath contains a valid path (in user space!)
@@ -559,7 +561,7 @@ public:
   void SetContext(gfxContext *aContext) {
     NS_ASSERTION(!mContext, "Not going to call Restore() on some context!!!");
     mContext = aContext;
-    mContext->Save();    
+    mContext->Save();
   }
 
   void EnsureSaved(gfxContext *aContext) {
@@ -625,6 +627,8 @@ public:
         MOZ_ASSERT(mContext, "mMatrix doesn't contain a useful matrix");
         return mMatrix;
     }
+
+    bool HasMatrix() const { return !!mContext; }
 
 private:
     gfxContext *mContext;

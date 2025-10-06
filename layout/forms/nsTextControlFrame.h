@@ -58,12 +58,12 @@ public:
                   bool aShrinkWrap) override;
 
   virtual void Reflow(nsPresContext*           aPresContext,
-                      nsHTMLReflowMetrics&     aDesiredSize,
-                      const nsHTMLReflowState& aReflowState,
+                      ReflowOutput&     aDesiredSize,
+                      const ReflowInput& aReflowInput,
                       nsReflowStatus&          aStatus) override;
 
-  virtual nsSize GetMinSize(nsBoxLayoutState& aBoxLayoutState) override;
-  virtual bool IsCollapsed() override;
+  virtual nsSize GetXULMinSize(nsBoxLayoutState& aBoxLayoutState) override;
+  virtual bool IsXULCollapsed() override;
 
   virtual bool IsLeaf() const override;
   
@@ -160,9 +160,9 @@ protected:
    */
   void ReflowTextControlChild(nsIFrame*                aFrame,
                               nsPresContext*           aPresContext,
-                              const nsHTMLReflowState& aReflowState,
+                              const ReflowInput& aReflowInput,
                               nsReflowStatus&          aStatus,
-                              nsHTMLReflowMetrics& aParentDesiredSize);
+                              ReflowOutput& aParentDesiredSize);
 
 public: //for methods who access nsTextControlFrame directly
   void SetValueChanged(bool aValueChanged);
@@ -205,7 +205,7 @@ protected:
   NS_DECLARE_FRAME_PROPERTY_WITHOUT_DTOR(TextControlInitializer,
                                          EditorInitializer)
 
-  class EditorInitializer : public nsRunnable {
+  class EditorInitializer : public mozilla::Runnable {
   public:
     explicit EditorInitializer(nsTextControlFrame* aFrame) :
       mFrame(aFrame) {}
@@ -224,7 +224,7 @@ protected:
   class ScrollOnFocusEvent;
   friend class ScrollOnFocusEvent;
 
-  class ScrollOnFocusEvent : public nsRunnable {
+  class ScrollOnFocusEvent : public mozilla::Runnable {
   public:
     explicit ScrollOnFocusEvent(nsTextControlFrame* aFrame) :
       mFrame(aFrame) {}

@@ -3,6 +3,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "nsAutoPtr.h"
 #include "nsCOMPtr.h"
 #include "nsIServiceManager.h"
 #include "nsResizerFrame.h"
@@ -11,7 +12,6 @@
 #include "nsIDOMNodeList.h"
 #include "nsGkAtoms.h"
 #include "nsNameSpaceManager.h"
-#include "nsIDOMElementCSSInlineStyle.h"
 #include "nsIDOMCSSStyleDeclaration.h"
 
 #include "nsPresContext.h"
@@ -26,6 +26,8 @@
 #include "nsIScreenManager.h"
 #include "mozilla/dom/Element.h"
 #include "nsError.h"
+#include "nsICSSDeclaration.h"
+#include "nsStyledElement.h"
 #include <algorithm>
 
 using namespace mozilla;
@@ -80,16 +82,8 @@ nsResizerFrame::HandleEvent(nsPresContext* aPresContext,
           // GetScreenRectInAppUnits returns the border box rectangle, so
           // adjust to get the desired content rectangle.
           nsRect rect = frameToResize->GetScreenRectInAppUnits();
-          switch (frameToResize->StylePosition()->mBoxSizing) {
-            case StyleBoxSizing::Content:
-              rect.Deflate(frameToResize->GetUsedPadding());
-              MOZ_FALLTHROUGH;
-            case StyleBoxSizing::Padding:
-              rect.Deflate(frameToResize->GetUsedBorder());
-              MOZ_FALLTHROUGH;
-            case StyleBoxSizing::Border:
-              // nothing
-              break;
+          if (frameToResize->StylePosition()->mBoxSizing == StyleBoxSizing::Content) {
+            rect.Deflate(frameToResize->GetUsedBorderAndPadding());
           }
 
           mMouseDownRect =
@@ -105,7 +99,7 @@ nsResizerFrame::HandleEvent(nsPresContext* aPresContext,
 
           // ask the widget implementation to begin a resize drag if it can
           Direction direction = GetDirection();
-          nsresult rv = aEvent->widget->BeginResizeDrag(aEvent,
+          nsresult rv = aEvent->mWidget->BeginResizeDrag(aEvent,
                         direction.mHorizontal, direction.mVertical);
           // for native drags, don't set the fields below
           if (rv != NS_ERROR_NOT_IMPLEMENTED)
@@ -121,7 +115,7 @@ nsResizerFrame::HandleEvent(nsPresContext* aPresContext,
         LayoutDeviceIntPoint refPoint;
         if (!GetEventPoint(aEvent, refPoint))
           return NS_OK;
-        mMouseDownPoint = refPoint + aEvent->widget->WidgetToScreenOffset();
+        mMouseDownPoint = refPoint + aEvent->mWidget->WidgetToScreenOffset();
 
         // we're tracking
         mTrackingMouseMove = true;
@@ -169,7 +163,8 @@ nsResizerFrame::HandleEvent(nsPresContext* aPresContext,
       LayoutDeviceIntPoint refPoint;
       if (!GetEventPoint(aEvent, refPoint))
         return NS_OK;
-      LayoutDeviceIntPoint screenPoint = refPoint + aEvent->widget->WidgetToScreenOffset();
+      LayoutDeviceIntPoint screenPoint =
+        refPoint + aEvent->mWidget->WidgetToScreenOffset();
       LayoutDeviceIntPoint mouseMove(screenPoint - mMouseDownPoint);
 
       // Determine which direction to resize by checking the dir attribute.
@@ -256,7 +251,7 @@ nsResizerFrame::HandleEvent(nsPresContext* aPresContext,
         if (menuPopupFrame) {
           nsCOMPtr<nsIWidget> widget = menuPopupFrame->GetWidget();
           if (widget)
-            widget->GetScreenBounds(oldRect);
+            oldRect = widget->GetScreenBounds();
 
           // convert the new rectangle into outer window coordinates
           LayoutDeviceIntPoint clientOffset = widget->GetClientOffset();
@@ -284,7 +279,8 @@ nsResizerFrame::HandleEvent(nsPresContext* aPresContext,
         }
       }
       else {
-        window->SetPositionAndSize(rect.x, rect.y, rect.width, rect.height, true); // do the repaint.
+        window->SetPositionAndSize(rect.x, rect.y, rect.width, rect.height,
+                                   nsIBaseWindow::eRepaint); // do the repaint.
       }
 
       doDefault = false;
@@ -426,11 +422,10 @@ nsResizerFrame::ResizeContent(nsIContent* aContent, const Direction& aDirection,
     }
   }
   else {
-    nsCOMPtr<nsIDOMElementCSSInlineStyle> inlineStyleContent =
+    nsCOMPtr<nsStyledElement> inlineStyleContent =
       do_QueryInterface(aContent);
     if (inlineStyleContent) {
-      nsCOMPtr<nsIDOMCSSStyleDeclaration> decl;
-      inlineStyleContent->GetStyle(getter_AddRefs(decl));
+      nsICSSDeclaration* decl = inlineStyleContent->Style();
 
       if (aOriginalSizeInfo) {
         decl->GetPropertyValue(NS_LITERAL_STRING("width"),
@@ -539,6 +534,5 @@ void
 nsResizerFrame::MouseClicked(WidgetMouseEvent* aEvent)
 {
   // Execute the oncommand event handler.
-  nsContentUtils::DispatchXULCommand(mContent,
-                                     aEvent && aEvent->mFlags.mIsTrusted);
+  nsContentUtils::DispatchXULCommand(mContent, aEvent && aEvent->IsTrusted());
 }

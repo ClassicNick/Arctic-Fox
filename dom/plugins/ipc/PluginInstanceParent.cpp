@@ -7,6 +7,7 @@
 #include "mozilla/DebugOnly.h"
 #include <stdint.h> // for intptr_t
 
+#include "mozilla/BasicEvents.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/Telemetry.h"
 #include "PluginInstanceParent.h"
@@ -44,6 +45,7 @@
 #include "mozilla/layers/ImageBridgeChild.h"
 #if defined(XP_WIN)
 # include "mozilla/layers/D3D11ShareHandleImage.h"
+# include "mozilla/gfx/DeviceManagerDx.h"
 # include "mozilla/layers/TextureD3D11.h"
 #endif
 
@@ -67,10 +69,6 @@ extern const wchar_t* kFlashFullscreenClass;
 #elif defined(XP_MACOSX)
 #include <ApplicationServices/ApplicationServices.h>
 #endif // defined(XP_MACOSX)
-
-// This is the pref used to determine whether to use Shumway on a Flash object
-// (when Shumway is enabled).
-static const char kShumwayWhitelistPref[] = "shumway.swf.whitelist";
 
 using namespace mozilla::plugins;
 using namespace mozilla::layers;
@@ -122,7 +120,6 @@ PluginInstanceParent::PluginInstanceParent(PluginModuleParent* parent,
     , mUseSurrogate(true)
     , mNPP(npp)
     , mNPNIface(npniface)
-    , mIsWhitelistedForShumway(false)
     , mWindowType(NPWindowTypeWindow)
     , mDrawingModel(kDefaultDrawingModel)
     , mLastRecordedDrawingModel(-1)
@@ -276,9 +273,6 @@ PluginInstanceParent::AnswerNPN_GetValue_NPNVnetscapeWindow(NativeWindowHandle* 
 #elif defined(ANDROID)
     // TODO: Need Android impl
     int id;
-#elif defined(MOZ_WIDGET_QT)
-    // TODO: Need Qt non X impl
-    int id;
 #else
 #warning Implement me
 #endif
@@ -407,7 +401,7 @@ PluginInstanceParent::AnswerNPN_GetValue_PreferredDXGIAdapter(DxgiAdapterDesc* a
         return false;
     }
 
-    ID3D11Device* device = gfxWindowsPlatform::GetPlatform()->GetD3D11ContentDevice();
+    RefPtr<ID3D11Device> device = DeviceManagerDx::Get()->GetContentDevice();
     if (!device) {
         return false;
     }
@@ -688,7 +682,7 @@ PluginInstanceParent::RecvInitDXGISurface(const gfx::SurfaceFormat& format,
         return true;
     }
 
-    RefPtr<ID3D11Device> d3d11 = gfxWindowsPlatform::GetPlatform()->GetD3D11ContentDevice();
+    RefPtr<ID3D11Device> d3d11 = DeviceManagerDx::Get()->GetContentDevice();
     if (!d3d11) {
         return true;
     }
@@ -955,8 +949,9 @@ PluginInstanceParent::RecvShow(const NPRect& updatedRect,
                    updatedRect.bottom - updatedRect.top);
         surface->MarkDirty(ur);
 
+        bool isPlugin = true;
         RefPtr<gfx::SourceSurface> sourceSurface =
-            gfxPlatform::GetPlatform()->GetSourceSurfaceForSurface(nullptr, surface);
+            gfxPlatform::GetPlatform()->GetSourceSurfaceForSurface(nullptr, surface, isPlugin);
         RefPtr<SourceSurfaceImage> image = new SourceSurfaceImage(surface->GetSize(), sourceSurface);
 
         AutoTArray<ImageContainer::NonOwningImage,1> imageList;
@@ -1186,6 +1181,32 @@ PluginInstanceParent::EndUpdateBackground(const nsIntRect& aRect)
 
     return NS_OK;
 }
+
+#if defined(XP_WIN)
+nsresult
+PluginInstanceParent::SetScrollCaptureId(uint64_t aScrollCaptureId)
+{
+  if (aScrollCaptureId == ImageContainer::sInvalidAsyncContainerId) {
+    return NS_ERROR_FAILURE;
+  }
+
+  mImageContainer = new ImageContainer(aScrollCaptureId);
+  return NS_OK;
+}
+
+nsresult
+PluginInstanceParent::GetScrollCaptureContainer(ImageContainer** aContainer)
+{
+  if (!aContainer || !mImageContainer) {
+    return NS_ERROR_FAILURE;
+  }
+
+  RefPtr<ImageContainer> container = GetImageContainer();
+  container.forget(aContainer);
+
+  return NS_OK;
+}
+#endif // XP_WIN
 
 PluginAsyncSurrogate*
 PluginInstanceParent::GetAsyncSurrogate()
@@ -1495,6 +1516,13 @@ PluginInstanceParent::NPP_SetValue(NPNVariable variable, void* value)
 
     case NPNVmuteAudioBool:
         if (!CallNPP_SetValue_NPNVmuteAudioBool(*static_cast<NPBool*>(value),
+                                                &result))
+            return NPERR_GENERIC_ERROR;
+
+        return result;
+
+    case NPNVCSSZoomFactor:
+        if (!CallNPP_SetValue_NPNVCSSZoomFactor(*static_cast<double*>(value),
                                                 &result))
             return NPERR_GENERIC_ERROR;
 
@@ -2417,6 +2445,33 @@ PluginInstanceParent::RecvRequestCommitOrCancel(const bool& aCommitted)
         owner->RequestCommitOrCancel(aCommitted);
     }
 #endif
+    return true;
+}
+
+nsresult
+PluginInstanceParent::HandledWindowedPluginKeyEvent(
+                        const NativeEventData& aKeyEventData,
+                        bool aIsConsumed)
+{
+    if (NS_WARN_IF(!SendHandledWindowedPluginKeyEvent(aKeyEventData,
+                                                      aIsConsumed))) {
+        return NS_ERROR_FAILURE;
+    }
+    return NS_OK;
+}
+
+bool
+PluginInstanceParent::RecvOnWindowedPluginKeyEvent(
+                        const NativeEventData& aKeyEventData)
+{
+    nsPluginInstanceOwner* owner = GetOwner();
+    if (NS_WARN_IF(!owner)) {
+        // Notifies the plugin process of the key event being not consumed
+        // by us.
+        HandledWindowedPluginKeyEvent(aKeyEventData, false);
+        return true;
+    }
+    owner->OnWindowedPluginKeyEvent(aKeyEventData);
     return true;
 }
 

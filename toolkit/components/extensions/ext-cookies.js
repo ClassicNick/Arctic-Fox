@@ -146,13 +146,13 @@ function* query(detailsIn, props, extension) {
   if ("url" in details) {
     try {
       uri = NetUtil.newURI(details.url).QueryInterface(Ci.nsIURL);
-      enumerator = Services.cookies.getCookiesFromHost(uri.host);
+      enumerator = Services.cookies.getCookiesFromHost(uri.host, {});
     } catch (ex) {
       // This often happens for about: URLs
       return;
     }
   } else if ("domain" in details) {
-    enumerator = Services.cookies.getCookiesFromHost(details.domain);
+    enumerator = Services.cookies.getCookiesFromHost(details.domain, {});
   } else {
     enumerator = Services.cookies.enumerator;
   }
@@ -238,7 +238,8 @@ function* query(detailsIn, props, extension) {
   }
 }
 
-extensions.registerSchemaAPI("cookies", "cookies", (extension, context) => {
+extensions.registerSchemaAPI("cookies", context => {
+  let {extension} = context;
   let self = {
     cookies: {
       get: function(details) {
@@ -277,7 +278,7 @@ extensions.registerSchemaAPI("cookies", "cookies", (extension, context) => {
         let secure = details.secure !== null ? details.secure : false;
         let httpOnly = details.httpOnly !== null ? details.httpOnly : false;
         let isSession = details.expirationDate === null;
-        let expiry = isSession ? 0 : details.expirationDate;
+        let expiry = isSession ? Number.MAX_SAFE_INTEGER : details.expirationDate;
         // Ignore storeID.
 
         let cookieAttrs = {host: details.domain, path: path, isSecure: secure};
@@ -288,14 +289,14 @@ extensions.registerSchemaAPI("cookies", "cookies", (extension, context) => {
         // The permission check may have modified the domain, so use
         // the new value instead.
         Services.cookies.add(cookieAttrs.host, path, name, value,
-                             secure, httpOnly, isSession, expiry);
+                             secure, httpOnly, isSession, expiry, {});
 
         return self.cookies.get(details);
       },
 
       remove: function(details) {
         for (let cookie of query(details, ["url", "name", "storeId"], extension)) {
-          Services.cookies.remove(cookie.host, cookie.name, cookie.path, false);
+          Services.cookies.remove(cookie.host, cookie.name, cookie.path, false, cookie.originAttributes);
           // Todo: could there be multiple per subdomain?
           return Promise.resolve({
             url: details.url,
@@ -331,13 +332,14 @@ extensions.registerSchemaAPI("cookies", "cookies", (extension, context) => {
               notify(false, subject, "explicit");
               break;
             case "changed":
-              notify(false, subject, "overwrite");
+              notify(true, subject, "overwrite");
+              notify(false, subject, "explicit");
               break;
             case "batch-deleted":
               subject.QueryInterface(Ci.nsIArray);
               for (let i = 0; i < subject.length; i++) {
                 let cookie = subject.queryElementAt(i, Ci.nsICookie2);
-                if (!cookie.isSession && (cookie.expiry + 1) * 1000 <= Date.now()) {
+                if (!cookie.isSession && cookie.expiry * 1000 <= Date.now()) {
                   notify(true, cookie, "expired");
                 } else {
                   notify(true, cookie, "evicted");

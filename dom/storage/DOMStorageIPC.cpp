@@ -10,7 +10,7 @@
 
 #include "mozilla/dom/ContentChild.h"
 #include "mozilla/dom/ContentParent.h"
-#include "mozilla/unused.h"
+#include "mozilla/Unused.h"
 #include "nsIDiskSpaceWatcher.h"
 #include "nsThreadUtils.h"
 
@@ -300,7 +300,7 @@ DOMStorageDBParent::ReleaseIPDLReference()
 
 namespace {
 
-class SendInitialChildDataRunnable : public nsRunnable
+class SendInitialChildDataRunnable : public Runnable
 {
 public:
   explicit SendInitialChildDataRunnable(DOMStorageDBParent* aParent)
@@ -308,7 +308,7 @@ public:
   {}
 
 private:
-  NS_IMETHOD Run()
+  NS_IMETHOD Run() override
   {
     if (!mParent->IPCOpen()) {
       return NS_OK;
@@ -615,16 +615,9 @@ DOMStorageDBParent::Observe(const char* aTopic,
                             const nsACString& aOriginScope)
 {
   if (mIPCOpen) {
-#ifdef MOZ_NUWA_PROCESS
-    if (!(static_cast<ContentParent*>(Manager())->IsNuwaProcess() &&
-          ContentParent::IsNuwaReady())) {
-#endif
       mozilla::Unused << SendObserve(nsDependentCString(aTopic),
                                      nsString(aOriginAttributesPattern),
                                      nsCString(aOriginScope));
-#ifdef MOZ_NUWA_PROCESS
-    }
-#endif
   }
 
   return NS_OK;
@@ -633,7 +626,7 @@ DOMStorageDBParent::Observe(const char* aTopic,
 namespace {
 
 // Results must be sent back on the main thread
-class LoadRunnable : public nsRunnable
+class LoadRunnable : public Runnable
 {
 public:
   enum TaskType {
@@ -675,7 +668,7 @@ private:
   nsString mValue;
   nsresult mRv;
 
-  NS_IMETHOD Run()
+  NS_IMETHOD Run() override
   {
     if (!mParent->IPCOpen()) {
       return NS_OK;
@@ -746,7 +739,7 @@ DOMStorageDBParent::CacheParentBridge::LoadWait()
 
 namespace {
 
-class UsageRunnable : public nsRunnable
+class UsageRunnable : public Runnable
 {
 public:
   UsageRunnable(DOMStorageDBParent* aParent, const nsACString& aOriginScope, const int64_t& aUsage)
@@ -756,7 +749,7 @@ public:
   {}
 
 private:
-  NS_IMETHOD Run()
+  NS_IMETHOD Run() override
   {
     if (!mParent->IPCOpen()) {
       return NS_OK;

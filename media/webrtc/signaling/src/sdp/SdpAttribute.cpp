@@ -6,7 +6,6 @@
 
 #include "signaling/src/sdp/SdpAttribute.h"
 #include "signaling/src/sdp/SdpHelper.h"
-
 #include <iomanip>
 
 #ifdef CRLF
@@ -16,6 +15,48 @@
 
 namespace mozilla
 {
+
+static unsigned char
+PeekChar(std::istream& is, std::string* error)
+{
+  int next = is.peek();
+  if (next == EOF) {
+    *error = "Truncated";
+    return 0;
+  }
+
+  return next;
+}
+
+static std::string ParseToken(std::istream& is,
+                              const std::string& delims,
+                              std::string* error)
+{
+  std::string token;
+  while (is) {
+    unsigned char c = PeekChar(is, error);
+    if (!c || (delims.find(c) != std::string::npos)) {
+      break;
+    }
+    token.push_back(std::tolower(is.get()));
+  }
+  return token;
+}
+
+static bool
+SkipChar(std::istream& is, unsigned char c, std::string* error)
+{
+  if (PeekChar(is, error) != c) {
+    *error = "Expected \'";
+    error->push_back(c);
+    error->push_back('\'');
+    return false;
+  }
+
+  is.get();
+  return true;
+}
+
 
 void
 SdpConnectionAttribute::Serialize(std::ostream& os) const
@@ -27,6 +68,33 @@ void
 SdpDirectionAttribute::Serialize(std::ostream& os) const
 {
   os << "a=" << mValue << CRLF;
+}
+
+void
+SdpDtlsMessageAttribute::Serialize(std::ostream& os) const
+{
+  os << "a=" << mType << ":" << mRole << " " << mValue << CRLF;
+}
+
+bool
+SdpDtlsMessageAttribute::Parse(std::istream& is, std::string* error)
+{
+  std::string roleToken = ParseToken(is, " ", error);
+  if (roleToken == "server") {
+    mRole = kServer;
+  } else if (roleToken == "client") {
+    mRole = kClient;
+  } else {
+    *error = "Invalid dtls-message role; must be either client or server";
+    return false;
+  }
+
+  is >> std::ws;
+
+  std::string s(std::istreambuf_iterator<char>(is), {});
+  mValue = s;
+
+  return true;
 }
 
 void
@@ -113,13 +181,11 @@ void
 SdpFmtpAttributeList::Serialize(std::ostream& os) const
 {
   for (auto i = mFmtps.begin(); i != mFmtps.end(); ++i) {
-    os << "a=" << mType << ":" << i->format << " ";
     if (i->parameters) {
+      os << "a=" << mType << ":" << i->format << " ";
       i->parameters->Serialize(os);
-    } else {
-      os << i->parameters_string;
+      os << CRLF;
     }
-    os << CRLF;
   }
 }
 
@@ -194,32 +260,6 @@ SdpImageattrAttributeList::XYRange::Serialize(std::ostream& os) const
     }
     os << "]";
   }
-}
-
-static unsigned char
-PeekChar(std::istream& is, std::string* error)
-{
-  int next = is.peek();
-  if (next == EOF) {
-    *error = "Truncated";
-    return 0;
-  }
-
-  return next;
-}
-
-static bool
-SkipChar(std::istream& is, unsigned char c, std::string* error)
-{
-  if (PeekChar(is, error) != c) {
-    *error = "Expected \'";
-    error->push_back(c);
-    error->push_back('\'');
-    return false;
-  }
-
-  is.get();
-  return true;
 }
 
 template<typename T>
@@ -479,21 +519,6 @@ SdpImageattrAttributeList::PRange::Serialize(std::ostream& os) const
 {
   os << std::setprecision(4) << std::fixed;
   os << "[" << min << "-" << max << "]";
-}
-
-static std::string ParseToken(std::istream& is,
-                              const std::string& delims,
-                              std::string* error)
-{
-  std::string token;
-  while (is) {
-    unsigned char c = PeekChar(is, error);
-    if (!c || (delims.find(c) != std::string::npos)) {
-      break;
-    }
-    token.push_back(std::tolower(is.get()));
-  }
-  return token;
 }
 
 static std::string ParseKey(std::istream& is, std::string* error)
@@ -1104,6 +1129,8 @@ ShouldSerializeChannels(SdpRtpmapAttributeList::CodecType type)
     case SdpRtpmapAttributeList::kiLBC:
     case SdpRtpmapAttributeList::kiSAC:
     case SdpRtpmapAttributeList::kH264:
+    case SdpRtpmapAttributeList::kRed:
+    case SdpRtpmapAttributeList::kUlpfec:
       return false;
     case SdpRtpmapAttributeList::kOtherCodec:
       return true;
@@ -1127,11 +1154,8 @@ void
 SdpSctpmapAttributeList::Serialize(std::ostream& os) const
 {
   for (auto i = mSctpmaps.begin(); i != mSctpmaps.end(); ++i) {
-    os << "a=" << mType << ":" << i->pt << " " << i->name;
-    if (i->streams) {
-      os << " " << i->streams;
-    }
-    os << CRLF;
+    os << "a=" << mType << ":" << i->pt << " " << i->name << " " << i->streams
+      << CRLF;
   }
 }
 
@@ -1397,6 +1421,8 @@ SdpAttribute::IsAllowedAtMediaLevel(AttributeType type)
       return true;
     case kDirectionAttribute:
       return true;
+    case kDtlsMessageAttribute:
+      return false;
     case kEndOfCandidatesAttribute:
       return true;
     case kExtmapAttribute:
@@ -1484,6 +1510,8 @@ SdpAttribute::IsAllowedAtSessionLevel(AttributeType type)
       return true;
     case kDirectionAttribute:
       return true;
+    case kDtlsMessageAttribute:
+      return true;
     case kEndOfCandidatesAttribute:
       return true;
     case kExtmapAttribute:
@@ -1566,6 +1594,8 @@ SdpAttribute::GetAttributeTypeString(AttributeType type)
       return "candidate";
     case kConnectionAttribute:
       return "connection";
+    case kDtlsMessageAttribute:
+      return "dtls-message";
     case kEndOfCandidatesAttribute:
       return "end-of-candidates";
     case kExtmapAttribute:

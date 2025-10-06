@@ -2,6 +2,26 @@
 // be ignored. To make sure tests respect that, we include a file of type
 // "bogus/duh" in each list.
 
+// Make sure to not touch navigator in here, since we want to push prefs that
+// will affect the APIs it exposes, but the set of exposed APIs is determined
+// when Navigator.prototype is created.  So if we touch navigator before pushing
+// the prefs, the APIs it exposes will not take those prefs into account.  We
+// work around this by using a navigator object from a different global for our
+// UA string testing.
+var gManifestNavigatorSource = document.documentElement.appendChild(document.createElement("iframe"));
+gManifestNavigatorSource.style.display = "none";
+function manifestNavigator() {
+  return gManifestNavigatorSource.contentWindow.navigator;
+}
+
+// Similarly, use a <video> element from a different global for canPlayType or
+// other feature testing.  If we used one from our global and did so before our
+// prefs are pushed, then we'd instantiate HTMLMediaElement.prototype before the
+// prefs are pushed and APIs we expect to be on that object would not be there.
+function manifestVideo() {
+  return gManifestNavigatorSource.contentDocument.createElement('video');
+}
+
 // These are small test files, good for just seeing if something loads. We
 // really only need one test file per backend here.
 var gSmallTests = [
@@ -16,6 +36,7 @@ var gSmallTests = [
   { name:"vp9.webm", type:"video/webm", width:320, height:240, duration:4 },
   { name:"detodos.opus", type:"audio/ogg; codecs=opus", duration:2.9135 },
   { name:"gizmo.mp4", type:"video/mp4", width:560, height:320, duration:5.56 },
+  { name:"flac-s24.flac", type:"audio/flac", duration:4.04 },
   { name:"bogus.duh", type:"bogus/duh" }
 ];
 
@@ -36,6 +57,12 @@ var gVideoTests = [
   { name:"320x240.ogv", type:"video/ogg", width:320, height:240, duration:0.266 },
   { name:"seek.webm", type:"video/webm", width:320, height:240, duration:3.966 },
   { name:"bogus.duh", type:"bogus/duh" }
+];
+
+// Temp hack for trackIDs and captureStream() -- bug 1215769
+var gLongerTests = [
+  { name:"seek.webm", type:"video/webm", width:320, height:240, duration:3.966 },
+  { name:"gizmo.mp4", type:"video/mp4", width:560, height:320, duration:5.56 },
 ];
 
 // Used by test_progress to ensure we get the correct progress information
@@ -60,7 +87,7 @@ var gPlayedTests = [
   // Disable vbr.mp3 to see if it reduces the error of AUDCLNT_E_CPUUSAGE_EXCEEDED.
   // See bug 1110922 comment 26.
   //{ name:"vbr.mp3", type:"audio/mpeg", duration:10.0 },
-  { name:"bug495794.ogg", type:"audio/ogg", duration:0.3 }
+  { name:"bug495794.ogg", type:"audio/ogg", duration:0.3 },
 ];
 
 // Used by test_mozLoadFrom.  Need one test file per decoder backend, plus
@@ -93,6 +120,7 @@ var gTrackTests = [
   { name:"320x240.ogv", type:"video/ogg", width:320, height:240, duration:0.266, size:28942, hasAudio:false, hasVideo:true },
   { name:"short-video.ogv", type:"video/ogg", duration:1.081, hasAudio:true, hasVideo:true },
   { name:"seek.webm", type:"video/webm", duration:3.966, size:215529, hasAudio:false, hasVideo:true },
+  { name:"flac-s24.flac", type:"audio/flac", duration:4.04, hasAudio:true, hasVideo:false },
   { name:"bogus.duh", type:"bogus/duh" }
 ];
 
@@ -155,7 +183,7 @@ var gPlayTests = [
   // Multiple audio streams.
   { name:"bug516323.ogv", type:"video/ogg", duration:4.208 },
   // oggz-chop with non-keyframe as first frame
-  { name:"bug556821.ogv", type:"video/ogg", duration:2.551 },
+  { name:"bug556821.ogv", type:"video/ogg", duration:2.936 },
 
   // Encoded with vorbis beta1, includes unusually sized codebooks
   { name:"beta-phrasebook.ogg", type:"audio/ogg", duration:4.01 },
@@ -172,9 +200,9 @@ var gPlayTests = [
   { name:"bug498855-3.ogv", type:"video/ogg", duration:0.24 },
   { name:"bug504644.ogv", type:"video/ogg", duration:1.6 },
   { name:"chain.ogv", type:"video/ogg", duration:Number.NaN },
-  { name:"bug523816.ogv", type:"video/ogg", duration:0.533 },
+  { name:"bug523816.ogv", type:"video/ogg", duration:0.766 },
   { name:"bug495129.ogv", type:"video/ogg", duration:2.41 },
-  { name:"bug498380.ogv", type:"video/ogg", duration:0.533 },
+  { name:"bug498380.ogv", type:"video/ogg", duration:0.7663 },
   { name:"bug495794.ogg", type:"audio/ogg", duration:0.3 },
   { name:"bug557094.ogv", type:"video/ogg", duration:0.24 },
   { name:"multiple-bos.ogg", type:"video/ogg", duration:0.431 },
@@ -193,6 +221,9 @@ var gPlayTests = [
 
   // Test playback of a WebM file with non-zero start time.
   { name:"split.webm", type:"video/webm", duration:1.967 },
+
+  // Test playback of a WebM file with resolution changes.
+  { name:"resolution-change.webm", type:"video/webm", duration:6.533 },
 
   // Test playback of a raw file
   { name:"seek.yuv", type:"video/x-raw-yuv", duration:1.833 },
@@ -219,7 +250,6 @@ var gPlayTests = [
   { name:"test-8-7.1.opus", type:"audio/ogg; codecs=opus", duration:13.478 },
 
   { name:"gizmo.mp4", type:"video/mp4", duration:5.56 },
-
   // Test playback of a MP4 file with a non-zero start time (and audio starting
   // a second later).
   { name:"bipbop-lateaudio.mp4", type:"video/mp4" },
@@ -244,8 +274,62 @@ var gPlayTests = [
   // trust the header, so this should be reported as 10 seconds.
   { name:"vbr-head.mp3", type:"audio/mpeg", duration:10.00 },
 
+  // A flac file where the STREAMINFO block was removed.
+  // It is necessary to parse the file to find an audio frame instead.
+  { name:"flac-noheader-s16.flac", type:"audio/flac", duration:4.0 },
+  { name:"flac-s24.flac", type:"audio/flac", duration:4.04 },
+  // Ogg with theora video and flac audio.
+  { name:"A4.ogv", type:"video/ogg", width:320, height:240, duration:3.13 },
+
   // Invalid file
   { name:"bogus.duh", type:"bogus/duh", duration:Number.NaN },
+];
+
+var gSeekToNextFrameTests = [
+  // Test playback of a WebM file with vp9 video
+  { name:"vp9.webm", type:"video/webm", duration:4 },
+  { name:"vp9cake.webm", type:"video/webm", duration:7.966 },
+  // oggz-chop stream
+  { name:"bug482461.ogv", type:"video/ogg", duration:4.34 },
+  // Theora only oggz-chop stream
+  { name:"bug482461-theora.ogv", type:"video/ogg", duration:4.138 },
+  // With first frame a "duplicate" (empty) frame.
+  { name:"bug500311.ogv", type:"video/ogg", duration:1.96 },
+
+  // More audio in file than video.
+  { name:"short-video.ogv", type:"video/ogg", duration:1.081 },
+  // First Theora data packet is zero bytes.
+  { name:"bug504613.ogv", type:"video/ogg", duration:Number.NaN },
+  // Multiple audio streams.
+  { name:"bug516323.ogv", type:"video/ogg", duration:4.208 },
+  // oggz-chop with non-keyframe as first frame
+  { name:"bug556821.ogv", type:"video/ogg", duration:2.936 },
+  // Various weirdly formed Ogg files
+  { name:"bug498855-1.ogv", type:"video/ogg", duration:0.24 },
+  { name:"bug498855-2.ogv", type:"video/ogg", duration:0.24 },
+  { name:"bug498855-3.ogv", type:"video/ogg", duration:0.24 },
+  { name:"bug504644.ogv", type:"video/ogg", duration:1.6 },
+
+  { name:"bug523816.ogv", type:"video/ogg", duration:0.766 },
+
+  { name:"bug498380.ogv", type:"video/ogg", duration:0.766 },
+  { name:"bug557094.ogv", type:"video/ogg", duration:0.24 },
+  { name:"multiple-bos.ogg", type:"video/ogg", duration:0.431 },
+  // Test playback/metadata work after a redirect
+  { name:"redirect.sjs?domain=mochi.test:8888&file=320x240.ogv",
+    type:"video/ogg", duration:0.266 },
+  // Test playback of a webm file
+  { name:"seek.webm", type:"video/webm", duration:3.966 },
+  // Test playback of a WebM file with non-zero start time.
+  { name:"split.webm", type:"video/webm", duration:1.967 },
+  // Test playback of a raw file
+  { name:"seek.yuv", type:"video/x-raw-yuv", duration:1.833 },
+
+  { name:"gizmo.mp4", type:"video/mp4", duration:5.56 },
+
+  // Test playback of a MP4 file with a non-zero start time (and audio starting
+  // a second later).
+  { name:"bipbop-lateaudio.mp4", type:"video/mp4" },
 ];
 
 // A file for each type we can support.
@@ -257,6 +341,11 @@ var gSnifferTests = [
   // A mp3 file with id3 tags.
   { name:"id3tags.mp3", type:"audio/mpeg", duration:0.28, size:3530},
   { name:"bogus.duh", type:"bogus/duh" }
+];
+
+// Files that contain resolution changes
+var gResolutionChangeTests = [
+  { name:"resolution-change.webm", type:"video/webm", duration:6.533 },
 ];
 
 // Files we must reject as invalid.
@@ -350,7 +439,7 @@ var gOggTrackInfoResults = {
 // we've specified.
 function fileUriToSrc(path, mustExist) {
   // android mochitest doesn't support file://
-  if (navigator.appVersion.indexOf("Android") != -1 || SpecialPowers.Services.appinfo.name == "B2G")
+  if (manifestNavigator().appVersion.indexOf("Android") != -1 || SpecialPowers.Services.appinfo.name == "B2G")
     return path;
 
   const Ci = SpecialPowers.Ci;
@@ -459,7 +548,10 @@ var gSeekTests = [
   { name:"detodos.opus", type:"audio/ogg; codecs=opus", duration:2.9135 },
   { name:"gizmo.mp4", type:"video/mp4", duration:5.56 },
   { name:"owl.mp3", type:"audio/mpeg", duration:3.343 },
-  { name:"bogus.duh", type:"bogus/duh", duration:123 }
+  { name:"bogus.duh", type:"bogus/duh", duration:123 },
+
+  // Bug 1242338: hit a numerical problem while seeking to the duration.
+  { name:"bug482461-theora.ogv", type:"video/ogg", duration:4.138 },
 ];
 
 var gFastSeekTests = [
@@ -474,22 +566,42 @@ var gFastSeekTests = [
 
 function IsWindows8OrLater() {
   var re = /Windows NT (\d.\d)/;
-  var winver = navigator.userAgent.match(re);
+  var winver = manifestNavigator().userAgent.match(re);
   return winver && winver.length == 2 && parseFloat(winver[1]) >= 6.2;
 }
+
+// These files are WebMs without cues. They're seekable within their buffered
+// ranges. If work renders WebMs fully seekable these files should be moved
+// into gSeekTests
+var gCuelessWebMTests = [
+  { name:"no-cues.webm", type:"video/webm", duration:3.967 },
+];
 
 // These are files that are non seekable, due to problems with the media,
 // for example broken or missing indexes.
 var gUnseekableTests = [
-  { name:"no-cues.webm", type:"video/webm" },
   { name:"bogus.duh", type:"bogus/duh"}
 ];
-// Android supports fragmented MP4 playback from 4.3.
-var androidVersion = SpecialPowers.Cc['@mozilla.org/system-info;1']
-                                  .getService(SpecialPowers.Ci.nsIPropertyBag2)
-                                  .getProperty('version');
-// Fragmented MP4.
-if (navigator.userAgent.indexOf("Mobile") != -1 && androidVersion >= 18) {
+
+var androidVersion = -1; // non-Android platforms
+if (manifestNavigator().userAgent.indexOf("Mobile") != -1 ||
+    manifestNavigator().userAgent.indexOf("Tablet") != -1) {
+  // See nsSystemInfo.cpp, the getProperty('version') returns different value
+  // on each platforms, so we need to distinguish the android and B2G platform.
+  var versionString = manifestNavigator().userAgent.indexOf("Android") != -1 ?
+                      'version' : 'sdk_version';
+  androidVersion = SpecialPowers.Cc['@mozilla.org/system-info;1']
+                                .getService(SpecialPowers.Ci.nsIPropertyBag2)
+                                .getProperty(versionString);
+}
+
+function getAndroidVersion() {
+  return androidVersion;
+}
+
+//Android supports fragmented MP4 playback from 4.3.
+//Fragmented MP4.
+if (getAndroidVersion() >= 18) {
   gUnseekableTests = gUnseekableTests.concat([
     { name:"street.mp4", type:"video/mp4" }
   ]);
@@ -661,6 +773,652 @@ var gMetadataTests = [
   },
 ];
 
+// Test files for Encrypted Media Extensions
+var gEMETests = [
+  {
+    name:"video-only with 2 keys",
+    tracks: [
+      {
+        name:"video",
+        type:"video/mp4; codecs=\"avc1.64000d\"",
+        fragments:[ "bipbop-cenc-videoinit.mp4",
+                    "bipbop-cenc-video1.m4s",
+                    "bipbop-cenc-video2.m4s",
+                  ]
+      }
+    ],
+    keys: {
+      // "keyid" : "key"
+      "7e571d037e571d037e571d037e571d03" : "7e5733337e5733337e5733337e573333",
+      "7e571d047e571d047e571d047e571d04" : "7e5744447e5744447e5744447e574444",
+    },
+    sessionType:"temporary",
+    sessionCount:1,
+    duration:1.60,
+  },
+  {
+    name:"video-only with 2 keys, CORS",
+    tracks: [
+      {
+        name:"video",
+        type:"video/mp4; codecs=\"avc1.64000d\"",
+        fragments:[ "bipbop-cenc-videoinit.mp4",
+                    "bipbop-cenc-video1.m4s",
+                    "bipbop-cenc-video2.m4s",
+                  ]
+      }
+    ],
+    keys: {
+      // "keyid" : "key"
+      "7e571d037e571d037e571d037e571d03" : "7e5733337e5733337e5733337e573333",
+      "7e571d047e571d047e571d047e571d04" : "7e5744447e5744447e5744447e574444",
+    },
+    sessionType:"temporary",
+    sessionCount:1,
+    crossOrigin:true,
+    duration:1.60,
+  },
+  {
+    name:"audio&video tracks, both with all keys",
+    tracks: [
+      {
+        name:"audio",
+        type:"audio/mp4; codecs=\"mp4a.40.2\"",
+        fragments:[ "bipbop-cenc-audioinit.mp4",
+                    "bipbop-cenc-audio1.m4s",
+                    "bipbop-cenc-audio2.m4s",
+                    "bipbop-cenc-audio3.m4s",
+                  ],
+      },
+      {
+        name:"video",
+        type:"video/mp4; codecs=\"avc1.64000d\"",
+        fragments:[ "bipbop-cenc-videoinit.mp4",
+                    "bipbop-cenc-video1.m4s",
+                    "bipbop-cenc-video2.m4s",
+                  ],
+      },
+    ],
+    keys: {
+      // "keyid" : "key"
+      "7e571d037e571d037e571d037e571d03" : "7e5733337e5733337e5733337e573333",
+      "7e571d047e571d047e571d047e571d04" : "7e5744447e5744447e5744447e574444",
+    },
+    sessionType:"temporary",
+    sessionCount:2,
+    duration:1.60,
+  },
+  {
+    name:"audio&video tracks, both with all keys, CORS",
+    tracks: [
+      {
+        name:"audio",
+        type:"audio/mp4; codecs=\"mp4a.40.2\"",
+        fragments:[ "bipbop-cenc-audioinit.mp4",
+                    "bipbop-cenc-audio1.m4s",
+                    "bipbop-cenc-audio2.m4s",
+                    "bipbop-cenc-audio3.m4s",
+                  ],
+      },
+      {
+        name:"video",
+        type:"video/mp4; codecs=\"avc1.64000d\"",
+        fragments:[ "bipbop-cenc-videoinit.mp4",
+                    "bipbop-cenc-video1.m4s",
+                    "bipbop-cenc-video2.m4s",
+                  ],
+      },
+    ],
+    keys: {
+      // "keyid" : "key"
+      "7e571d037e571d037e571d037e571d03" : "7e5733337e5733337e5733337e573333",
+      "7e571d047e571d047e571d047e571d04" : "7e5744447e5744447e5744447e574444",
+    },
+    sessionType:"temporary",
+    sessionCount:2,
+    crossOrigin:true,
+    duration:1.60,
+  },
+  {
+    name:"400x300 audio&video tracks, each with its key",
+    tracks: [
+      {
+        name:"audio",
+        type:"audio/mp4; codecs=\"mp4a.40.2\"",
+        fragments:[ "bipbop_300_215kbps-cenc-audio-key1-init.mp4",
+                    "bipbop_300_215kbps-cenc-audio-key1-1.m4s",
+                    "bipbop_300_215kbps-cenc-audio-key1-2.m4s",
+                    "bipbop_300_215kbps-cenc-audio-key1-3.m4s",
+                    "bipbop_300_215kbps-cenc-audio-key1-4.m4s",
+                  ],
+      },
+      {
+        name:"video",
+        type:"video/mp4; codecs=\"avc1.64000d\"",
+        fragments:[ "bipbop_300_215kbps-cenc-video-key1-init.mp4",
+                    "bipbop_300_215kbps-cenc-video-key1-1.m4s",
+                    "bipbop_300_215kbps-cenc-video-key1-2.m4s",
+                  ],
+      },
+    ],
+    keys: {
+      // "keyid" : "key"
+      "7e571d037e571d037e571d037e571d11" : "7e5733337e5733337e5733337e573311",
+      "7e571d047e571d047e571d047e571d21" : "7e5744447e5744447e5744447e574421",
+    },
+    sessionType:"temporary",
+    sessionCount:2,
+    duration:1.60,
+  },
+  {
+    name:"640x480@624kbps audio&video tracks, each with its key",
+    tracks: [
+      {
+        name:"audio",
+        type:"audio/mp4; codecs=\"mp4a.40.2\"",
+        fragments:[ "bipbop_480_624kbps-cenc-audio-key1-init.mp4",
+                    "bipbop_480_624kbps-cenc-audio-key1-1.m4s",
+                    "bipbop_480_624kbps-cenc-audio-key1-2.m4s",
+                    "bipbop_480_624kbps-cenc-audio-key1-3.m4s",
+                    "bipbop_480_624kbps-cenc-audio-key1-4.m4s",
+                  ],
+      },
+      {
+        name:"video",
+        type:"video/mp4; codecs=\"avc1.64000d\"",
+        fragments:[ "bipbop_480_624kbps-cenc-video-key1-init.mp4",
+                    "bipbop_480_624kbps-cenc-video-key1-1.m4s",
+                    "bipbop_480_624kbps-cenc-video-key1-2.m4s",
+                  ],
+      },
+    ],
+    keys: {
+      // "keyid" : "key"
+      "7e571d037e571d037e571d037e571d11" : "7e5733337e5733337e5733337e573311",
+      "7e571d047e571d047e571d047e571d21" : "7e5744447e5744447e5744447e574421",
+    },
+    sessionType:"temporary",
+    sessionCount:2,
+    duration:1.60,
+  },
+  {
+    name:"640x480@959kbps audio&video tracks, each with its key",
+    tracks: [
+      {
+        name:"audio",
+        type:"audio/mp4; codecs=\"mp4a.40.2\"",
+        fragments:[ "bipbop_480_959kbps-cenc-audio-key1-init.mp4",
+                    "bipbop_480_959kbps-cenc-audio-key1-1.m4s",
+                    "bipbop_480_959kbps-cenc-audio-key1-2.m4s",
+                    "bipbop_480_959kbps-cenc-audio-key1-3.m4s",
+                    "bipbop_480_959kbps-cenc-audio-key1-4.m4s",
+                  ],
+      },
+      {
+        name:"video",
+        type:"video/mp4; codecs=\"avc1.64000d\"",
+        fragments:[ "bipbop_480_959kbps-cenc-video-key1-init.mp4",
+                    "bipbop_480_959kbps-cenc-video-key1-1.m4s",
+                    "bipbop_480_959kbps-cenc-video-key1-2.m4s",
+                  ],
+      },
+    ],
+    keys: {
+      // "keyid" : "key"
+      "7e571d037e571d037e571d037e571d11" : "7e5733337e5733337e5733337e573311",
+      "7e571d047e571d047e571d047e571d21" : "7e5744447e5744447e5744447e574421",
+    },
+    sessionType:"temporary",
+    sessionCount:2,
+    duration:1.60,
+  },
+  {
+    name:"640x480 then 400x300, same key (1st) per track",
+    tracks: [
+      {
+        name:"audio",
+        type:"audio/mp4; codecs=\"mp4a.40.2\"",
+        fragments:[ "bipbop_480_624kbps-cenc-audio-key1-init.mp4",
+                    "bipbop_480_624kbps-cenc-audio-key1-1.m4s",
+                    "bipbop_480_624kbps-cenc-audio-key1-2.m4s",
+                    "bipbop_480_624kbps-cenc-audio-key1-3.m4s",
+                    "bipbop_480_624kbps-cenc-audio-key1-4.m4s",
+                  ],
+      },
+      {
+        name:"video",
+        type:"video/mp4; codecs=\"avc1.64000d\"",
+        fragments:[ "bipbop_480_624kbps-cenc-video-key1-init.mp4",
+                    "bipbop_480_624kbps-cenc-video-key1-1.m4s",
+                    "bipbop_300_215kbps-cenc-video-key1-init.mp4",
+                    "bipbop_300_215kbps-cenc-video-key1-2.m4s",
+                  ],
+      },
+    ],
+    keys: {
+      // "keyid" : "key"
+      "7e571d037e571d037e571d037e571d11" : "7e5733337e5733337e5733337e573311",
+      "7e571d047e571d047e571d047e571d21" : "7e5744447e5744447e5744447e574421",
+    },
+    sessionType:"temporary",
+    sessionCount:3,
+    duration:1.60,
+  },
+  {
+    name:"640x480 then 400x300, same key (2nd) per track",
+    tracks: [
+      {
+        name:"audio",
+        type:"audio/mp4; codecs=\"mp4a.40.2\"",
+        fragments:[ "bipbop_480_624kbps-cenc-audio-key2-init.mp4",
+                    "bipbop_480_624kbps-cenc-audio-key2-1.m4s",
+                    "bipbop_480_624kbps-cenc-audio-key2-2.m4s",
+                    "bipbop_480_624kbps-cenc-audio-key2-3.m4s",
+                    "bipbop_480_624kbps-cenc-audio-key2-4.m4s",
+                  ],
+      },
+      {
+        name:"video",
+        type:"video/mp4; codecs=\"avc1.64000d\"",
+        fragments:[ "bipbop_480_624kbps-cenc-video-key2-init.mp4",
+                    "bipbop_480_624kbps-cenc-video-key2-1.m4s",
+                    "bipbop_300_215kbps-cenc-video-key2-init.mp4",
+                    "bipbop_300_215kbps-cenc-video-key2-2.m4s",
+                  ],
+      },
+    ],
+    keys: {
+      // "keyid" : "key"
+      "7e571d037e571d037e571d037e571d12" : "7e5733337e5733337e5733337e573312",
+      "7e571d047e571d047e571d047e571d22" : "7e5744447e5744447e5744447e574422",
+    },
+    sessionType:"temporary",
+    sessionCount:3,
+    duration:1.60,
+  },
+  {
+    name:"640x480 with 1st keys then 400x300 with 2nd keys",
+    tracks: [
+      {
+        name:"audio",
+        type:"audio/mp4; codecs=\"mp4a.40.2\"",
+        fragments:[ "bipbop_480_624kbps-cenc-audio-key1-init.mp4",
+                    "bipbop_480_624kbps-cenc-audio-key1-1.m4s",
+                    "bipbop_480_624kbps-cenc-audio-key1-2.m4s",
+                    "bipbop_480_624kbps-cenc-audio-key1-3.m4s",
+                    "bipbop_480_624kbps-cenc-audio-key1-4.m4s",
+                  ],
+      },
+      {
+        name:"video",
+        type:"video/mp4; codecs=\"avc1.64000d\"",
+        fragments:[ "bipbop_480_624kbps-cenc-video-key1-init.mp4",
+                    "bipbop_480_624kbps-cenc-video-key1-1.m4s",
+                    "bipbop_300_215kbps-cenc-video-key2-init.mp4",
+                    "bipbop_300_215kbps-cenc-video-key2-2.m4s",
+                  ],
+      },
+    ],
+    keys: {
+      // "keyid" : "key"
+      "7e571d037e571d037e571d037e571d11" : "7e5733337e5733337e5733337e573311",
+      "7e571d037e571d037e571d037e571d12" : "7e5733337e5733337e5733337e573312",
+      "7e571d047e571d047e571d047e571d21" : "7e5744447e5744447e5744447e574421",
+    },
+    sessionType:"temporary",
+    sessionCount:3,
+    duration:1.60,
+  },
+  {
+    name:"400x300 with 1st keys then 640x480 with 2nd keys",
+    tracks: [
+      {
+        name:"audio",
+        type:"audio/mp4; codecs=\"mp4a.40.2\"",
+        fragments:[ "bipbop_300_215kbps-cenc-audio-key1-init.mp4",
+                    "bipbop_300_215kbps-cenc-audio-key1-1.m4s",
+                    "bipbop_300_215kbps-cenc-audio-key1-2.m4s",
+                    "bipbop_300_215kbps-cenc-audio-key1-3.m4s",
+                    "bipbop_300_215kbps-cenc-audio-key1-4.m4s",
+                  ],
+      },
+      {
+        name:"video",
+        type:"video/mp4; codecs=\"avc1.64000d\"",
+        fragments:[ "bipbop_300_215kbps-cenc-video-key1-init.mp4",
+                    "bipbop_300_215kbps-cenc-video-key1-1.m4s",
+                    "bipbop_480_624kbps-cenc-video-key2-init.mp4",
+                    "bipbop_480_624kbps-cenc-video-key2-2.m4s",
+                  ],
+      },
+    ],
+    keys: {
+      // "keyid" : "key"
+      "7e571d037e571d037e571d037e571d11" : "7e5733337e5733337e5733337e573311",
+      "7e571d037e571d037e571d037e571d12" : "7e5733337e5733337e5733337e573312",
+      "7e571d047e571d047e571d047e571d21" : "7e5744447e5744447e5744447e574421",
+    },
+    sessionType:"temporary",
+    sessionCount:3,
+    duration:1.60,
+  },
+  {
+    name:"640x480@959kbps with 1st keys then 640x480@624kbps with 2nd keys",
+    tracks: [
+      {
+        name:"audio",
+        type:"audio/mp4; codecs=\"mp4a.40.2\"",
+        fragments:[ "bipbop_480_959kbps-cenc-audio-key1-init.mp4",
+                    "bipbop_480_959kbps-cenc-audio-key1-1.m4s",
+                    "bipbop_480_959kbps-cenc-audio-key1-2.m4s",
+                    "bipbop_480_959kbps-cenc-audio-key1-3.m4s",
+                    "bipbop_480_959kbps-cenc-audio-key1-4.m4s",
+                  ],
+      },
+      {
+        name:"video",
+        type:"video/mp4; codecs=\"avc1.64000d\"",
+        fragments:[ "bipbop_480_959kbps-cenc-video-key1-init.mp4",
+                    "bipbop_480_959kbps-cenc-video-key1-1.m4s",
+                    "bipbop_480_624kbps-cenc-video-key2-init.mp4",
+                    "bipbop_480_624kbps-cenc-video-key2-2.m4s",
+                  ],
+      },
+    ],
+    keys: {
+      // "keyid" : "key"
+      "7e571d037e571d037e571d037e571d11" : "7e5733337e5733337e5733337e573311",
+      "7e571d037e571d037e571d037e571d12" : "7e5733337e5733337e5733337e573312",
+      "7e571d047e571d047e571d047e571d21" : "7e5744447e5744447e5744447e574421",
+    },
+    sessionType:"temporary",
+    sessionCount:3,
+    duration:1.60,
+  },
+  {
+    name:"640x480@624kbps with 1st keys then 640x480@959kbps with 2nd keys",
+    tracks: [
+      {
+        name:"audio",
+        type:"audio/mp4; codecs=\"mp4a.40.2\"",
+        fragments:[ "bipbop_480_624kbps-cenc-audio-key1-init.mp4",
+                    "bipbop_480_624kbps-cenc-audio-key1-1.m4s",
+                    "bipbop_480_624kbps-cenc-audio-key1-2.m4s",
+                    "bipbop_480_624kbps-cenc-audio-key1-3.m4s",
+                    "bipbop_480_624kbps-cenc-audio-key1-4.m4s",
+                  ],
+      },
+      {
+        name:"video",
+        type:"video/mp4; codecs=\"avc1.64000d\"",
+        fragments:[ "bipbop_480_624kbps-cenc-video-key1-init.mp4",
+                    "bipbop_480_624kbps-cenc-video-key1-1.m4s",
+                    "bipbop_480_959kbps-cenc-video-key2-init.mp4",
+                    "bipbop_480_959kbps-cenc-video-key2-2.m4s",
+                  ],
+      },
+    ],
+    keys: {
+      // "keyid" : "key"
+      "7e571d037e571d037e571d037e571d11" : "7e5733337e5733337e5733337e573311",
+      "7e571d037e571d037e571d037e571d12" : "7e5733337e5733337e5733337e573312",
+      "7e571d047e571d047e571d047e571d21" : "7e5744447e5744447e5744447e574421",
+    },
+    sessionType:"temporary",
+    sessionCount:3,
+    duration:1.60,
+  },
+  {
+    name:"400x300 with presentation size 533x300",
+    tracks: [
+      {
+        name:"audio",
+        type:"audio/mp4; codecs=\"mp4a.40.2\"",
+        fragments:[ "bipbop_300wp_227kbps-cenc-audio-key1-init.mp4",
+                    "bipbop_300wp_227kbps-cenc-audio-key1-1.m4s",
+                    "bipbop_300wp_227kbps-cenc-audio-key1-2.m4s",
+                    "bipbop_300wp_227kbps-cenc-audio-key1-3.m4s",
+                    "bipbop_300wp_227kbps-cenc-audio-key1-4.m4s",
+                  ],
+      },
+      {
+        name:"video",
+        type:"video/mp4; codecs=\"avc1.64000d\"",
+        fragments:[ "bipbop_300wp_227kbps-cenc-video-key1-init.mp4",
+                    "bipbop_300wp_227kbps-cenc-video-key1-1.m4s",
+                    "bipbop_300wp_227kbps-cenc-video-key1-2.m4s",
+                  ],
+      },
+    ],
+    keys: {
+      // "keyid" : "key"
+      "7e571d037e571d037e571d037e571d11" : "7e5733337e5733337e5733337e573311",
+      "7e571d047e571d047e571d047e571d21" : "7e5744447e5744447e5744447e574421",
+    },
+    sessionType:"temporary",
+    sessionCount:2,
+    duration:1.60,
+  },
+  {
+    name:"400x300 as-is then 400x300 presented as 533x300",
+    tracks: [
+      {
+        name:"audio",
+        type:"audio/mp4; codecs=\"mp4a.40.2\"",
+        fragments:[
+                    "bipbop_300_215kbps-cenc-audio-key1-init.mp4",
+                    "bipbop_300_215kbps-cenc-audio-key1-1.m4s",
+                    "bipbop_300_215kbps-cenc-audio-key1-2.m4s",
+                    "bipbop_300_215kbps-cenc-audio-key1-3.m4s",
+                    "bipbop_300_215kbps-cenc-audio-key1-4.m4s",
+                  ],
+      },
+      {
+        name:"video",
+        type:"video/mp4; codecs=\"avc1.64000d\"",
+        fragments:[ "bipbop_300_215kbps-cenc-video-key1-init.mp4",
+                    "bipbop_300_215kbps-cenc-video-key1-1.m4s",
+                    "bipbop_300wp_227kbps-cenc-video-key1-init.mp4",
+                    "bipbop_300wp_227kbps-cenc-video-key1-2.m4s",
+                  ],
+      },
+    ],
+    keys: {
+      // "keyid" : "key"
+      "7e571d037e571d037e571d037e571d11" : "7e5733337e5733337e5733337e573311",
+      "7e571d047e571d047e571d047e571d21" : "7e5744447e5744447e5744447e574421",
+    },
+    sessionType:"temporary",
+    sessionCount:3,
+    duration:1.60,
+  },
+  {
+    name:"400x225",
+    tracks: [
+      {
+        name:"audio",
+        type:"audio/mp4; codecs=\"mp4a.40.2\"",
+        fragments:[ "bipbop_225w_175kbps-cenc-audio-key1-init.mp4",
+                    "bipbop_225w_175kbps-cenc-audio-key1-1.m4s",
+                    "bipbop_225w_175kbps-cenc-audio-key1-2.m4s",
+                    "bipbop_225w_175kbps-cenc-audio-key1-3.m4s",
+                    "bipbop_225w_175kbps-cenc-audio-key1-4.m4s",
+                  ],
+      },
+      {
+        name:"video",
+        type:"video/mp4; codecs=\"avc1.64000d\"",
+        fragments:[ "bipbop_225w_175kbps-cenc-video-key1-init.mp4",
+                    "bipbop_225w_175kbps-cenc-video-key1-1.m4s",
+                  ],
+      },
+    ],
+    keys: {
+      // "keyid" : "key"
+      "7e571d037e571d037e571d037e571d11" : "7e5733337e5733337e5733337e573311",
+      "7e571d047e571d047e571d047e571d21" : "7e5744447e5744447e5744447e574421",
+    },
+    sessionType:"temporary",
+    sessionCount:2,
+    duration:1.60,
+  },
+  {
+    name:"640x360",
+    tracks: [
+      {
+        name:"audio",
+        type:"audio/mp4; codecs=\"mp4a.40.2\"",
+        fragments:[ "bipbop_360w_253kbps-cenc-audio-key1-init.mp4",
+                    "bipbop_360w_253kbps-cenc-audio-key1-1.m4s",
+                    "bipbop_360w_253kbps-cenc-audio-key1-2.m4s",
+                    "bipbop_360w_253kbps-cenc-audio-key1-3.m4s",
+                    "bipbop_360w_253kbps-cenc-audio-key1-4.m4s",
+                  ],
+      },
+      {
+        name:"video",
+        type:"video/mp4; codecs=\"avc1.64000d\"",
+        fragments:[ "bipbop_360w_253kbps-cenc-video-key1-init.mp4",
+                    "bipbop_360w_253kbps-cenc-video-key1-1.m4s",
+                  ],
+      },
+    ],
+    keys: {
+      // "keyid" : "key"
+      "7e571d037e571d037e571d037e571d11" : "7e5733337e5733337e5733337e573311",
+      "7e571d047e571d047e571d047e571d21" : "7e5744447e5744447e5744447e574421",
+    },
+    sessionType:"temporary",
+    sessionCount:2,
+    duration:1.60,
+  },
+  {
+    name:"400x225 then 640x360",
+    tracks: [
+      {
+        name:"audio",
+        type:"audio/mp4; codecs=\"mp4a.40.2\"",
+        fragments:[ "bipbop_225w_175kbps-cenc-audio-key1-init.mp4",
+                    "bipbop_225w_175kbps-cenc-audio-key1-1.m4s",
+                    "bipbop_225w_175kbps-cenc-audio-key1-2.m4s",
+                    "bipbop_225w_175kbps-cenc-audio-key1-3.m4s",
+                    "bipbop_225w_175kbps-cenc-audio-key1-4.m4s",
+                  ],
+      },
+      {
+        name:"video",
+        type:"video/mp4; codecs=\"avc1.64000d\"",
+        fragments:[ "bipbop_225w_175kbps-cenc-video-key1-init.mp4",
+                    "bipbop_225w_175kbps-cenc-video-key1-1.m4s",
+                    "bipbop_360w_253kbps-cenc-video-key2-init.mp4",
+                    "bipbop_360w_253kbps-cenc-video-key2-1.m4s",
+                  ],
+      },
+    ],
+    keys: {
+      // "keyid" : "key"
+      "7e571d037e571d037e571d037e571d11" : "7e5733337e5733337e5733337e573311",
+      "7e571d047e571d047e571d047e571d21" : "7e5744447e5744447e5744447e574421",
+      "7e571d037e571d037e571d037e571d12" : "7e5733337e5733337e5733337e573312",
+    },
+    sessionType:"temporary",
+    sessionCount:3,
+    duration:1.60,
+  },
+  {
+    name:"640x360 then 640x480",
+    tracks: [
+      {
+        name:"audio",
+        type:"audio/mp4; codecs=\"mp4a.40.2\"",
+        fragments:[ "bipbop_360w_253kbps-cenc-audio-key1-init.mp4",
+                    "bipbop_360w_253kbps-cenc-audio-key1-1.m4s",
+                    "bipbop_360w_253kbps-cenc-audio-key1-2.m4s",
+                    "bipbop_360w_253kbps-cenc-audio-key1-3.m4s",
+                    "bipbop_360w_253kbps-cenc-audio-key1-4.m4s",
+                  ],
+      },
+      {
+        name:"video",
+        type:"video/mp4; codecs=\"avc1.64000d\"",
+        fragments:[ "bipbop_360w_253kbps-cenc-video-key1-init.mp4",
+                    "bipbop_360w_253kbps-cenc-video-key1-1.m4s",
+                    "bipbop_480_624kbps-cenc-video-key2-init.mp4",
+                    "bipbop_480_624kbps-cenc-video-key2-2.m4s",
+                  ],
+      },
+    ],
+    keys: {
+      // "keyid" : "key"
+      "7e571d037e571d037e571d037e571d11" : "7e5733337e5733337e5733337e573311",
+      "7e571d047e571d047e571d047e571d21" : "7e5744447e5744447e5744447e574421",
+      "7e571d037e571d037e571d037e571d12" : "7e5733337e5733337e5733337e573312",
+    },
+    sessionType:"temporary",
+    sessionCount:3,
+    duration:1.60,
+  },
+  {
+    name: "WebM vorbis audio & vp8 video clearkey",
+    tracks: [
+      {
+        name:"audio",
+        type:"audio/webm; codecs=\"vorbis\"",
+        fragments:[ "bipbop_360w_253kbps-clearkey-audio.webm",
+                  ],
+      },
+      {
+        name:"video",
+        type:"video/webm; codecs=\"vp8\"",
+        fragments:[ "bipbop_360w_253kbps-clearkey-video-vp8.webm",
+                  ],
+      },
+    ],
+    keys: {
+      // "keyid" : "key"
+      "f1f3ee1790527e9de47217d43835f76a" : "97b9ddc459c8d5ff23c1f2754c95abe8",
+      "8b5df745ad84145b5617c33116e35a67" : "bddfd35dd9be033ee73bc18bc1885056",
+    },
+    sessionType:"temporary",
+    sessionCount:2,
+    duration:1.60,
+  },
+  {
+    name: "WebM vorbis audio & vp9 video clearkey",
+    tracks: [
+      {
+        name:"audio",
+        type:"audio/webm; codecs=\"vorbis\"",
+        fragments:[ "bipbop_360w_253kbps-clearkey-audio.webm",
+                  ],
+      },
+      {
+        name:"video",
+        type:"video/webm; codecs=\"vp9\"",
+        fragments:[ "bipbop_360w_253kbps-clearkey-video-vp9.webm",
+                  ],
+      },
+    ],
+    keys: {
+      // "keyid" : "key"
+      "f1f3ee1790527e9de47217d43835f76a" : "97b9ddc459c8d5ff23c1f2754c95abe8",
+      "eedf63a94fa7c398ee094f123a4ee709" : "973b679a746c82f3acdb856b30e9378e",
+    },
+    sessionType:"temporary",
+    sessionCount:2,
+    duration:1.60,
+  },
+];
+
+var gEMENonMSEFailTests = [
+  {
+    name:"short-cenc.mp4",
+    audioType:"audio/mp4; codecs=\"mp4a.40.2\"",
+    videoType:"video/mp4; codecs=\"avc1.64000d\"",
+    duration:0.47,
+  },
+];
+
 function checkMetadata(msg, e, test) {
   if (test.width) {
     is(e.videoWidth, test.width, msg + " video width");
@@ -722,6 +1480,19 @@ function removeNodeAndSource(n) {
   }
 }
 
+function once(target, name, cb) {
+  var p = new Promise(function(resolve, reject) {
+    target.addEventListener(name, function onceEvent() {
+      target.removeEventListener(name, onceEvent);
+      resolve();
+    });
+  });
+  if (cb) {
+    p.then(cb);
+  }
+  return p;
+}
+
 function TimeStamp(token) {
   function pad(x) {
     return (x < 10) ? "0" + x : x;
@@ -742,21 +1513,17 @@ function Log(token, msg) {
   info(TimeStamp(token) + " " + msg);
 }
 
-function once(target, name, cb) {
-  var p = new Promise(function(resolve, reject) {
-    target.addEventListener(name, function() {
-      target.removeEventListener(name, cb);
-      resolve();
-    });
-  });
-  if (cb) {
-    p.then(cb);
-  }
-  return p;
-}
-
 // Number of tests to run in parallel.
 var PARALLEL_TESTS = 2;
+
+// Prefs to set before running tests.  Use this to improve coverage of
+// conditions that might not otherwise be encountered on the test data.
+var gTestPrefs = [
+  ['media.recorder.max_memory', 1024],
+  ["media.preload.default", 2], // default preload = metadata
+  ["media.preload.auto", 3], // auto preload = enough
+  ["media.test.dumpDebugInfo", true],
+];
 
 // When true, we'll loop forever on whatever test we run. Use this to debug
 // intermittent test failures.
@@ -779,6 +1546,11 @@ const DEBUG_TEST_LOOP_FOREVER = false;
 //      or end the mochitest if all the tests are done.
 function MediaTestManager() {
 
+  // Return how many seconds elapsed since |begin|.
+  function elapsedTime(begin) {
+    var end = new Date();
+    return (end.getTime() - begin.getTime()) / 1000;
+  }
   // Sets up a MediaTestManager to runs through the 'tests' array, which needs
   // to be one of, or have the same fields as, the g*Test arrays of tests. Uses
   // the user supplied 'startTest' function to initialize the test. This
@@ -796,25 +1568,35 @@ function MediaTestManager() {
     this.tokens = [];
     this.isShutdown = false;
     this.numTestsRunning = 0;
+    this.handlers = {};
+
     // Always wait for explicit finish.
     SimpleTest.waitForExplicitFinish();
-    this.nextTest();
+    SpecialPowers.pushPrefEnv({'set': gTestPrefs}, (function() {
+      this.nextTest();
+    }).bind(this));
+
+    SimpleTest.registerCleanupFunction(function() {
+      if (this.tokens.length > 0) {
+        info("Test timed out. Remaining tests=" + this.tokens);
+      }
+      for (var token of this.tokens) {
+        var handler = this.handlers[token];
+        if (handler && handler.ontimeout) {
+          handler.ontimeout();
+        }
+      }
+    }.bind(this));
   }
 
   // Registers that the test corresponding to 'token' has been started.
   // Don't call more than once per token.
-  this.started = function(token) {
+  this.started = function(token, handler) {
     this.tokens.push(token);
     this.numTestsRunning++;
-    is(this.numTestsRunning, this.tokens.length, "[started " + token + "] Length of array should match number of running tests");
-  }
-
-  this.watchdog = null;
-
-  this.watchdogFn = function() {
-    if (this.tokens.length > 0) {
-      info("Watchdog remaining tests= " + this.tokens);
-    }
+    this.handlers[token] = handler;
+    is(this.numTestsRunning, this.tokens.length,
+       "[started " + token + " t=" + elapsedTime(this.startTime) + "] Length of array should match number of running tests");
   }
 
   // Registers that the test corresponding to 'token' has finished. Call when
@@ -828,17 +1610,12 @@ function MediaTestManager() {
       this.tokens.splice(i, 1);
     }
 
-    if (this.watchdog) {
-      clearTimeout(this.watchdog);
-      this.watchdog = null;
-    }
-
     info("[finished " + token + "] remaining= " + this.tokens);
     this.numTestsRunning--;
-    is(this.numTestsRunning, this.tokens.length, "[finished " + token + "] Length of array should match number of running tests");
+    is(this.numTestsRunning, this.tokens.length,
+       "[finished " + token + " t=" + elapsedTime(this.startTime) + "] Length of array should match number of running tests");
     if (this.tokens.length < PARALLEL_TESTS) {
       this.nextTest();
-      this.watchdog = setTimeout(this.watchdogFn.bind(this), 10000);
     }
   }
 
@@ -874,7 +1651,7 @@ function MediaTestManager() {
       var onCleanup = function() {
         var end = new Date();
         SimpleTest.info("Finished at " + end + " (" + (end.getTime() / 1000) + "s)");
-        SimpleTest.info("Running time: " + (end.getTime() - this.startTime.getTime())/1000 + "s");
+        SimpleTest.info("Running time: " + elapsedTime(this.startTime) + "s");
         SimpleTest.finish();
       }.bind(this);
       mediaTestCleanup(onCleanup);
@@ -897,52 +1674,34 @@ function mediaTestCleanup(callback) {
       removeNodeAndSource(A[i]);
       A[i] = null;
     }
-    var cb = function() {
-      if (callback) {
-        callback();
-      }
-    }
-    SpecialPowers.exactGC(window, cb);
+    SpecialPowers.exactGC(callback);
+}
+
+function setMediaTestsPrefs(callback, extraPrefs) {
+  var prefs = gTestPrefs;
+  if (extraPrefs) {
+    prefs = prefs.concat(extraPrefs);
+  }
+  SpecialPowers.pushPrefEnv({"set": prefs}, callback);
 }
 
 // B2G emulator and Android 2.3 are condidered slow platforms
 function isSlowPlatform() {
-  return SpecialPowers.Services.appinfo.name == "B2G" ||
-         navigator.userAgent.indexOf("Mobile") != -1 && androidVersion == 10;
+  return SpecialPowers.Services.appinfo.name == "B2G" || getAndroidVersion() == 10;
 }
 
-(function() {
+// Could be undefined in a page opened by the parent test page
+// like file_access_controls.html.
+if ("SimpleTest" in window) {
   SimpleTest.requestFlakyTimeout("untriaged");
 
-  // Ensure that preload preferences are comsistent
-  var prefService = SpecialPowers.wrap(SpecialPowers.Components)
-                                 .classes["@mozilla.org/preferences-service;1"]
-                                 .getService(SpecialPowers.Ci.nsIPrefService);
-  var branch = prefService.getBranch("media.");
-  var oldDefault = 2;
-  var oldAuto = 3;
-  var oldAppleMedia = undefined;
-  var oldOpus = undefined;
-
-  try { oldAppleMedia = SpecialPowers.getBoolPref("media.apple.mp3.enabled"); } catch(ex) { }
-  try { oldDefault   = SpecialPowers.getIntPref("media.preload.default"); } catch(ex) { }
-  try { oldAuto      = SpecialPowers.getIntPref("media.preload.auto"); } catch(ex) { }
-  try { oldOpus      = SpecialPowers.getBoolPref("media.opus.enabled"); } catch(ex) { }
-
-  SpecialPowers.setIntPref("media.preload.default", 2); // preload_metadata
-  SpecialPowers.setIntPref("media.preload.auto", 3); // preload_enough
-  // test opus playback iff the pref exists
-  if (oldOpus !== undefined)
-    SpecialPowers.setBoolPref("media.opus.enabled", true);
-  if (oldAppleMedia !== undefined)
-    SpecialPowers.setBoolPref("media.apple.mp3.enabled", true);
-
-  window.addEventListener("unload", function() {
-    if (oldAppleMedia !== undefined)
-      SpecialPowers.setBoolPref("media.apple.mp3.enabled", oldAppleMedia);
-    SpecialPowers.setIntPref("media.preload.default", oldDefault);
-    SpecialPowers.setIntPref("media.preload.auto", oldAuto);
-    if (oldOpus !== undefined)
-      SpecialPowers.setBoolPref("media.opus.enabled", oldOpus);
-  }, false);
- })();
+  // Register timeout function to dump debugging logs.
+  SimpleTest.registerTimeoutFunction(function() {
+    for (var v of document.getElementsByTagName("video")) {
+      v.mozDumpDebugInfo();
+    }
+    for (var a of document.getElementsByTagName("audio")) {
+      a.mozDumpDebugInfo();
+    }
+  });
+}

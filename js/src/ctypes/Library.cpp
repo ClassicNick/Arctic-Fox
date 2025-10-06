@@ -32,11 +32,16 @@ namespace Library
 
 typedef Rooted<JSFlatString*>    RootedFlatString;
 
-static const JSClass sLibraryClass = {
-  "Library",
-  JSCLASS_HAS_RESERVED_SLOTS(LIBRARY_SLOTS),
+static const JSClassOps sLibraryClassOps = {
   nullptr, nullptr, nullptr, nullptr,
   nullptr, nullptr, nullptr, Library::Finalize
+};
+
+static const JSClass sLibraryClass = {
+  "Library",
+  JSCLASS_HAS_RESERVED_SLOTS(LIBRARY_SLOTS) |
+  JSCLASS_FOREGROUND_FINALIZE,
+  &sLibraryClassOps
 };
 
 #define CTYPESFN_FLAGS \

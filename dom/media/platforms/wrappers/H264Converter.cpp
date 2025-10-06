@@ -16,23 +16,21 @@ namespace mozilla
 {
 
 H264Converter::H264Converter(PlatformDecoderModule* aPDM,
-                             const VideoInfo& aConfig,
-                             layers::LayersBackend aLayersBackend,
-                             layers::ImageContainer* aImageContainer,
-                             FlushableTaskQueue* aVideoTaskQueue,
-                             MediaDataDecoderCallback* aCallback)
+                             const CreateDecoderParams& aParams)
   : mPDM(aPDM)
-  , mOriginalConfig(aConfig)
-  , mCurrentConfig(aConfig)
-  , mLayersBackend(aLayersBackend)
-  , mImageContainer(aImageContainer)
-  , mVideoTaskQueue(aVideoTaskQueue)
-  , mCallback(aCallback)
+  , mOriginalConfig(aParams.VideoConfig())
+  , mCurrentConfig(aParams.VideoConfig())
+  , mLayersBackend(aParams.mLayersBackend)
+  , mImageContainer(aParams.mImageContainer)
+  , mTaskQueue(aParams.mTaskQueue)
+  , mCallback(aParams.mCallback)
   , mDecoder(nullptr)
-  , mNeedAVCC(aPDM->DecoderNeedsConversion(aConfig) == PlatformDecoderModule::kNeedAVCC)
+  , mGMPCrashHelper(aParams.mCrashHelper)
+  , mNeedAVCC(aPDM->DecoderNeedsConversion(aParams.mConfig)
+      == PlatformDecoderModule::ConversionRequired::kNeedAVCC)
   , mLastError(NS_OK)
 {
-  CreateDecoder();
+  CreateDecoder(aParams.mDiagnostics);
 }
 
 H264Converter::~H264Converter()
@@ -132,7 +130,7 @@ H264Converter::IsHardwareAccelerated(nsACString& aFailureReason) const
 }
 
 nsresult
-H264Converter::CreateDecoder()
+H264Converter::CreateDecoder(DecoderDoctorDiagnostics* aDiagnostics)
 {
   if (mNeedAVCC && !mp4_demuxer::AnnexB::HasSPS(mCurrentConfig.mExtraData)) {
     // nothing found yet, will try again later
@@ -145,11 +143,16 @@ H264Converter::CreateDecoder()
     mOriginalConfig = mCurrentConfig;
   }
 
-  mDecoder = mPDM->CreateVideoDecoder(mNeedAVCC ? mCurrentConfig : mOriginalConfig,
-                                      mLayersBackend,
-                                      mImageContainer,
-                                      mVideoTaskQueue,
-                                      mCallback);
+  mDecoder = mPDM->CreateVideoDecoder({
+    mNeedAVCC ? mCurrentConfig : mOriginalConfig,
+    mTaskQueue,
+    mCallback,
+    aDiagnostics,
+    mImageContainer,
+    mLayersBackend,
+    mGMPCrashHelper
+  });
+
   if (!mDecoder) {
     mLastError = NS_ERROR_FAILURE;
     return NS_ERROR_FAILURE;
@@ -167,7 +170,7 @@ H264Converter::CreateDecoderAndInit(MediaRawData* aSample)
   }
   UpdateConfigFromExtraData(extra_data);
 
-  nsresult rv = CreateDecoder();
+  nsresult rv = CreateDecoder(/* DecoderDoctorDiagnostics* */ nullptr);
 
   if (NS_SUCCEEDED(rv)) {
     // Queue the incoming sample.
@@ -189,7 +192,7 @@ H264Converter::OnDecoderInitDone(const TrackType aTrackType)
   mInitPromiseRequest.Complete();
   for (uint32_t i = 0 ; i < mMediaRawSamples.Length(); i++) {
     if (NS_FAILED(mDecoder->Input(mMediaRawSamples[i]))) {
-      mCallback->Error();
+      mCallback->Error(MediaDataDecoderError::FATAL_ERROR);
     }
   }
   mMediaRawSamples.Clear();
@@ -199,7 +202,7 @@ void
 H264Converter::OnDecoderInitFailed(MediaDataDecoder::DecoderFailureReason aReason)
 {
   mInitPromiseRequest.Complete();
-  mCallback->Error();
+  mCallback->Error(MediaDataDecoderError::FATAL_ERROR);
 }
 
 nsresult
@@ -237,14 +240,6 @@ H264Converter::UpdateConfigFromExtraData(MediaByteBuffer* aExtraData)
     mCurrentConfig.mDisplay.height = spsdata.display_height;
   }
   mCurrentConfig.mExtraData = aExtraData;
-}
-
-/* static */
-bool
-H264Converter::IsH264(const TrackInfo& aConfig)
-{
-  return aConfig.mMimeType.EqualsLiteral("video/avc") ||
-    aConfig.mMimeType.EqualsLiteral("video/mp4");
 }
 
 } // namespace mozilla

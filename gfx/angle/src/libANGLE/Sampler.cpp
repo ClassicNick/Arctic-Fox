@@ -9,20 +9,30 @@
 
 #include "libANGLE/Sampler.h"
 #include "libANGLE/angletypes.h"
-#include "libANGLE/renderer/ImplFactory.h"
+#include "libANGLE/renderer/GLImplFactory.h"
 #include "libANGLE/renderer/SamplerImpl.h"
 
 namespace gl
 {
 
-Sampler::Sampler(rx::ImplFactory *factory, GLuint id)
-    : RefCountObject(id), mImpl(factory->createSampler()), mSamplerState()
+Sampler::Sampler(rx::GLImplFactory *factory, GLuint id)
+    : RefCountObject(id), mImpl(factory->createSampler()), mLabel(), mSamplerState()
 {
 }
 
 Sampler::~Sampler()
 {
     SafeDelete(mImpl);
+}
+
+void Sampler::setLabel(const std::string &label)
+{
+    mLabel = label;
+}
+
+const std::string &Sampler::getLabel() const
+{
+    return mLabel;
 }
 
 void Sampler::setMinFilter(GLenum minFilter)

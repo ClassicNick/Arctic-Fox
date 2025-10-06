@@ -22,12 +22,10 @@ function checkDouble(element, maxVal)
     value = value.replace(/[^\.|^0-9]/g,"");
     if (!value) {
       element.value = "";
+    } else if (value > maxVal) {
+      element.value = maxVal;
     } else {
-      if (value > maxVal) {
-        element.value = maxVal;
-      } else {
-        element.value = value;
-      }
+      element.value = value;
     }
   }
 }
@@ -39,7 +37,7 @@ function isListOfPrinterFeaturesAvailable()
 
   try {
     has_printerfeatures = gPrefs.getBoolPref("print.tmp.printerfeatures." + gPrintSettings.printerName + ".has_special_printerfeatures");
-  } catch(ex) {
+  } catch (ex) {
   }
 
   return has_printerfeatures;

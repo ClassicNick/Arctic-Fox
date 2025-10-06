@@ -18,6 +18,7 @@
 #include "nsPresContext.h"
 #include "nsRenderingContext.h"
 #include "nsIFrameInlines.h"
+#include "nsIContentInlines.h"
 
 using namespace mozilla;
 using namespace mozilla::gfx;
@@ -38,7 +39,7 @@ NS_QUERYFRAME_TAIL_INHERITING(nsFrame)
 #endif
 
 /* virtual */ nsSize
-nsPlaceholderFrame::GetMinSize(nsBoxLayoutState& aBoxLayoutState)
+nsPlaceholderFrame::GetXULMinSize(nsBoxLayoutState& aBoxLayoutState)
 {
   nsSize size(0, 0);
   DISPLAY_MIN_SIZE(this, size);
@@ -46,7 +47,7 @@ nsPlaceholderFrame::GetMinSize(nsBoxLayoutState& aBoxLayoutState)
 }
 
 /* virtual */ nsSize
-nsPlaceholderFrame::GetPrefSize(nsBoxLayoutState& aBoxLayoutState)
+nsPlaceholderFrame::GetXULPrefSize(nsBoxLayoutState& aBoxLayoutState)
 {
   nsSize size(0, 0);
   DISPLAY_PREF_SIZE(this, size);
@@ -54,7 +55,7 @@ nsPlaceholderFrame::GetPrefSize(nsBoxLayoutState& aBoxLayoutState)
 }
 
 /* virtual */ nsSize
-nsPlaceholderFrame::GetMaxSize(nsBoxLayoutState& aBoxLayoutState)
+nsPlaceholderFrame::GetXULMaxSize(nsBoxLayoutState& aBoxLayoutState)
 {
   nsSize size(NS_INTRINSICSIZE, NS_INTRINSICSIZE);
   DISPLAY_MAX_SIZE(this, size);
@@ -66,9 +67,9 @@ nsPlaceholderFrame::AddInlineMinISize(nsRenderingContext* aRenderingContext,
                                       nsIFrame::InlineMinISizeData* aData)
 {
   // Override AddInlineMinWith so that *nothing* happens.  In
-  // particular, we don't want to zero out |aData->trailingWhitespace|,
+  // particular, we don't want to zero out |aData->mTrailingWhitespace|,
   // since nsLineLayout skips placeholders when trimming trailing
-  // whitespace, and we don't want to set aData->skipWhitespace to
+  // whitespace, and we don't want to set aData->mSkipWhitespace to
   // false.
 
   // ...but push floats onto the list
@@ -77,7 +78,7 @@ nsPlaceholderFrame::AddInlineMinISize(nsRenderingContext* aRenderingContext,
       nsLayoutUtils::IntrinsicForContainer(aRenderingContext,
                                            mOutOfFlowFrame,
                                            nsLayoutUtils::MIN_ISIZE);
-    aData->floats.AppendElement(
+    aData->mFloats.AppendElement(
       InlineIntrinsicISizeData::FloatInfo(mOutOfFlowFrame, floatWidth));
   }
 }
@@ -87,9 +88,9 @@ nsPlaceholderFrame::AddInlinePrefISize(nsRenderingContext* aRenderingContext,
                                        nsIFrame::InlinePrefISizeData* aData)
 {
   // Override AddInlinePrefWith so that *nothing* happens.  In
-  // particular, we don't want to zero out |aData->trailingWhitespace|,
+  // particular, we don't want to zero out |aData->mTrailingWhitespace|,
   // since nsLineLayout skips placeholders when trimming trailing
-  // whitespace, and we don't want to set aData->skipWhitespace to
+  // whitespace, and we don't want to set aData->mSkipWhitespace to
   // false.
 
   // ...but push floats onto the list
@@ -98,15 +99,15 @@ nsPlaceholderFrame::AddInlinePrefISize(nsRenderingContext* aRenderingContext,
       nsLayoutUtils::IntrinsicForContainer(aRenderingContext,
                                            mOutOfFlowFrame,
                                            nsLayoutUtils::PREF_ISIZE);
-    aData->floats.AppendElement(
+    aData->mFloats.AppendElement(
       InlineIntrinsicISizeData::FloatInfo(mOutOfFlowFrame, floatWidth));
   }
 }
 
 void
 nsPlaceholderFrame::Reflow(nsPresContext*           aPresContext,
-                           nsHTMLReflowMetrics&     aDesiredSize,
-                           const nsHTMLReflowState& aReflowState,
+                           ReflowOutput&     aDesiredSize,
+                           const ReflowInput& aReflowInput,
                            nsReflowStatus&          aStatus)
 {
 #ifdef DEBUG
@@ -143,11 +144,11 @@ nsPlaceholderFrame::Reflow(nsPresContext*           aPresContext,
 
   MarkInReflow();
   DO_GLOBAL_REFLOW_COUNT("nsPlaceholderFrame");
-  DISPLAY_REFLOW(aPresContext, this, aReflowState, aDesiredSize, aStatus);
+  DISPLAY_REFLOW(aPresContext, this, aReflowInput, aDesiredSize, aStatus);
   aDesiredSize.ClearSize();
 
   aStatus = NS_FRAME_COMPLETE;
-  NS_FRAME_SET_TRUNCATION(aStatus, aReflowState, aDesiredSize);
+  NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aDesiredSize);
 }
 
 void

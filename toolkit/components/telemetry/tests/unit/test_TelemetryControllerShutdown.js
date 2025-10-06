@@ -34,16 +34,6 @@ function run_test() {
   Services.prefs.setBoolPref(PREF_TELEMETRY_ENABLED, true);
   Services.prefs.setBoolPref(PREF_FHR_UPLOAD_ENABLED, true);
 
-  // Send the needed startup notifications to the datareporting service
-  // to ensure that it has been initialized.
-  if (HAS_DATAREPORTINGSERVICE) {
-    let drs = Cc["@mozilla.org/datareporting/service;1"]
-                .getService(Ci.nsISupports)
-                .wrappedJSObject;
-    drs.observe(null, "app-startup", null);
-    drs.observe(null, "profile-after-change", null);
-  }
-
   run_next_test();
 }
 
@@ -60,11 +50,13 @@ add_task(function* test_sendTimeout() {
 
   yield TelemetryController.setup();
   TelemetrySend.setServer("http://localhost:" + httpServer.identity.primaryPort);
-  yield TelemetryController.submitExternalPing("test-ping-type", {});
+  let submissionPromise = TelemetryController.submitExternalPing("test-ping-type", {});
 
   // Trigger the AsyncShutdown phase TelemetryController hangs off.
   AsyncShutdown.profileBeforeChange._trigger();
   AsyncShutdown.sendTelemetry._trigger();
+  // Now wait for the ping submission.
+  yield submissionPromise;
 
   // If we get here, we didn't time out in the shutdown routines.
   Assert.ok(true, "Didn't time out on shutdown.");

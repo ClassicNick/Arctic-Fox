@@ -20,7 +20,7 @@
 #include "nsIDocument.h"
 #include "mozilla/net/ChannelDiverterParent.h"
 
-#include "mozilla/unused.h"
+#include "mozilla/Unused.h"
 
 using namespace mozilla::ipc;
 
@@ -32,6 +32,7 @@ NS_IMPL_ISUPPORTS_INHERITED(ExternalHelperAppParent,
                             nsIRequest,
                             nsIChannel,
                             nsIMultiPartChannel,
+                            nsIPrivateBrowsingChannel,
                             nsIResumableChannel,
                             nsIStreamListener)
 
@@ -40,7 +41,9 @@ ExternalHelperAppParent::ExternalHelperAppParent(
     const int64_t& aContentLength)
   : mURI(DeserializeURI(uri))
   , mPending(false)
+#ifdef DEBUG
   , mDiverted(false)
+#endif
   , mIPCClosed(false)
   , mLoadFlags(0)
   , mStatus(NS_OK)
@@ -84,6 +87,11 @@ ExternalHelperAppParent::Init(ContentParent *parent,
     TabParent* tabParent = TabParent::GetFrom(aBrowser);
     if (tabParent->GetOwnerElement())
       window = do_QueryInterface(tabParent->GetOwnerElement()->OwnerDoc()->GetWindow());
+
+    bool isPrivate = false;
+    nsCOMPtr<nsILoadContext> loadContext = tabParent->GetLoadContext();
+    loadContext->GetUsePrivateBrowsing(&isPrivate);
+    SetPrivate(isPrivate);
   }
 
   helperAppService->DoContent(aMimeContentType, this, window,
@@ -153,7 +161,9 @@ ExternalHelperAppParent::RecvDivertToParentUsing(PChannelDiverterParent* diverte
   MOZ_ASSERT(diverter);
   auto p = static_cast<mozilla::net::ChannelDiverterParent*>(diverter);
   p->DivertTo(this);
+#ifdef DEBUG
   mDiverted = true;
+#endif
   Unused << p->Send__delete__(p);
   return true;
 }
@@ -396,7 +406,9 @@ ExternalHelperAppParent::SetContentCharset(const nsACString& aContentCharset)
 NS_IMETHODIMP
 ExternalHelperAppParent::GetContentDisposition(uint32_t *aContentDisposition)
 {
-  if (mContentDispositionHeader.IsEmpty())
+  // NB: mContentDisposition may or may not be set to a non UINT32_MAX value in
+  // nsExternalHelperAppService::DoContentContentProcessHelper
+  if (mContentDispositionHeader.IsEmpty() && mContentDisposition == UINT32_MAX)
     return NS_ERROR_NOT_AVAILABLE;
 
   *aContentDisposition = mContentDisposition;

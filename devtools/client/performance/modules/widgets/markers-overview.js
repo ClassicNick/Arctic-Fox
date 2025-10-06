@@ -9,31 +9,39 @@
  * markers are visible in the "waterfall".
  */
 
-const { Cc, Ci, Cu, Cr } = require("chrome");
-const { Heritage } = require("resource://devtools/client/shared/widgets/ViewHelpers.jsm");
+const { Heritage } = require("devtools/client/shared/widgets/view-helpers");
 const { AbstractCanvasGraph } = require("devtools/client/shared/widgets/Graphs");
 
 const { colorUtils } = require("devtools/shared/css-color");
 const { getColor } = require("devtools/client/shared/theme");
 const ProfilerGlobal = require("devtools/client/performance/modules/global");
-const MarkerUtils = require("devtools/client/performance/modules/logic/marker-utils");
+const { MarkerBlueprintUtils } = require("devtools/client/performance/modules/marker-blueprint-utils");
 const { TickUtils } = require("devtools/client/performance/modules/widgets/waterfall-ticks");
 const { TIMELINE_BLUEPRINT } = require("devtools/client/performance/modules/markers");
 
-const OVERVIEW_HEADER_HEIGHT = 14; // px
-const OVERVIEW_ROW_HEIGHT = 11; // px
+// px
+const OVERVIEW_HEADER_HEIGHT = 14;
+// px
+const OVERVIEW_ROW_HEIGHT = 11;
 
 const OVERVIEW_SELECTION_LINE_COLOR = "#666";
 const OVERVIEW_CLIPHEAD_LINE_COLOR = "#555";
 
-const OVERVIEW_HEADER_TICKS_MULTIPLE = 100; // ms
-const OVERVIEW_HEADER_TICKS_SPACING_MIN = 75; // px
-const OVERVIEW_HEADER_TEXT_FONT_SIZE = 9; // px
+// ms
+const OVERVIEW_HEADER_TICKS_MULTIPLE = 100;
+// px
+const OVERVIEW_HEADER_TICKS_SPACING_MIN = 75;
+// px
+const OVERVIEW_HEADER_TEXT_FONT_SIZE = 9;
 const OVERVIEW_HEADER_TEXT_FONT_FAMILY = "sans-serif";
-const OVERVIEW_HEADER_TEXT_PADDING_LEFT = 6; // px
-const OVERVIEW_HEADER_TEXT_PADDING_TOP = 1; // px
-const OVERVIEW_MARKER_WIDTH_MIN = 4; // px
-const OVERVIEW_GROUP_VERTICAL_PADDING = 5; // px
+// px
+const OVERVIEW_HEADER_TEXT_PADDING_LEFT = 6;
+// px
+const OVERVIEW_HEADER_TEXT_PADDING_TOP = 1;
+// px
+const OVERVIEW_MARKER_WIDTH_MIN = 4;
+// px
+const OVERVIEW_GROUP_VERTICAL_PADDING = 5;
 
 /**
  * An overview for the markers data.
@@ -43,7 +51,7 @@ const OVERVIEW_GROUP_VERTICAL_PADDING = 5; // px
  * @param Array<String> filter
  *        List of names of marker types that should not be shown.
  */
-function MarkersOverview(parent, filter=[], ...args) {
+function MarkersOverview(parent, filter = [], ...args) {
   AbstractCanvasGraph.apply(this, [parent, "markers-overview", ...args]);
   this.setTheme();
   this.setFilter(filter);
@@ -95,7 +103,7 @@ MarkersOverview.prototype = Heritage.extend(AbstractCanvasGraph.prototype, {
   /**
    * Disables selection and empties this graph.
    */
-  clearView: function() {
+  clearView: function () {
     this.selectionEnabled = false;
     this.dropSelection();
     this.setData({ duration: 0, markers: [] });
@@ -105,7 +113,7 @@ MarkersOverview.prototype = Heritage.extend(AbstractCanvasGraph.prototype, {
    * Renders the graph's data source.
    * @see AbstractCanvasGraph.prototype.buildGraphImage
    */
-  buildGraphImage: function() {
+  buildGraphImage: function () {
     let { markers, duration } = this._data;
 
     let { canvas, ctx } = this._getNamedCanvas("markers-overview-data");
@@ -117,11 +125,12 @@ MarkersOverview.prototype = Heritage.extend(AbstractCanvasGraph.prototype, {
     for (let marker of markers) {
       // Again skip over markers that we're filtering -- we don't want them
       // to be labeled as "Unknown"
-      if (!MarkerUtils.isMarkerValid(marker, this._filter)) {
+      if (!MarkerBlueprintUtils.shouldDisplayMarker(marker, this._filter)) {
         continue;
       }
 
-      let markerType = this._paintBatches.get(marker.name) || this._paintBatches.get("UNKNOWN");
+      let markerType = this._paintBatches.get(marker.name) ||
+                                              this._paintBatches.get("UNKNOWN");
       markerType.batch.push(marker);
     }
 
@@ -219,12 +228,15 @@ MarkersOverview.prototype = Heritage.extend(AbstractCanvasGraph.prototype, {
   setTheme: function (theme) {
     this.theme = theme = theme || "light";
     this.backgroundColor = getColor("body-background", theme);
-    this.selectionBackgroundColor = colorUtils.setAlpha(getColor("selection-background", theme), 0.25);
+    this.selectionBackgroundColor = colorUtils.setAlpha(
+      getColor("selection-background", theme), 0.25);
     this.selectionStripesColor = colorUtils.setAlpha("#fff", 0.1);
     this.headerBackgroundColor = getColor("body-background", theme);
     this.headerTextColor = getColor("body-color", theme);
-    this.headerTimelineStrokeColor = colorUtils.setAlpha(getColor("body-color-alt", theme), 0.25);
-    this.alternatingBackgroundColor = colorUtils.setAlpha(getColor("body-color", theme), 0.05);
+    this.headerTimelineStrokeColor = colorUtils.setAlpha(
+      getColor("body-color-alt", theme), 0.25);
+    this.alternatingBackgroundColor = colorUtils.setAlpha(
+      getColor("body-color", theme), 0.05);
   }
 });
 

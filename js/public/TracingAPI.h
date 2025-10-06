@@ -27,13 +27,15 @@ GCTraceKindToAscii(JS::TraceKind kind);
 } // namespace JS
 
 enum WeakMapTraceKind {
-    /** Do true ephemeron marking with an iterative weak marking phase. */
+    /**
+     * Do not trace into weak map keys or values during traversal. Users must
+     * handle weak maps manually.
+     */
     DoNotTraceWeakMaps,
 
     /**
      * Do true ephemeron marking with a weak key lookup marking phase. This is
-     * expected to be constant for the lifetime of a JSTracer; it does not
-     * change when switching from "plain" marking to weak marking.
+     * the default for GCMarker.
      */
     ExpandWeakMaps,
 
@@ -59,11 +61,24 @@ class JS_PUBLIC_API(JSTracer)
     // Return the weak map tracing behavior currently set on this tracer.
     WeakMapTraceKind weakMapAction() const { return weakMapAction_; }
 
-    // An intermediate state on the road from C to C++ style dispatch.
     enum class TracerKindTag {
+        // Marking path: a tracer used only for marking liveness of cells, not
+        // for moving them. The kind will transition to WeakMarking after
+        // everything reachable by regular edges has been marked.
         Marking,
-        WeakMarking, // In weak marking phase: looking up every marked obj/script.
+
+        // Same as Marking, except we have now moved on to the "weak marking
+        // phase", in which every marked obj/script is immediately looked up to
+        // see if it is a weak map key (and therefore might require marking its
+        // weak map value).
+        WeakMarking,
+
+        // A tracer that traverses the graph for the purposes of moving objects
+        // from the nursery to the tenured area.
         Tenuring,
+
+        // General-purpose traversal that invokes a callback on each cell.
+        // Traversing children is the responsibility of the callback.
         Callback
     };
     bool isMarkingTracer() const { return tag_ == TracerKindTag::Marking || tag_ == TracerKindTag::WeakMarking; }
@@ -71,19 +86,37 @@ class JS_PUBLIC_API(JSTracer)
     bool isTenuringTracer() const { return tag_ == TracerKindTag::Tenuring; }
     bool isCallbackTracer() const { return tag_ == TracerKindTag::Callback; }
     inline JS::CallbackTracer* asCallbackTracer();
+#ifdef DEBUG
+    bool checkEdges() { return checkEdges_; }
+#endif
 
   protected:
     JSTracer(JSRuntime* rt, TracerKindTag tag,
              WeakMapTraceKind weakTraceKind = TraceWeakMapValues)
-      : runtime_(rt), weakMapAction_(weakTraceKind), tag_(tag)
+      : runtime_(rt)
+      , weakMapAction_(weakTraceKind)
+#ifdef DEBUG
+      , checkEdges_(true)
+#endif
+      , tag_(tag)
     {}
 
+#ifdef DEBUG
+    // Set whether to check edges are valid in debug builds.
+    void setCheckEdges(bool check) {
+        checkEdges_ = check;
+    }
+#endif
+
   private:
-    JSRuntime*          runtime_;
-    WeakMapTraceKind    weakMapAction_;
+    JSRuntime* runtime_;
+    WeakMapTraceKind weakMapAction_;
+#ifdef DEBUG
+    bool checkEdges_;
+#endif
 
   protected:
-    TracerKindTag       tag_;
+    TracerKindTag tag_;
 };
 
 namespace JS {
@@ -99,6 +132,7 @@ class JS_PUBLIC_API(CallbackTracer) : public JSTracer
       : JSTracer(rt, JSTracer::TracerKindTag::Callback, weakTraceKind),
         contextName_(nullptr), contextIndex_(InvalidIndex), contextFunctor_(nullptr)
     {}
+    CallbackTracer(JSContext* cx, WeakMapTraceKind weakTraceKind = TraceWeakMapValues);
 
     // Override these methods to receive notification when an edge is visited
     // with the type contained in the callback. The default implementation
@@ -123,6 +157,9 @@ class JS_PUBLIC_API(CallbackTracer) : public JSTracer
     }
     virtual void onLazyScriptEdge(js::LazyScript** lazyp) {
         onChild(JS::GCCellPtr(*lazyp, JS::TraceKind::LazyScript));
+    }
+    virtual void onScopeEdge(js::Scope** scopep) {
+        onChild(JS::GCCellPtr(*scopep, JS::TraceKind::Scope));
     }
 
     // Override this method to receive notification when a node in the GC
@@ -193,6 +230,7 @@ class JS_PUBLIC_API(CallbackTracer) : public JSTracer
     void dispatchToOnEdge(js::BaseShape** basep) { onBaseShapeEdge(basep); }
     void dispatchToOnEdge(js::jit::JitCode** codep) { onJitCodeEdge(codep); }
     void dispatchToOnEdge(js::LazyScript** lazyp) { onLazyScriptEdge(lazyp); }
+    void dispatchToOnEdge(js::Scope** scopep) { onScopeEdge(scopep); }
 
   private:
     friend class AutoTracingName;
@@ -317,15 +355,19 @@ UnsafeTraceRoot(JSTracer* trc, T* edgep, const char* name);
 extern JS_PUBLIC_API(void)
 TraceChildren(JSTracer* trc, GCCellPtr thing);
 
-typedef js::HashSet<Zone*, js::DefaultHasher<Zone*>, js::SystemAllocPolicy> ZoneSet;
-} // namespace JS
+using ZoneSet = js::HashSet<Zone*, js::DefaultHasher<Zone*>, js::SystemAllocPolicy>;
+using CompartmentSet = js::HashSet<JSCompartment*, js::DefaultHasher<JSCompartment*>,
+                                   js::SystemAllocPolicy>;
 
 /**
- * Trace every value within |zones| that is wrapped by a cross-compartment
- * wrapper from a zone that is not an element of |zones|.
+ * Trace every value within |compartments| that is wrapped by a
+ * cross-compartment wrapper from a compartment that is not an element of
+ * |compartments|.
  */
 extern JS_PUBLIC_API(void)
-JS_TraceIncomingCCWs(JSTracer* trc, const JS::ZoneSet& zones);
+TraceIncomingCCWs(JSTracer* trc, const JS::CompartmentSet& compartments);
+
+} // namespace JS
 
 extern JS_PUBLIC_API(void)
 JS_GetTraceThingInfo(char* buf, size_t bufsize, JSTracer* trc,
@@ -343,6 +385,7 @@ extern JS_PUBLIC_API(void)
 UnsafeTraceManuallyBarrieredEdge(JSTracer* trc, T* edgep, const char* name);
 
 namespace gc {
+// Return true if the given edge is not live and is about to be swept.
 template <typename T>
 extern JS_PUBLIC_API(bool)
 EdgeNeedsSweep(JS::Heap<T>* edgep);

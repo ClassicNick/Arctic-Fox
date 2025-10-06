@@ -7,7 +7,7 @@ var {
   EventManager,
 } = ExtensionUtils;
 
-// WeakMap[Extension -> Set[Alarm]]
+// WeakMap[Extension -> Map[name -> Alarm]]
 var alarmsMap = new WeakMap();
 
 // WeakMap[Extension -> Set[callback]]
@@ -44,16 +44,17 @@ function Alarm(extension, name, alarmInfo) {
 Alarm.prototype = {
   clear() {
     this.timer.cancel();
-    alarmsMap.get(this.extension).delete(this);
+    alarmsMap.get(this.extension).delete(this.name);
     this.canceled = true;
   },
 
   observe(subject, topic, data) {
-    for (let callback of alarmCallbacksMap.get(this.extension)) {
-      callback(this);
-    }
     if (this.canceled) {
       return;
+    }
+
+    for (let callback of alarmCallbacksMap.get(this.extension)) {
+      callback(this);
     }
 
     if (!this.periodInMinutes) {
@@ -77,89 +78,66 @@ Alarm.prototype = {
 
 /* eslint-disable mozilla/balanced-listeners */
 extensions.on("startup", (type, extension) => {
-  alarmsMap.set(extension, new Set());
+  alarmsMap.set(extension, new Map());
   alarmCallbacksMap.set(extension, new Set());
 });
 
 extensions.on("shutdown", (type, extension) => {
-  for (let alarm of alarmsMap.get(extension)) {
-    alarm.clear();
+  if (alarmsMap.has(extension)) {
+    for (let alarm of alarmsMap.get(extension).values()) {
+      alarm.clear();
+    }
+    alarmsMap.delete(extension);
+    alarmCallbacksMap.delete(extension);
   }
-  alarmsMap.delete(extension);
-  alarmCallbacksMap.delete(extension);
 });
 /* eslint-enable mozilla/balanced-listeners */
 
-extensions.registerAPI((extension, context) => {
+extensions.registerSchemaAPI("alarms", context => {
+  let {extension} = context;
   return {
     alarms: {
-      create: function(...args) {
-        let name = "", alarmInfo;
-        if (args.length == 1) {
-          alarmInfo = args[0];
-        } else {
-          [name, alarmInfo] = args;
+      create: function(name, alarmInfo) {
+        name = name || "";
+        let alarms = alarmsMap.get(extension);
+        if (alarms.has(name)) {
+          alarms.get(name).clear();
         }
-
         let alarm = new Alarm(extension, name, alarmInfo);
-        alarmsMap.get(extension).add(alarm);
+        alarms.set(alarm.name, alarm);
       },
 
-      get: function(args) {
-        let name = "", callback;
-        if (args.length == 1) {
-          callback = args[0];
-        } else {
-          [name, callback] = args;
-        }
-
-        let promise = new Promise((resolve, reject) => {
-          for (let alarm of alarmsMap.get(extension)) {
-            if (alarm.name == name) {
-              return resolve(alarm.data);
-            }
-          }
-          reject("No matching alarm");
-        });
-
-        return context.wrapPromise(promise, callback);
-      },
-
-      getAll: function(callback) {
+      get: function(name) {
+        name = name || "";
         let alarms = alarmsMap.get(extension);
-        let result = alarms.map(alarm => alarm.data);
-        return context.wrapPromise(Promise.resolve(result), callback);
+        if (alarms.has(name)) {
+          return Promise.resolve(alarms.get(name).data);
+        }
+        return Promise.resolve();
       },
 
-      clear: function(...args) {
-        let name = "", callback;
-        if (args.length == 1) {
-          callback = args[0];
-        } else {
-          [name, callback] = args;
-        }
+      getAll: function() {
+        let result = Array.from(alarmsMap.get(extension).values(), alarm => alarm.data);
+        return Promise.resolve(result);
+      },
 
+      clear: function(name) {
+        name = name || "";
         let alarms = alarmsMap.get(extension);
+        if (alarms.has(name)) {
+          alarms.get(name).clear();
+          return Promise.resolve(true);
+        }
+        return Promise.resolve(false);
+      },
+
+      clearAll: function() {
         let cleared = false;
-        for (let alarm of alarms) {
-          if (alarm.name == name) {
-            alarm.clear();
-            cleared = true;
-            break;
-          }
-        }
-
-        return context.wrapPromise(Promise.resolve(cleared), callback);
-      },
-
-      clearAll: function(callback) {
-        let alarms = alarmsMap.get(extension);
-        let cleared = false;
-        for (let alarm of alarms) {
+        for (let alarm of alarmsMap.get(extension).values()) {
           alarm.clear();
           cleared = true;
         }
-        return context.wrapPromise(Promise.resolve(cleared), callback);
+        return Promise.resolve(cleared);
       },
 
       onAlarm: new EventManager(context, "alarms.onAlarm", fire => {

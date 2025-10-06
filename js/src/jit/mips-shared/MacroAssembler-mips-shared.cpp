@@ -6,6 +6,8 @@
 
 #include "jit/mips-shared/MacroAssembler-mips-shared.h"
 
+#include "jit/MacroAssembler.h"
+
 using namespace js;
 using namespace jit;
 
@@ -182,6 +184,17 @@ MacroAssemblerMIPSShared::ma_xor(Register rd, Register rs, Imm32 imm)
     }
 }
 
+void
+MacroAssemblerMIPSShared::ma_ctz(Register rd, Register rs)
+{
+    ma_negu(ScratchRegister, rs);
+    as_and(rd, ScratchRegister, rs);
+    as_clz(rd, rd);
+    ma_negu(SecondScratchReg, rd);
+    ma_addu(SecondScratchReg, Imm32(0x1f));
+    as_movn(rd, SecondScratchReg, ScratchRegister);
+}
+
 // Arithmetic-based ops.
 
 // Add.
@@ -244,10 +257,10 @@ MacroAssemblerMIPSShared::ma_subTestOverflow(Register rd, Register rs, Imm32 imm
 }
 
 void
-MacroAssemblerMIPSShared::ma_mult(Register rs, Imm32 imm)
+MacroAssemblerMIPSShared::ma_mul(Register rd, Register rs, Imm32 imm)
 {
     ma_li(ScratchRegister, imm);
-    as_mult(rs, ScratchRegister);
+    as_mul(rd, rs, ScratchRegister);
 }
 
 void
@@ -271,9 +284,9 @@ void
 MacroAssemblerMIPSShared::ma_div_branch_overflow(Register rd, Register rs, Register rt, Label* overflow)
 {
     as_div(rs, rt);
-    as_mflo(rd);
     as_mfhi(ScratchRegister);
     ma_b(ScratchRegister, ScratchRegister, overflow, Assembler::NonZero);
+    as_mflo(rd);
 }
 
 void
@@ -363,6 +376,40 @@ void
 MacroAssemblerMIPSShared::ma_load(Register dest, const BaseIndex& src,
                                   LoadStoreSize size, LoadStoreExtension extension)
 {
+    if (isLoongson() && ZeroExtend != extension && Imm8::IsInSignedRange(src.offset)) {
+        Register index = src.index;
+
+        if (src.scale != TimesOne) {
+            int32_t shift = Imm32::ShiftOf(src.scale).value;
+
+            MOZ_ASSERT(SecondScratchReg != src.base);
+            index = SecondScratchReg;
+#ifdef JS_CODEGEN_MIPS64
+            asMasm().ma_dsll(index, src.index, Imm32(shift));
+#else
+            asMasm().ma_sll(index, src.index, Imm32(shift));
+#endif
+        }
+
+        switch (size) {
+          case SizeByte:
+            as_gslbx(dest, src.base, index, src.offset);
+            break;
+          case SizeHalfWord:
+            as_gslhx(dest, src.base, index, src.offset);
+            break;
+          case SizeWord:
+            as_gslwx(dest, src.base, index, src.offset);
+            break;
+          case SizeDouble:
+            as_gsldx(dest, src.base, index, src.offset);
+            break;
+          default:
+            MOZ_CRASH("Invalid argument for ma_load");
+        }
+        return;
+    }
+
     asMasm().computeScaledAddress(src, SecondScratchReg);
     asMasm().ma_load(dest, Address(SecondScratchReg, src.offset), size, extension);
 }
@@ -371,6 +418,40 @@ void
 MacroAssemblerMIPSShared::ma_store(Register data, const BaseIndex& dest,
                                    LoadStoreSize size, LoadStoreExtension extension)
 {
+    if (isLoongson() && Imm8::IsInSignedRange(dest.offset)) {
+        Register index = dest.index;
+
+        if (dest.scale != TimesOne) {
+            int32_t shift = Imm32::ShiftOf(dest.scale).value;
+
+            MOZ_ASSERT(SecondScratchReg != dest.base);
+            index = SecondScratchReg;
+#ifdef JS_CODEGEN_MIPS64
+            asMasm().ma_dsll(index, dest.index, Imm32(shift));
+#else
+            asMasm().ma_sll(index, dest.index, Imm32(shift));
+#endif
+        }
+
+        switch (size) {
+          case SizeByte:
+            as_gssbx(data, dest.base, index, dest.offset);
+            break;
+          case SizeHalfWord:
+            as_gsshx(data, dest.base, index, dest.offset);
+            break;
+          case SizeWord:
+            as_gsswx(data, dest.base, index, dest.offset);
+            break;
+          case SizeDouble:
+            as_gssdx(data, dest.base, index, dest.offset);
+            break;
+          default:
+            MOZ_CRASH("Invalid argument for ma_store");
+        }
+        return;
+    }
+
     asMasm().computeScaledAddress(dest, SecondScratchReg);
     asMasm().ma_store(data, Address(SecondScratchReg, dest.offset), size, extension);
 }
@@ -379,6 +460,48 @@ void
 MacroAssemblerMIPSShared::ma_store(Imm32 imm, const BaseIndex& dest,
                                    LoadStoreSize size, LoadStoreExtension extension)
 {
+    if (isLoongson() && Imm8::IsInSignedRange(dest.offset)) {
+        Register data = zero;
+        Register index = dest.index;
+
+        if (imm.value) {
+            MOZ_ASSERT(ScratchRegister != dest.base);
+            MOZ_ASSERT(ScratchRegister != dest.index);
+            data = ScratchRegister;
+            ma_li(data, imm);
+        }
+
+        if (dest.scale != TimesOne) {
+            int32_t shift = Imm32::ShiftOf(dest.scale).value;
+
+            MOZ_ASSERT(SecondScratchReg != dest.base);
+            index = SecondScratchReg;
+#ifdef JS_CODEGEN_MIPS64
+            asMasm().ma_dsll(index, dest.index, Imm32(shift));
+#else
+            asMasm().ma_sll(index, dest.index, Imm32(shift));
+#endif
+        }
+
+        switch (size) {
+          case SizeByte:
+            as_gssbx(data, dest.base, index, dest.offset);
+            break;
+          case SizeHalfWord:
+            as_gsshx(data, dest.base, index, dest.offset);
+            break;
+          case SizeWord:
+            as_gsswx(data, dest.base, index, dest.offset);
+            break;
+          case SizeDouble:
+            as_gssdx(data, dest.base, index, dest.offset);
+            break;
+          default:
+            MOZ_CRASH("Invalid argument for ma_store");
+        }
+        return;
+    }
+
     // Make sure that SecondScratchReg contains absolute address so that
     // offset is 0.
     asMasm().computeEffectiveAddress(dest, SecondScratchReg);
@@ -452,6 +575,9 @@ MacroAssemblerMIPSShared::ma_b(Register lhs, T rhs, wasm::JumpTarget target, Con
 }
 
 template void MacroAssemblerMIPSShared::ma_b<Register>(Register lhs, Register rhs,
+                                                       wasm::JumpTarget target, Condition c,
+                                                       JumpKind jumpKind);
+template void MacroAssemblerMIPSShared::ma_b<Imm32>(Register lhs, Imm32 rhs,
                                                        wasm::JumpTarget target, Condition c,
                                                        JumpKind jumpKind);
 template void MacroAssemblerMIPSShared::ma_b<ImmTag>(Register lhs, ImmTag rhs,
@@ -763,6 +889,25 @@ MacroAssemblerMIPSShared::ma_liNegZero(FloatRegister dest)
 void
 MacroAssemblerMIPSShared::ma_sd(FloatRegister ft, BaseIndex address)
 {
+    if (isLoongson() && Imm8::IsInSignedRange(address.offset)) {
+        Register index = address.index;
+
+        if (address.scale != TimesOne) {
+            int32_t shift = Imm32::ShiftOf(address.scale).value;
+
+            MOZ_ASSERT(SecondScratchReg != address.base);
+            index = SecondScratchReg;
+#ifdef JS_CODEGEN_MIPS64
+            asMasm().ma_dsll(index, address.index, Imm32(shift));
+#else
+            asMasm().ma_sll(index, address.index, Imm32(shift));
+#endif
+        }
+
+        as_gssdx(ft, address.base, index, address.offset);
+        return;
+    }
+
     asMasm().computeScaledAddress(address, SecondScratchReg);
     asMasm().ma_sd(ft, Address(SecondScratchReg, address.offset));
 }
@@ -770,6 +915,25 @@ MacroAssemblerMIPSShared::ma_sd(FloatRegister ft, BaseIndex address)
 void
 MacroAssemblerMIPSShared::ma_ss(FloatRegister ft, BaseIndex address)
 {
+    if (isLoongson() && Imm8::IsInSignedRange(address.offset)) {
+        Register index = address.index;
+
+        if (address.scale != TimesOne) {
+            int32_t shift = Imm32::ShiftOf(address.scale).value;
+
+            MOZ_ASSERT(SecondScratchReg != address.base);
+            index = SecondScratchReg;
+#ifdef JS_CODEGEN_MIPS64
+            asMasm().ma_dsll(index, address.index, Imm32(shift));
+#else
+            asMasm().ma_sll(index, address.index, Imm32(shift));
+#endif
+        }
+
+        as_gsssx(ft, address.base, index, address.offset);
+        return;
+    }
+
     asMasm().computeScaledAddress(address, SecondScratchReg);
     asMasm().ma_ss(ft, Address(SecondScratchReg, address.offset));
 }
@@ -790,6 +954,100 @@ MacroAssemblerMIPSShared::ma_bc1d(FloatRegister lhs, FloatRegister rhs, Label* l
     FloatTestKind testKind;
     compareFloatingPoint(DoubleFloat, lhs, rhs, c, &testKind, fcc);
     asMasm().branchWithCode(getBranchCode(testKind, fcc), label, jumpKind);
+}
+
+void
+MacroAssemblerMIPSShared::minMaxDouble(FloatRegister srcDest, FloatRegister second,
+                                       bool handleNaN, bool isMax)
+{
+    FloatRegister first = srcDest;
+
+    Assembler::DoubleCondition cond = isMax
+                                      ? Assembler::DoubleLessThanOrEqual
+                                      : Assembler::DoubleGreaterThanOrEqual;
+    Label nan, equal, done;
+    FloatTestKind moveCondition;
+
+    // First or second is NaN, result is NaN.
+    ma_bc1d(first, second, &nan, Assembler::DoubleUnordered, ShortJump);
+    // Make sure we handle -0 and 0 right.
+    ma_bc1d(first, second, &equal, Assembler::DoubleEqual, ShortJump);
+    compareFloatingPoint(DoubleFloat, first, second, cond, &moveCondition);
+    MOZ_ASSERT(TestForTrue == moveCondition);
+    as_movt(DoubleFloat, first, second);
+    ma_b(&done, ShortJump);
+
+    // Check for zero.
+    bind(&equal);
+    asMasm().loadConstantDouble(0.0, ScratchDoubleReg);
+    compareFloatingPoint(DoubleFloat, first, ScratchDoubleReg,
+                         Assembler::DoubleEqual, &moveCondition);
+
+    // So now both operands are either -0 or 0.
+    if (isMax) {
+        // -0 + -0 = -0 and -0 + 0 = 0.
+        as_addd(ScratchDoubleReg, first, second);
+    } else {
+        as_negd(ScratchDoubleReg, first);
+        as_subd(ScratchDoubleReg, ScratchDoubleReg, second);
+        as_negd(ScratchDoubleReg, ScratchDoubleReg);
+    }
+    MOZ_ASSERT(TestForTrue == moveCondition);
+    // First is 0 or -0, move max/min to it, else just return it.
+    as_movt(DoubleFloat, first, ScratchDoubleReg);
+    ma_b(&done, ShortJump);
+
+    bind(&nan);
+    asMasm().loadConstantDouble(JS::GenericNaN(), srcDest);
+
+    bind(&done);
+}
+
+void
+MacroAssemblerMIPSShared::minMaxFloat32(FloatRegister srcDest, FloatRegister second,
+                                        bool handleNaN, bool isMax)
+{
+    FloatRegister first = srcDest;
+
+    Assembler::DoubleCondition cond = isMax
+                                      ? Assembler::DoubleLessThanOrEqual
+                                      : Assembler::DoubleGreaterThanOrEqual;
+    Label nan, equal, done;
+    FloatTestKind moveCondition;
+
+    // First or second is NaN, result is NaN.
+    ma_bc1s(first, second, &nan, Assembler::DoubleUnordered, ShortJump);
+    // Make sure we handle -0 and 0 right.
+    ma_bc1s(first, second, &equal, Assembler::DoubleEqual, ShortJump);
+    compareFloatingPoint(SingleFloat, first, second, cond, &moveCondition);
+    MOZ_ASSERT(TestForTrue == moveCondition);
+    as_movt(SingleFloat, first, second);
+    ma_b(&done, ShortJump);
+
+    // Check for zero.
+    bind(&equal);
+    asMasm().loadConstantFloat32(0.0f, ScratchFloat32Reg);
+    compareFloatingPoint(SingleFloat, first, ScratchFloat32Reg,
+                         Assembler::DoubleEqual, &moveCondition);
+
+    // So now both operands are either -0 or 0.
+    if (isMax) {
+        // -0 + -0 = -0 and -0 + 0 = 0.
+        as_adds(ScratchFloat32Reg, first, second);
+    } else {
+        as_negs(ScratchFloat32Reg, first);
+        as_subs(ScratchFloat32Reg, ScratchFloat32Reg, second);
+        as_negs(ScratchFloat32Reg, ScratchFloat32Reg);
+    }
+    MOZ_ASSERT(TestForTrue == moveCondition);
+    // First is 0 or -0, move max/min to it, else just return it.
+    as_movt(SingleFloat, first, ScratchFloat32Reg);
+    ma_b(&done, ShortJump);
+
+    bind(&nan);
+    asMasm().loadConstantFloat32(JS::GenericNaN(), srcDest);
+
+    bind(&done);
 }
 
 void
@@ -1086,6 +1344,14 @@ MacroAssemblerMIPSShared::atomicExchange(int nbytes, bool signExtend, const Base
 
 //{{{ check_macroassembler_style
 // ===============================================================
+// MacroAssembler high-level usage.
+
+void
+MacroAssembler::flush()
+{
+}
+
+// ===============================================================
 // Stack manipulation functions.
 
 void
@@ -1140,6 +1406,13 @@ MacroAssembler::Pop(Register reg)
 }
 
 void
+MacroAssembler::Pop(FloatRegister f)
+{
+    ma_pop(f);
+    adjustFrame(-sizeof(double));
+}
+
+void
 MacroAssembler::Pop(const ValueOperand& val)
 {
     popValue(val);
@@ -1168,7 +1441,13 @@ MacroAssembler::call(Label* label)
 CodeOffset
 MacroAssembler::callWithPatch()
 {
-    as_bal(BOffImm16(0));
+    as_bal(BOffImm16(3 * sizeof(uint32_t)));
+    addPtr(Imm32(5 * sizeof(uint32_t)), ra);
+    // Allocate space which will be patched by patchCall().
+    writeInst(UINT32_MAX);
+    as_lw(ScratchRegister, ra, -(int32_t)(5 * sizeof(uint32_t)));
+    addPtr(ra, ScratchRegister);
+    as_jr(ScratchRegister);
     as_nop();
     return CodeOffset(currentOffset());
 }
@@ -1176,9 +1455,16 @@ MacroAssembler::callWithPatch()
 void
 MacroAssembler::patchCall(uint32_t callerOffset, uint32_t calleeOffset)
 {
-    BufferOffset call(callerOffset - 2 * sizeof(uint32_t));
-    InstImm* bal = (InstImm*)editSrc(call);
-    bal->setBOffImm16(BufferOffset(calleeOffset).diffB<BOffImm16>(call));
+    BufferOffset call(callerOffset - 7 * sizeof(uint32_t));
+
+    if (BOffImm16::IsInRange(BufferOffset(calleeOffset).diffB<int>(call))) {
+        InstImm* bal = (InstImm*)editSrc(call);
+        bal->setBOffImm16(BufferOffset(calleeOffset).diffB<BOffImm16>(call));
+    } else {
+        uint32_t u32Offset = callerOffset - 5 * sizeof(uint32_t);
+        uint32_t* u32 = reinterpret_cast<uint32_t*>(editSrc(BufferOffset(u32Offset)));
+        *u32 = calleeOffset - callerOffset;
+    }
 }
 
 CodeOffset
@@ -1209,6 +1495,27 @@ MacroAssembler::repatchThunk(uint8_t* code, uint32_t u32Offset, uint32_t targetO
 {
     uint32_t* u32 = reinterpret_cast<uint32_t*>(code + u32Offset);
     *u32 = targetOffset - u32Offset;
+}
+
+CodeOffset
+MacroAssembler::nopPatchableToNearJump()
+{
+    CodeOffset offset(currentOffset());
+    as_nop();
+    as_nop();
+    return offset;
+}
+
+void
+MacroAssembler::patchNopToNearJump(uint8_t* jump, uint8_t* target)
+{
+    new (jump) InstImm(op_beq, zero, zero, BOffImm16(target - jump));
+}
+
+void
+MacroAssembler::patchNearJumpToNop(uint8_t* jump)
+{
+    new (jump) InstNOP();
 }
 
 void
@@ -1242,21 +1549,15 @@ MacroAssembler::call(JitCode* c)
 }
 
 void
-MacroAssembler::callAndPushReturnAddress(Register callee)
+MacroAssembler::pushReturnAddress()
 {
-    // Push return address during jalr delay slot.
-    subPtr(Imm32(sizeof(intptr_t)), StackPointer);
-    as_jalr(callee);
-    storePtr(ra, Address(StackPointer, 0));
+    push(ra);
 }
 
 void
-MacroAssembler::callAndPushReturnAddress(Label* label)
+MacroAssembler::popReturnAddress()
 {
-    // Push return address during bal delay slot.
-    subPtr(Imm32(sizeof(intptr_t)), StackPointer);
-    ma_bal(label, DontFillDelaySlot);
-    storePtr(ra, Address(StackPointer, 0));
+    pop(ra);
 }
 
 // ===============================================================
@@ -1274,6 +1575,26 @@ MacroAssembler::pushFakeReturnAddress(Register scratch)
 
     addCodeLabel(cl);
     return retAddr;
+}
+
+void
+MacroAssembler::branchPtrInNurseryChunk(Condition cond, Register ptr, Register temp,
+                                        Label* label)
+{
+    MOZ_ASSERT(cond == Assembler::Equal || cond == Assembler::NotEqual);
+    MOZ_ASSERT(ptr != temp);
+    MOZ_ASSERT(ptr != SecondScratchReg);
+
+    movePtr(ptr, SecondScratchReg);
+    orPtr(Imm32(gc::ChunkMask), SecondScratchReg);
+    branch32(cond, Address(SecondScratchReg, gc::ChunkLocationOffsetFromLastByte),
+             Imm32(int32_t(gc::ChunkLocation::Nursery)), label);
+}
+
+void
+MacroAssembler::comment(const char* msg)
+{
+    Assembler::comment(msg);
 }
 
 //}}} check_macroassembler_style

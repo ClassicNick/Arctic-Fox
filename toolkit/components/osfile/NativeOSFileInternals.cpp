@@ -390,7 +390,7 @@ TypedArrayResult::GetCacheableResult(JSContext* cx, JS::MutableHandle<JS::Value>
 /**
  * An event used to notify asynchronously of an error.
  */
-class ErrorEvent final : public nsRunnable {
+class ErrorEvent final : public Runnable {
 public:
   /**
    * @param aOnSuccess The success callback.
@@ -421,7 +421,7 @@ public:
       MOZ_ASSERT(!NS_IsMainThread());
     }
 
-  NS_METHOD Run() {
+  NS_IMETHOD Run() override {
     MOZ_ASSERT(NS_IsMainThread());
     (void)mOnError->Complete(mOperation, mOSError);
 
@@ -448,7 +448,7 @@ public:
 /**
  * An event used to notify of a success.
  */
-class SuccessEvent final : public nsRunnable {
+class SuccessEvent final : public Runnable {
 public:
   /**
    * @param aOnSuccess The success callback.
@@ -471,7 +471,7 @@ public:
       MOZ_ASSERT(!NS_IsMainThread());
     }
 
-  NS_METHOD Run() {
+  NS_IMETHOD Run() override {
     MOZ_ASSERT(NS_IsMainThread());
     (void)mOnSuccess->Complete(mResult);
 
@@ -499,7 +499,7 @@ public:
 /**
  * Base class shared by actions.
  */
-class AbstractDoEvent: public nsRunnable {
+class AbstractDoEvent: public Runnable {
 public:
   AbstractDoEvent(nsMainThreadPtrHandle<nsINativeOSFileSuccessCallback>& aOnSuccess,
                   nsMainThreadPtrHandle<nsINativeOSFileErrorCallback>& aOnError)
@@ -594,7 +594,7 @@ public:
     MOZ_ASSERT(NS_IsMainThread());
   }
 
-  NS_METHOD Run() override {
+  NS_IMETHOD Run() override {
     MOZ_ASSERT(!NS_IsMainThread());
     TimeStamp dispatchDate = TimeStamp::Now();
 

@@ -296,7 +296,7 @@ nsEditorSpellCheck::CanSpellCheck(bool* _retval)
 }
 
 // Instances of this class can be used as either runnables or RAII helpers.
-class CallbackCaller final : public nsRunnable
+class CallbackCaller final : public Runnable
 {
 public:
   explicit CallbackCaller(nsIEditorSpellCheckCallback* aCallback)
@@ -307,7 +307,7 @@ public:
     Run();
   }
 
-  NS_IMETHOD Run()
+  NS_IMETHOD Run() override
   {
     if (mCallback) {
       mCallback->EditorSpellCheckDone();
@@ -347,8 +347,10 @@ nsEditorSpellCheck::InitSpellChecker(nsIEditor* aEditor, bool aEnableSelectionCh
 
     nsCOMPtr<nsISelection> domSelection;
     aEditor->GetSelection(getter_AddRefs(domSelection));
-    RefPtr<Selection> selection = static_cast<Selection*>(domSelection.get());
-    NS_ENSURE_TRUE(selection, NS_ERROR_FAILURE);
+    if (NS_WARN_IF(!domSelection)) {
+      return NS_ERROR_FAILURE;
+    }
+    RefPtr<Selection> selection = domSelection->AsSelection();
 
     int32_t count = 0;
 
@@ -702,7 +704,7 @@ nsEditorSpellCheck::UpdateCurrentDictionary(nsIEditorSpellCheckCallback* aCallba
   RefPtr<DictionaryFetcher> fetcher =
     new DictionaryFetcher(this, aCallback, mDictionaryFetcherGroup);
   rootContent->GetLang(fetcher->mRootContentLang);
-  nsCOMPtr<nsIDocument> doc = rootContent->GetCurrentDoc();
+  nsCOMPtr<nsIDocument> doc = rootContent->GetUncomposedDoc();
   NS_ENSURE_STATE(doc);
   doc->GetContentLanguage(fetcher->mRootDocContentLang);
 

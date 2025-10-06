@@ -198,7 +198,7 @@ UDPSocket::CloseWithReason(nsresult aReason)
 
   if (mClosed) {
     if (NS_SUCCEEDED(aReason)) {
-      mClosed->MaybeResolve(JS::UndefinedHandleValue);
+      mClosed->MaybeResolveWithUndefined();
     } else {
       mClosed->MaybeReject(aReason);
     }
@@ -469,7 +469,7 @@ UDPSocket::InitLocal(const nsAString& aLocalAddress,
     return rv;
   }
 
-  mOpened->MaybeResolve(JS::UndefinedHandleValue);
+  mOpened->MaybeResolveWithUndefined();
 
   return NS_OK;
 }
@@ -503,7 +503,9 @@ UDPSocket::InitRemote(const nsAString& aLocalAddress,
                   NS_ConvertUTF16toUTF8(aLocalAddress),
                   aLocalPort,
                   mAddressReuse,
-                  mLoopback);
+                  mLoopback,
+                  0,
+                  0);
 
   if (NS_FAILED(rv)) {
     return rv;
@@ -540,7 +542,7 @@ UDPSocket::Init(const nsString& aLocalAddress,
     return rv.StealNSResult();
   }
 
-  class OpenSocketRunnable final : public nsRunnable
+  class OpenSocketRunnable final : public Runnable
   {
   public:
     explicit OpenSocketRunnable(UDPSocket* aSocket) : mSocket(aSocket)
@@ -734,7 +736,7 @@ UDPSocket::CallListenerOpened()
     return NS_OK;
   }
 
-  mOpened->MaybeResolve(JS::UndefinedHandleValue);
+  mOpened->MaybeResolveWithUndefined();
 
   return NS_OK;
 }

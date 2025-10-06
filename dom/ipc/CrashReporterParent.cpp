@@ -4,8 +4,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "CrashReporterParent.h"
-#include "mozilla/Snprintf.h"
+#include "mozilla/Sprintf.h"
 #include "mozilla/dom/ContentParent.h"
+#include "nsAutoPtr.h"
 #include "nsXULAppAPI.h"
 #include <time.h>
 
@@ -136,7 +137,7 @@ CrashReporterParent::GenerateChildData(const AnnotationTable* processNotes)
   mNotes.Put(NS_LITERAL_CSTRING("ProcessType"), type);
 
   char startTime[32];
-  snprintf_literal(startTime, "%lld", static_cast<long long>(mStartTime));
+  SprintfLiteral(startTime, "%lld", static_cast<long long>(mStartTime));
   mNotes.Put(NS_LITERAL_CSTRING("StartupTime"), nsDependentCString(startTime));
 
   if (!mAppNotes.IsEmpty()) {
@@ -168,14 +169,14 @@ CrashReporterParent::FinalizeChildData()
   }
 
   nsCOMPtr<nsIThread> mainThread = do_GetMainThread();
-  class NotifyOnMainThread : public nsRunnable
+  class NotifyOnMainThread : public Runnable
   {
   public:
     explicit NotifyOnMainThread(CrashReporterParent* aCR)
       : mCR(aCR)
     { }
 
-    NS_IMETHOD Run() {
+    NS_IMETHOD Run() override {
       mCR->NotifyCrashService();
       return NS_OK;
     }

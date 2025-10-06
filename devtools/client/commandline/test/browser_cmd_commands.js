@@ -4,6 +4,7 @@
 // Test various GCLI commands
 
 const TEST_URI = "data:text/html;charset=utf-8,gcli-commands";
+const HUDService = require("devtools/client/webconsole/hudservice");
 
 function test() {
   return Task.spawn(spawnTest).then(finish, helpers.handleError);
@@ -32,16 +33,12 @@ function* spawnTest() {
 
   ok(msg, "output for pprint(window)");
 
-  let oncePromise = hud.jsterm.once("messages-cleared");
-
-  helpers.audit(options, [
+  yield helpers.audit(options, [
     {
       setup: "console clear",
       exec: { output: "" }
     }
   ]);
-
-  yield oncePromise;
 
   let labels = hud.outputNode.querySelectorAll(".message");
   is(labels.length, 0, "no output in console");

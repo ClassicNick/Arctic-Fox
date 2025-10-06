@@ -4,12 +4,21 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "Presentation.h"
+
+#include <ctype.h>
+
 #include "mozilla/dom/PresentationBinding.h"
 #include "mozilla/dom/Promise.h"
+#include "nsContentUtils.h"
 #include "nsCycleCollectionParticipant.h"
+#include "nsIDocShell.h"
 #include "nsIPresentationService.h"
+#include "nsIScriptSecurityManager.h"
+#include "nsJSUtils.h"
+#include "nsNetUtil.h"
+#include "nsSandboxFlags.h"
 #include "nsServiceManagerUtils.h"
-#include "Presentation.h"
 #include "PresentationReceiver.h"
 
 using namespace mozilla;
@@ -28,7 +37,54 @@ NS_INTERFACE_MAP_END_INHERITING(DOMEventTargetHelper)
 Presentation::Create(nsPIDOMWindowInner* aWindow)
 {
   RefPtr<Presentation> presentation = new Presentation(aWindow);
-  return NS_WARN_IF(!presentation->Init()) ? nullptr : presentation.forget();
+  return presentation.forget();
+}
+
+/* static */ bool
+Presentation::HasReceiverSupport(JSContext* aCx, JSObject* aGlobal)
+{
+  JS::Rooted<JSObject*> global(aCx, aGlobal);
+
+  nsCOMPtr<nsPIDOMWindowInner> inner =
+    do_QueryInterface(nsJSUtils::GetStaticScriptGlobal(global));
+  if (NS_WARN_IF(!inner)) {
+    return false;
+  }
+
+  // Grant access to browser receiving pages and their same-origin iframes. (App
+  // pages should be controlled by "presentation" permission in app manifests.)
+  nsCOMPtr<nsIDocShell> docshell = inner->GetDocShell();
+  if (!docshell) {
+    return false;
+  }
+
+  if (!docshell->GetIsInMozBrowserOrApp()) {
+    return false;
+  }
+
+  nsAutoString presentationURL;
+  nsContentUtils::GetPresentationURL(docshell, presentationURL);
+
+  if (presentationURL.IsEmpty()) {
+    return false;
+  }
+
+  nsCOMPtr<nsIScriptSecurityManager> securityManager =
+    nsContentUtils::GetSecurityManager();
+  if (!securityManager) {
+    return false;
+  }
+
+  nsCOMPtr<nsIURI> presentationURI;
+  nsresult rv = NS_NewURI(getter_AddRefs(presentationURI), presentationURL);
+  if (NS_FAILED(rv)) {
+    return false;
+  }
+
+  nsCOMPtr<nsIURI> docURI = inner->GetDocumentURI();
+  return NS_SUCCEEDED(securityManager->CheckSameOriginURI(presentationURI,
+                                                          docURI,
+                                                          false));
 }
 
 Presentation::Presentation(nsPIDOMWindowInner* aWindow)
@@ -38,37 +94,6 @@ Presentation::Presentation(nsPIDOMWindowInner* aWindow)
 
 Presentation::~Presentation()
 {
-}
-
-bool
-Presentation::Init()
-{
-  nsCOMPtr<nsIPresentationService> service =
-    do_GetService(PRESENTATION_SERVICE_CONTRACTID);
-  if (NS_WARN_IF(!service)) {
-    return false;
-  }
-
-  if (NS_WARN_IF(!GetOwner())) {
-    return false;
-  }
-
-  // Check if a receiver instance is required now. A session may already be
-  // connecting before the web content gets loaded in a receiving browsing
-  // context.
-  nsAutoString sessionId;
-  nsresult rv = service->GetExistentSessionIdAtLaunch(GetOwner()->WindowID(), sessionId);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return false;
-  }
-  if (!sessionId.IsEmpty()) {
-    mReceiver = PresentationReceiver::Create(GetOwner(), sessionId);
-    if (NS_WARN_IF(!mReceiver)) {
-      return false;
-    }
-  }
-
-  return true;
 }
 
 /* virtual */ JSObject*
@@ -81,19 +106,64 @@ Presentation::WrapObject(JSContext* aCx,
 void
 Presentation::SetDefaultRequest(PresentationRequest* aRequest)
 {
+  if (IsInPresentedContent()) {
+    return;
+  }
+
+  nsCOMPtr<nsIDocument> doc = GetOwner() ? GetOwner()->GetExtantDoc() : nullptr;
+  if (NS_WARN_IF(!doc)) {
+    return;
+  }
+
+  if (doc->GetSandboxFlags() & SANDBOXED_PRESENTATION) {
+    return;
+  }
+
   mDefaultRequest = aRequest;
 }
 
 already_AddRefed<PresentationRequest>
 Presentation::GetDefaultRequest() const
 {
+  if (IsInPresentedContent()) {
+    return nullptr;
+  }
+
   RefPtr<PresentationRequest> request = mDefaultRequest;
   return request.forget();
 }
 
 already_AddRefed<PresentationReceiver>
-Presentation::GetReceiver() const
+Presentation::GetReceiver()
 {
+  // return the same receiver if already created
+  if (mReceiver) {
+    RefPtr<PresentationReceiver> receiver = mReceiver;
+    return receiver.forget();
+  }
+
+  if (!IsInPresentedContent()) {
+    return nullptr;
+  }
+
+  mReceiver = PresentationReceiver::Create(GetOwner());
+  if (NS_WARN_IF(!mReceiver)) {
+    MOZ_ASSERT(mReceiver);
+    return nullptr;
+  }
+
   RefPtr<PresentationReceiver> receiver = mReceiver;
   return receiver.forget();
+}
+
+bool
+Presentation::IsInPresentedContent() const
+{
+  nsCOMPtr<nsIDocShell> docShell = GetOwner()->GetDocShell();
+  MOZ_ASSERT(docShell);
+
+  nsAutoString presentationURL;
+  nsContentUtils::GetPresentationURL(docShell, presentationURL);
+
+  return !presentationURL.IsEmpty();
 }

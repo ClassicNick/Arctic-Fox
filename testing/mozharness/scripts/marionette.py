@@ -26,6 +26,8 @@ from mozharness.mozilla.testing.testbase import TestingMixin, testing_config_opt
 from mozharness.mozilla.testing.unittest import TestSummaryOutputParserHelper
 from mozharness.mozilla.structuredlog import StructuredOutputParser
 
+# TODO: we could remove emulator specific code after B2G ICS emulator buildbot
+#       builds is turned off, Bug 1209180.
 class MarionetteTest(TestingMixin, MercurialScript, BlobUploadMixin, TransferMixin, GaiaMixin):
     config_options = [[
         ["--application"],
@@ -61,13 +63,6 @@ class MarionetteTest(TestingMixin, MercurialScript, BlobUploadMixin, TransferMix
          "dest": "gaia_branch",
          "default": "default",
          "help": "branch of gaia repo to clone"
-         }
-    ], [
-        ["--test-type"],
-        {"action": "store",
-         "dest": "test_type",
-         "default": "browser",
-         "help": "The type of tests to run",
          }
     ], [
         ["--marionette-address"],
@@ -116,13 +111,6 @@ class MarionetteTest(TestingMixin, MercurialScript, BlobUploadMixin, TransferMix
          "help": "url of desktop xre archive"
          }
      ], [
-           ["--gip-suite"],
-           {"action": "store",
-            "dest": "gip_suite",
-            "default": None,
-            "help": "gip suite to be executed. If no value is provided, manifest tbpl-manifest.ini will be used. the See Bug 1046694"
-           }
-     ], [ 
         ["--total-chunks"],
         {"action": "store",
          "dest": "total_chunks",
@@ -202,7 +190,7 @@ class MarionetteTest(TestingMixin, MercurialScript, BlobUploadMixin, TransferMix
             dirs['abs_test_install_dir'], 'marionette', 'marionette')
         dirs['abs_marionette_tests_dir'] = os.path.join(
             dirs['abs_test_install_dir'], 'marionette', 'tests', 'testing',
-            'marionette', 'client', 'marionette', 'tests')
+            'marionette', 'harness', 'marionette', 'tests')
         dirs['abs_gecko_dir'] = os.path.join(
             abs_dirs['abs_work_dir'], 'gecko')
         dirs['abs_emulator_dir'] = os.path.join(
@@ -327,7 +315,6 @@ class MarionetteTest(TestingMixin, MercurialScript, BlobUploadMixin, TransferMix
         error_summary_file = os.path.join(dirs['abs_blob_upload_dir'],
                                           'marionette_errorsummary.log')
         config_fmt_args = {
-            'type': self.config.get('test_type'),
             # emulator builds require a longer timeout
             'timeout': 60000 if self.config.get('emulator') else 10000,
             'profile': os.path.join(dirs['abs_gaia_dir'], 'profile'),
@@ -391,19 +378,6 @@ class MarionetteTest(TestingMixin, MercurialScript, BlobUploadMixin, TransferMix
                 else:
                     # if b2g-bin cannot be found we must use just b2g
                     config_fmt_args['binary'] = os.path.join(binary_path, 'b2g')
-
-            # Bug 1046694
-            # using a different manifest if a specific gip-suite is specified
-            # --type parameter depends on gip-suite
-            if self.config.get('gip_suite'):
-                manifest = os.path.join(dirs['abs_gaiatest_dir'], 'gaiatest', 'tests', self.config.get('gip_suite'),
-                                        'manifest.ini')
-                if self.config.get('gip_suite') == "functional":
-                    config_fmt_args['type'] = "b2g-external"
-            else:
-                # For <v2.2 branches using the old tbpl-manifest.ini and no split gip-suite
-                manifest = os.path.join(dirs['abs_gaiatest_dir'], 'gaiatest', 'tests',
-                    'tbpl-manifest.ini')
 
         else:
             # Marionette or Marionette-webapi tests

@@ -13,6 +13,7 @@
 #include "nsServiceManagerUtils.h"
 #include "nsCharSeparatedTokenizer.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/Sprintf.h"
 #include "mozilla/Telemetry.h"
 #include "nsDirectoryServiceUtils.h"
 #include "nsDirectoryServiceDefs.h"
@@ -241,7 +242,8 @@ gfxDWriteFontFamily::FindStyleVariations(FontInfoData *aFontInfoData)
 
 void
 gfxDWriteFontFamily::ReadFaceNames(gfxPlatformFontList *aPlatformFontList,
-                                   bool aNeedFullnamePostscriptNames)
+                                   bool aNeedFullnamePostscriptNames,
+                                   FontInfoData *aFontInfoData)
 {
     // if all needed names have already been read, skip
     if (mOtherFamilyNamesInitialized &&
@@ -249,14 +251,19 @@ gfxDWriteFontFamily::ReadFaceNames(gfxPlatformFontList *aPlatformFontList,
         return;
     }
 
-    // DirectWrite version of this will try to read
-    // postscript/fullnames via DirectWrite API
-    FindStyleVariations();
+    // If we've been passed a FontInfoData, we skip the DWrite implementation
+    // here and fall back to the generic code which will use that info.
+    if (!aFontInfoData) {
+        // DirectWrite version of this will try to read
+        // postscript/fullnames via DirectWrite API
+        FindStyleVariations();
+    }
 
     // fallback to looking up via name table
     if (!mOtherFamilyNamesInitialized || !mFaceNamesInitialized) {
         gfxFontFamily::ReadFaceNames(aPlatformFontList,
-                                     aNeedFullnamePostscriptNames);
+                                     aNeedFullnamePostscriptNames,
+                                     aFontInfoData);
     }
 }
 
@@ -401,6 +408,7 @@ gfxDWriteFontEntry::CopyFontTable(uint32_t aTableTag,
                                   nsTArray<uint8_t> &aBuffer)
 {
     gfxDWriteFontList *pFontList = gfxDWriteFontList::PlatformFontList();
+    const uint32_t tagBE = NativeEndian::swapToBigEndian(aTableTag);
 
     // Don't use GDI table loading for symbol fonts or for
     // italic fonts in Arabic-script system locales because of
@@ -411,27 +419,22 @@ gfxDWriteFontEntry::CopyFontTable(uint32_t aTableTag,
         !mFont->IsSymbolFont())
     {
         LOGFONTW logfont = { 0 };
-        if (!InitLogFont(mFont, &logfont))
-            return NS_ERROR_FAILURE;
-
-        AutoDC dc;
-        AutoSelectFont font(dc.GetDC(), &logfont);
-        if (font.IsValid()) {
-            uint32_t tableSize =
-                ::GetFontData(dc.GetDC(),
-                              NativeEndian::swapToBigEndian(aTableTag), 0,
-                              nullptr, 0);
-            if (tableSize != GDI_ERROR) {
-                if (aBuffer.SetLength(tableSize, fallible)) {
-                    ::GetFontData(dc.GetDC(),
-                                  NativeEndian::swapToBigEndian(aTableTag), 0,
-                                  aBuffer.Elements(), aBuffer.Length());
-                    return NS_OK;
+        if (InitLogFont(mFont, &logfont)) {
+            AutoDC dc;
+            AutoSelectFont font(dc.GetDC(), &logfont);
+            if (font.IsValid()) {
+                uint32_t tableSize =
+                    ::GetFontData(dc.GetDC(), tagBE, 0, nullptr, 0);
+                if (tableSize != GDI_ERROR) {
+                    if (aBuffer.SetLength(tableSize, fallible)) {
+                        ::GetFontData(dc.GetDC(), tagBE, 0,
+                                      aBuffer.Elements(), aBuffer.Length());
+                        return NS_OK;
+                    }
+                    return NS_ERROR_OUT_OF_MEMORY;
                 }
-                return NS_ERROR_OUT_OF_MEMORY;
             }
         }
-        return NS_ERROR_FAILURE;
     }
 
     RefPtr<IDWriteFontFace> fontFace;
@@ -445,8 +448,7 @@ gfxDWriteFontEntry::CopyFontTable(uint32_t aTableTag,
     void *tableContext = nullptr;
     BOOL exists;
     HRESULT hr =
-        fontFace->TryGetFontTable(NativeEndian::swapToBigEndian(aTableTag),
-                                  (const void**)&tableData, &len,
+        fontFace->TryGetFontTable(tagBE, (const void**)&tableData, &len,
                                   &tableContext, &exists);
     if (FAILED(hr) || !exists) {
         return NS_ERROR_FAILURE;
@@ -581,8 +583,8 @@ gfxDWriteFontEntry::ReadCMAP(FontInfoData *aFontInfoData)
                   charmap->mHash, mCharacterMap == charmap ? " new" : ""));
     if (LOG_CMAPDATA_ENABLED()) {
         char prefix[256];
-        sprintf(prefix, "(cmapdata) name: %.220s",
-                NS_ConvertUTF16toUTF8(mName).get());
+        SprintfLiteral(prefix, "(cmapdata) name: %.220s",
+                       NS_ConvertUTF16toUTF8(mName).get());
         charmap->Dump(prefix, eGfxLog_cmapdata);
     }
 
@@ -1257,23 +1259,27 @@ gfxDWriteFontList::GetStandardFamilyName(const nsAString& aFontName,
     return false;
 }
 
-gfxFontFamily*
-gfxDWriteFontList::FindFamily(const nsAString& aFamily, gfxFontStyle* aStyle,
-                              gfxFloat aDevToCssSize)
+bool
+gfxDWriteFontList::FindAndAddFamilies(const nsAString& aFamily,
+                                      nsTArray<gfxFontFamily*>* aOutput,
+                                      gfxFontStyle* aStyle,
+                                      gfxFloat aDevToCssSize)
 {
     nsAutoString keyName(aFamily);
     BuildKeyNameFromFontName(keyName);
 
     gfxFontFamily *ff = mFontSubstitutes.GetWeak(keyName);
     if (ff) {
-        return ff;
+        aOutput->AppendElement(ff);
+        return true;
     }
 
     if (mNonExistingFonts.Contains(keyName)) {
-        return nullptr;
+        return false;
     }
 
-    return gfxPlatformFontList::FindFamily(aFamily);
+    return gfxPlatformFontList::FindAndAddFamilies(aFamily, aOutput, aStyle,
+                                                   aDevToCssSize);
 }
 
 void
@@ -1398,7 +1404,7 @@ IFACEMETHODIMP DWriteFontFallbackRenderer::DrawGlyphRun(
 
 gfxFontEntry*
 gfxDWriteFontList::GlobalFontFallback(const uint32_t aCh,
-                                      int32_t aRunScript,
+                                      Script aRunScript,
                                       const gfxFontStyle* aMatchStyle,
                                       uint32_t& aCmapCount,
                                       gfxFontFamily** aMatchedFamily)
@@ -1820,6 +1826,7 @@ BundledFontLoader::CreateEnumeratorFromKey(
 {
     nsIFile *fontDir = *(nsIFile**)aCollectionKey;
     *aFontFileEnumerator = new BundledFontFileEnumerator(aFactory, fontDir);
+    NS_ADDREF(*aFontFileEnumerator);
     return S_OK;
 }
 

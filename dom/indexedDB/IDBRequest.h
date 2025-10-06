@@ -67,20 +67,23 @@ public:
   class ResultCallback;
 
   static already_AddRefed<IDBRequest>
-  Create(IDBDatabase* aDatabase, IDBTransaction* aTransaction);
+  Create(JSContext* aCx, IDBDatabase* aDatabase, IDBTransaction* aTransaction);
 
   static already_AddRefed<IDBRequest>
-  Create(IDBObjectStore* aSource,
+  Create(JSContext* aCx,
+         IDBObjectStore* aSource,
          IDBDatabase* aDatabase,
          IDBTransaction* aTransaction);
 
   static already_AddRefed<IDBRequest>
-  Create(IDBIndex* aSource,
+  Create(JSContext* aCx,
+         IDBIndex* aSource,
          IDBDatabase* aDatabase,
          IDBTransaction* aTransaction);
 
   static void
-  CaptureCaller(nsAString& aFilename, uint32_t* aLineNo, uint32_t* aColumn);
+  CaptureCaller(JSContext* aCx, nsAString& aFilename, uint32_t* aLineNo,
+                uint32_t* aColumn);
 
   static uint64_t
   NextSerialNumber();
@@ -223,23 +226,25 @@ protected:
 class IDBOpenDBRequest final
   : public IDBRequest
 {
-  class WorkerFeature;
+  class WorkerHolder;
 
   // Only touched on the owning thread.
   RefPtr<IDBFactory> mFactory;
 
-  nsAutoPtr<WorkerFeature> mWorkerFeature;
+  nsAutoPtr<WorkerHolder> mWorkerHolder;
 
   const bool mFileHandleDisabled;
 
 public:
   static already_AddRefed<IDBOpenDBRequest>
-  CreateForWindow(IDBFactory* aFactory,
+  CreateForWindow(JSContext* aCx,
+                  IDBFactory* aFactory,
                   nsPIDOMWindowInner* aOwner,
                   JS::Handle<JSObject*> aScriptOwner);
 
   static already_AddRefed<IDBOpenDBRequest>
-  CreateForJS(IDBFactory* aFactory,
+  CreateForJS(JSContext* aCx,
+              IDBFactory* aFactory,
               JS::Handle<JSObject*> aScriptOwner);
 
   bool

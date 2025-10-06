@@ -8,7 +8,8 @@
 
 #include "mozilla/dom/FontFaceBinding.h"
 #include "gfxUserFontSet.h"
-#include "nsCSSProperty.h"
+#include "nsAutoPtr.h"
+#include "nsCSSPropertyID.h"
 #include "nsCSSValue.h"
 #include "nsWrapperCache.h"
 
@@ -190,7 +191,7 @@ private:
   void SetStatus(mozilla::dom::FontFaceLoadStatus aStatus);
 
   void GetDesc(nsCSSFontDesc aDescID,
-               nsCSSProperty aPropID,
+               nsCSSPropertyID aPropID,
                nsString& aResult) const;
 
   /**

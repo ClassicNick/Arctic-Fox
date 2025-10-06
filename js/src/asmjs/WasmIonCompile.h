@@ -25,20 +25,55 @@
 namespace js {
 namespace wasm {
 
-class ModuleGeneratorThreadView;
+struct ModuleGeneratorData;
 
 typedef Vector<jit::MIRType, 8, SystemAllocPolicy> MIRTypeVector;
 typedef jit::ABIArgIter<MIRTypeVector> ABIArgMIRTypeIter;
 typedef jit::ABIArgIter<ValTypeVector> ABIArgValTypeIter;
 
-// The FuncCompileResults contains the results of compiling a single function
-// body, ready to be merged into the whole-module MacroAssembler.
+// The FuncBytes class represents a single, concurrently-compilable function.
+// A FuncBytes object is composed of the wasm function body bytes along with the
+// ambient metadata describing the function necessary to compile it.
+
+class FuncBytes
+{
+    Bytes            bytes_;
+    uint32_t         index_;
+    const SigWithId& sig_;
+    uint32_t         lineOrBytecode_;
+    Uint32Vector     callSiteLineNums_;
+
+  public:
+    FuncBytes(Bytes&& bytes,
+              uint32_t index,
+              const SigWithId& sig,
+              uint32_t lineOrBytecode,
+              Uint32Vector&& callSiteLineNums)
+      : bytes_(Move(bytes)),
+        index_(index),
+        sig_(sig),
+        lineOrBytecode_(lineOrBytecode),
+        callSiteLineNums_(Move(callSiteLineNums))
+    {}
+
+    Bytes& bytes() { return bytes_; }
+    const Bytes& bytes() const { return bytes_; }
+    uint32_t index() const { return index_; }
+    const SigWithId& sig() const { return sig_; }
+    uint32_t lineOrBytecode() const { return lineOrBytecode_; }
+    const Uint32Vector& callSiteLineNums() const { return callSiteLineNums_; }
+};
+
+typedef UniquePtr<FuncBytes> UniqueFuncBytes;
+
+// The FuncCompileResults class contains the results of compiling a single
+// function body, ready to be merged into the whole-module MacroAssembler.
+
 class FuncCompileResults
 {
     jit::TempAllocator alloc_;
     jit::MacroAssembler masm_;
     FuncOffsets offsets_;
-    unsigned compileTime_;
 
     FuncCompileResults(const FuncCompileResults&) = delete;
     FuncCompileResults& operator=(const FuncCompileResults&) = delete;
@@ -46,16 +81,12 @@ class FuncCompileResults
   public:
     explicit FuncCompileResults(LifoAlloc& lifo)
       : alloc_(&lifo),
-        masm_(jit::MacroAssembler::AsmJSToken(), alloc_),
-        compileTime_(0)
+        masm_(jit::MacroAssembler::AsmJSToken(), alloc_)
     {}
 
     jit::TempAllocator& alloc() { return alloc_; }
     jit::MacroAssembler& masm() { return masm_; }
     FuncOffsets& offsets() { return offsets_; }
-
-    void setCompileTime(unsigned t) { MOZ_ASSERT(!compileTime_); compileTime_ = t; }
-    unsigned compileTime() const { return compileTime_; }
 };
 
 // An IonCompileTask represents the task of compiling a single function body. An
@@ -64,53 +95,63 @@ class FuncCompileResults
 // the FuncCompileResults, and finally sent back to the validation thread. To
 // save time allocating and freeing memory, IonCompileTasks are reset() and
 // reused.
+
 class IonCompileTask
 {
-    JSRuntime* const runtime_;
-    ModuleGeneratorThreadView& mg_;
-    LifoAlloc lifo_;
-    UniqueFuncBytecode func_;
-    mozilla::Maybe<FuncCompileResults> results_;
+  public:
+    enum class CompileMode { None, Baseline, Ion };
+
+  private:
+    const ModuleGeneratorData& mg_;
+    LifoAlloc                  lifo_;
+    UniqueFuncBytes            func_;
+    CompileMode                mode_;
+    Maybe<FuncCompileResults>  results_;
 
     IonCompileTask(const IonCompileTask&) = delete;
     IonCompileTask& operator=(const IonCompileTask&) = delete;
 
   public:
-    IonCompileTask(JSRuntime* rt, ModuleGeneratorThreadView& mg, size_t defaultChunkSize)
-      : runtime_(rt), mg_(mg), lifo_(defaultChunkSize), func_(nullptr)
+    IonCompileTask(const ModuleGeneratorData& mg, size_t defaultChunkSize)
+      : mg_(mg), lifo_(defaultChunkSize), func_(nullptr), mode_(CompileMode::None)
     {}
-    JSRuntime* runtime() const {
-        return runtime_;
-    }
     LifoAlloc& lifo() {
         return lifo_;
     }
-    ModuleGeneratorThreadView& mg() const {
+    const ModuleGeneratorData& mg() const {
         return mg_;
     }
-    void init(UniqueFuncBytecode func) {
+    void init(UniqueFuncBytes func, CompileMode mode) {
         MOZ_ASSERT(!func_);
-        func_ = mozilla::Move(func);
+        func_ = Move(func);
         results_.emplace(lifo_);
+        mode_ = mode;
     }
-    const FuncBytecode& func() const {
+    CompileMode mode() const {
+        return mode_;
+    }
+    const FuncBytes& func() const {
         MOZ_ASSERT(func_);
         return *func_;
     }
     FuncCompileResults& results() {
         return *results_;
     }
-    void reset(UniqueBytecode* recycled) {
+    void reset(Bytes* recycled) {
         if (func_)
-            *recycled = func_->recycleBytecode();
+            *recycled = Move(func_->bytes());
         func_.reset(nullptr);
         results_.reset();
         lifo_.releaseAll();
+        mode_ = CompileMode::None;
     }
 };
 
-bool
+MOZ_MUST_USE bool
 IonCompileFunction(IonCompileTask* task);
+
+bool
+CompileFunction(IonCompileTask* task);
 
 } // namespace wasm
 } // namespace js

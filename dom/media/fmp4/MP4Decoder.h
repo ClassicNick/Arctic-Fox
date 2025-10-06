@@ -32,9 +32,16 @@ public:
   // with a comma-delimited list of codecs to check support for. Notes in
   // out params wether the codecs string contains AAC or H.264.
   static bool CanHandleMediaType(const nsACString& aMIMETypeExcludingCodecs,
-                                 const nsAString& aCodecs);
+                                 const nsAString& aCodecs,
+                                 DecoderDoctorDiagnostics* aDiagnostics);
 
-  static bool CanHandleMediaType(const nsAString& aMIMEType);
+  static bool CanHandleMediaType(const nsAString& aMIMEType,
+                                 DecoderDoctorDiagnostics* aDiagnostics);
+
+  // Return true if aMimeType is a one of the strings used by our demuxers to
+  // identify H264. Does not parse general content type strings, i.e. white
+  // space matters.
+  static bool IsH264(const nsACString& aMimeType);
 
   // Returns true if the MP4 backend is preffed on.
   static bool IsEnabled();

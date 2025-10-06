@@ -101,6 +101,7 @@ struct SurfaceDescriptorGralloc {
 struct RGBDescriptor {
   IntSize size;
   SurfaceFormat format;
+  bool hasIntermediateBuffer;
 };
 
 struct YCbCrDescriptor {
@@ -110,6 +111,7 @@ struct YCbCrDescriptor {
   uint32_t cbOffset;
   uint32_t crOffset;
   StereoMode stereoMode;
+  bool hasIntermediateBuffer;
 };
 
 union BufferDescriptor {

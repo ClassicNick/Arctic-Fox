@@ -5,10 +5,9 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
-const Ci = Components.interfaces;
 const Cu = Components.utils;
 
-const NET_STRINGS_URI = "chrome://devtools/locale/netmonitor.properties";
+const NET_STRINGS_URI = "devtools/locale/netmonitor.properties";
 const SVG_NS = "http://www.w3.org/2000/svg";
 const PI = Math.PI;
 const TAU = PI * 2;
@@ -17,17 +16,17 @@ const NAMED_SLICE_MIN_ANGLE = TAU / 8;
 const NAMED_SLICE_TEXT_DISTANCE_RATIO = 1.9;
 const HOVERED_SLICE_TRANSLATE_DISTANCE_RATIO = 20;
 
-Cu.import("resource://gre/modules/Services.jsm");
-Cu.import("resource://gre/modules/XPCOMUtils.jsm");
-Cu.import("resource://devtools/client/shared/widgets/ViewHelpers.jsm");
-Cu.import("resource://devtools/shared/event-emitter.js");
+const { require } = Cu.import("resource://devtools/shared/Loader.jsm", {});
+const { XPCOMUtils } = require("resource://gre/modules/XPCOMUtils.jsm");
+const EventEmitter = require("devtools/shared/event-emitter");
+const { LocalizationHelper } = require("devtools/client/shared/l10n");
 
 this.EXPORTED_SYMBOLS = ["Chart"];
 
 /**
  * Localization convenience methods.
  */
-var L10N = new ViewHelpers.L10N(NET_STRINGS_URI);
+var L10N = new LocalizationHelper(NET_STRINGS_URI);
 
 /**
  * A factory for creating charts.
@@ -106,7 +105,7 @@ function PieTableChart(node, pie, table) {
  *           - "mouseout", when the mouse leaves a slice or a row
  *           - "click", when the mouse enters a slice or a row
  */
-function createPieTableChart(document, { title, diameter, data, strings, totals, sorted, header }) {
+function createPieTableChart(document, { title, diameter, data, strings, totals, sorted }) {
   if (data && sorted) {
     data = data.slice().sort((a, b) => +(a.size < b.size));
   }
@@ -120,8 +119,7 @@ function createPieTableChart(document, { title, diameter, data, strings, totals,
     title: title,
     data: data,
     strings: strings,
-    totals: totals,
-    header: header,
+    totals: totals
   });
 
   let container = document.createElement("hbox");
@@ -132,11 +130,11 @@ function createPieTableChart(document, { title, diameter, data, strings, totals,
   let proxy = new PieTableChart(container, pie, table);
 
   pie.on("click", (event, item) => {
-    proxy.emit(event, item)
+    proxy.emit(event, item);
   });
 
   table.on("click", (event, item) => {
-    proxy.emit(event, item)
+    proxy.emit(event, item);
   });
 
   pie.on("mouseover", (event, item) => {
@@ -340,7 +338,7 @@ function createPieChart(document, { data, width, height, centerX, centerY, radiu
  *           - "mouseout", when the mouse leaves a row
  *           - "click", when the mouse clicks a row
  */
-function createTableChart(document, { title, data, strings, totals, header }) {
+function createTableChart(document, { title, data, strings, totals }) {
   strings = strings || {};
   totals = totals || {};
   let isPlaceholder = false;
@@ -373,24 +371,6 @@ function createTableChart(document, { title, data, strings, totals, header }) {
   tableNode.className = "plain table-chart-grid";
   container.appendChild(tableNode);
 
-  const headerNode = document.createElement("div");
-  headerNode.className = "table-chart-row";
-
-  const headerBoxNode = document.createElement("div");
-  headerBoxNode.className = "table-chart-row-box";
-  headerNode.appendChild(headerBoxNode);
-
-  for (let [key, value] of Object.entries(header)) {
-    let headerLabelNode = document.createElement("span");
-    headerLabelNode.className = "plain table-chart-row-label";
-    headerLabelNode.setAttribute("name", key);
-    headerLabelNode.textContent = value;
-
-    headerNode.appendChild(headerLabelNode);
-  }
-
-  tableNode.appendChild(headerNode);
-
   for (let rowInfo of data) {
     let rowNode = document.createElement("hbox");
     rowNode.className = "table-chart-row";
@@ -401,7 +381,7 @@ function createTableChart(document, { title, data, strings, totals, header }) {
     boxNode.setAttribute("name", rowInfo.label);
     rowNode.appendChild(boxNode);
 
-    for (let [key, value] in Iterator(rowInfo)) {
+    for (let [key, value] of Object.entries(rowInfo)) {
       let index = data.indexOf(rowInfo);
       let stringified = strings[key] ? strings[key](value, index) : value;
       let labelNode = document.createElement("label");
@@ -419,7 +399,7 @@ function createTableChart(document, { title, data, strings, totals, header }) {
   let totalsNode = document.createElement("vbox");
   totalsNode.className = "table-chart-totals";
 
-  for (let [key, value] in Iterator(totals)) {
+  for (let [key, value] of Object.entries(totals)) {
     let total = data.reduce((acc, e) => acc + e[key], 0);
     let stringified = totals[key] ? totals[key](total || 0) : total;
     let labelNode = document.createElement("label");

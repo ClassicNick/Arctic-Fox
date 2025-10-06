@@ -13,7 +13,6 @@
 #include "mozAccessibleProtocol.h"
 #endif
 
-#include "nsAutoPtr.h"
 #include "nsISupports.h"
 #include "nsBaseWidget.h"
 #include "nsWeakPtr.h"
@@ -28,6 +27,7 @@
 
 #include "nsString.h"
 #include "nsIDragService.h"
+#include "ViewRegion.h"
 
 #import <Carbon/Carbon.h>
 #import <Cocoa/Cocoa.h>
@@ -38,7 +38,6 @@ class nsCocoaWindow;
 
 namespace {
 class GLPresenter;
-class RectTextureImage;
 } // namespace
 
 namespace mozilla {
@@ -49,8 +48,11 @@ struct SwipeEventQueue;
 class VibrancyManager;
 namespace layers {
 class GLManager;
-class APZCTreeManager;
+class IAPZCTreeManager;
 } // namespace layers
+namespace widget {
+class RectTextureImage;
+} // namespace widget
 } // namespace mozilla
 
 @interface NSEvent (Undocumented)
@@ -205,6 +207,10 @@ typedef NSInteger NSEventGestureAxis;
   // to send its pair event first, in case we didn't yet for any reason.
   BOOL mExpectingWheelStop;
 
+  // Set to YES when our GL surface has been updated and we need to call
+  // updateGLContext before we composite.
+  BOOL mNeedsGLUpdate;
+
   // Holds our drag service across multiple drag calls. The reference to the
   // service is obtained when the mouse enters the view and is released when
   // the mouse exits or there is a drop. This prevents us from having to
@@ -271,12 +277,11 @@ typedef NSInteger NSEventGestureAxis;
 
 - (void)sendMouseEnterOrExitEvent:(NSEvent*)aEvent
                             enter:(BOOL)aEnter
-                             type:(mozilla::WidgetMouseEvent::exitType)aType;
+                         exitFrom:(mozilla::WidgetMouseEvent::ExitFrom)aExitFrom;
 
 - (void)updateGLContext;
 - (void)_surfaceNeedsUpdate:(NSNotification*)notification;
 
-- (void)setGLContext:(NSOpenGLContext *)aGLContext;
 - (bool)preRender:(NSOpenGLContext *)aGLContext;
 - (void)postRender:(NSOpenGLContext *)aGLContext;
 
@@ -348,18 +353,19 @@ class nsChildView : public nsBaseWidget
 {
 private:
   typedef nsBaseWidget Inherited;
-  typedef mozilla::layers::APZCTreeManager APZCTreeManager;
+  typedef mozilla::layers::IAPZCTreeManager IAPZCTreeManager;
 
 public:
   nsChildView();
 
   // nsIWidget interface
-  NS_IMETHOD              Create(nsIWidget* aParent,
-                                 nsNativeWidget aNativeParent,
-                                 const LayoutDeviceIntRect& aRect,
-                                 nsWidgetInitData* aInitData = nullptr) override;
+  virtual MOZ_MUST_USE nsresult Create(nsIWidget* aParent,
+                                       nsNativeWidget aNativeParent,
+                                       const LayoutDeviceIntRect& aRect,
+                                       nsWidgetInitData* aInitData = nullptr)
+                                       override;
 
-  NS_IMETHOD              Destroy() override;
+  virtual void            Destroy() override;
 
   NS_IMETHOD              Show(bool aState) override;
   virtual bool            IsVisible() const override;
@@ -378,9 +384,9 @@ public:
   NS_IMETHOD              Enable(bool aState) override;
   virtual bool            IsEnabled() const override;
   NS_IMETHOD              SetFocus(bool aRaise) override;
-  NS_IMETHOD              GetBounds(LayoutDeviceIntRect& aRect) override;
-  NS_IMETHOD              GetClientBounds(LayoutDeviceIntRect& aRect) override;
-  NS_IMETHOD              GetScreenBounds(LayoutDeviceIntRect& aRect) override;
+  virtual LayoutDeviceIntRect GetBounds() override;
+  virtual LayoutDeviceIntRect GetClientBounds() override;
+  virtual LayoutDeviceIntRect GetScreenBounds() override;
 
   // Returns the "backing scale factor" of the view's window, which is the
   // ratio of pixels in the window's backing store to Cocoa points. Prior to
@@ -429,10 +435,13 @@ public:
 
   NS_IMETHOD        ActivateNativeMenuItemAt(const nsAString& indexString) override;
   NS_IMETHOD        ForceUpdateNativeMenuAt(const nsAString& indexString) override;
+  NS_IMETHOD        GetSelectionAsPlaintext(nsAString& aResult) override;
 
   NS_IMETHOD_(void) SetInputContext(const InputContext& aContext,
                                     const InputContextAction& aAction) override;
   NS_IMETHOD_(InputContext) GetInputContext() override;
+  NS_IMETHOD_(TextEventDispatcherListener*)
+    GetNativeTextEventDispatcherListener() override;
   NS_IMETHOD        AttachNativeKeyEvent(mozilla::WidgetKeyboardEvent& aEvent) override;
   NS_IMETHOD_(bool) ExecuteNativeKeyBinding(
                       NativeKeyBindingsType aType,
@@ -474,13 +483,21 @@ public:
                                                     uint32_t aModifierFlags,
                                                     uint32_t aAdditionalFlags,
                                                     nsIObserver* aObserver) override;
+  virtual nsresult SynthesizeNativeTouchPoint(uint32_t aPointerId,
+                                              TouchPointerState aPointerState,
+                                              LayoutDeviceIntPoint aPoint,
+                                              double aPointerPressure,
+                                              uint32_t aPointerOrientation,
+                                              nsIObserver* aObserver) override;
 
   // Mac specific methods
-  
+
   virtual bool      DispatchWindowEvent(mozilla::WidgetGUIEvent& event);
 
   void WillPaintWindow();
   bool PaintWindow(LayoutDeviceIntRegion aRegion);
+  bool PaintWindowInContext(CGContextRef aContext, const LayoutDeviceIntRegion& aRegion,
+                            mozilla::gfx::IntSize aSurfaceSize);
 
 #ifdef ACCESSIBILITY
   already_AddRefed<mozilla::a11y::Accessible> GetDocumentAccessible();
@@ -497,9 +514,15 @@ public:
   virtual void UpdateThemeGeometries(const nsTArray<ThemeGeometry>& aThemeGeometries) override;
 
   virtual void UpdateWindowDraggingRegion(const LayoutDeviceIntRegion& aRegion) override;
-  const LayoutDeviceIntRegion& GetDraggableRegion() { return mDraggableRegion; }
+  LayoutDeviceIntRegion GetNonDraggableRegion() { return mNonDraggableRegion.Region(); }
 
   virtual void ReportSwipeStarted(uint64_t aInputBlockId, bool aStartSwipe) override;
+
+  virtual void LookUpDictionary(
+                 const nsAString& aText,
+                 const nsTArray<mozilla::FontRange>& aFontRangeArray,
+                 const bool aIsVertical,
+                 const LayoutDeviceIntPoint& aPoint) override;
 
   void              ResetParent();
 
@@ -546,7 +569,7 @@ public:
   void CleanupRemoteDrawing() override;
   bool InitCompositor(mozilla::layers::Compositor* aCompositor) override;
 
-  APZCTreeManager* APZCTM() { return mAPZC ; }
+  IAPZCTreeManager* APZCTM() { return mAPZC ; }
 
   NS_IMETHOD StartPluginIME(const mozilla::WidgetKeyboardEvent& aKeyboardEvent,
                             int32_t aPanelX, int32_t aPanelY,
@@ -602,9 +625,6 @@ protected:
 
   nsIWidget* GetWidgetForListenerEvents();
 
-  virtual nsresult NotifyIMEInternal(
-                     const IMENotification& aIMENotification) override;
-
   struct SwipeInfo {
     bool wantsSwipe;
     uint32_t allowedDirections;
@@ -624,7 +644,7 @@ protected:
   nsIWidget*            mParentWidget;
 
 #ifdef ACCESSIBILITY
-  // weak ref to this childview's associated mozAccessible for speed reasons 
+  // weak ref to this childview's associated mozAccessible for speed reasons
   // (we get queried for it *a lot* but don't want to own it)
   nsWeakPtr             mAccessible;
 #endif
@@ -651,16 +671,16 @@ protected:
   CGContextRef mTitlebarCGContext;
 
   // Compositor thread only
-  nsAutoPtr<RectTextureImage> mResizerImage;
-  nsAutoPtr<RectTextureImage> mCornerMaskImage;
-  nsAutoPtr<RectTextureImage> mTitlebarImage;
-  nsAutoPtr<RectTextureImage> mBasicCompositorImage;
+  mozilla::UniquePtr<mozilla::widget::RectTextureImage> mResizerImage;
+  mozilla::UniquePtr<mozilla::widget::RectTextureImage> mCornerMaskImage;
+  mozilla::UniquePtr<mozilla::widget::RectTextureImage> mTitlebarImage;
+  mozilla::UniquePtr<mozilla::widget::RectTextureImage> mBasicCompositorImage;
 
   // The area of mTitlebarCGContext that has changed and needs to be
   // uploaded to to mTitlebarImage. Main thread only.
   nsIntRegion           mDirtyTitlebarRegion;
 
-  LayoutDeviceIntRegion mDraggableRegion;
+  mozilla::ViewRegion   mNonDraggableRegion;
 
   // Cached value of [mView backingScaleFactor], to avoid sending two obj-c
   // messages (respondsToSelector, backingScaleFactor) every time we need to
@@ -676,11 +696,14 @@ protected:
 
   // Used in OMTC BasicLayers mode. Presents the BasicCompositor result
   // surface to the screen using an OpenGL context.
-  nsAutoPtr<GLPresenter> mGLPresenter;
+  mozilla::UniquePtr<GLPresenter> mGLPresenter;
 
   mozilla::UniquePtr<mozilla::VibrancyManager> mVibrancyManager;
   RefPtr<mozilla::SwipeTracker> mSwipeTracker;
   mozilla::UniquePtr<mozilla::SwipeEventQueue> mSwipeEventQueue;
+
+  // Only used for drawRect-based painting in popups.
+  RefPtr<mozilla::gfx::DrawTarget> mBackingSurface;
 
   // This flag is only used when APZ is off. It indicates that the current pan
   // gesture was processed as a swipe. Sometimes the swipe animation can finish
@@ -693,6 +716,10 @@ protected:
   static uint32_t sLastInputEventCount;
 
   void ReleaseTitlebarCGContext();
+
+  // This is used by SynthesizeNativeTouchPoint to maintain state between
+  // multiple synthesized points
+  mozilla::UniquePtr<mozilla::MultiTouchInput> mSynthesizedTouchInput;
 };
 
 #endif // nsChildView_h_

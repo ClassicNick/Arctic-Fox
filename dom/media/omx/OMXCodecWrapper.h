@@ -14,9 +14,8 @@
 
 #include "AudioSegment.h"
 #include "GonkNativeWindow.h"
-#include "GonkNativeWindowClient.h"
 #include "mozilla/media/MediaSystemResourceClient.h"
-#include "RefPtr.h"
+#include "mozilla/RefPtr.h"
 
 #include <speex/speex_resampler.h>
 
@@ -284,7 +283,6 @@ private:
  */
 class OMXVideoEncoder final : public OMXCodecWrapper
 {
-  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(OMXVideoEncoder)
 public:
   // Types of output blob format.
   enum BlobFormat {

@@ -354,9 +354,7 @@ imgRequestProxy::CancelAndForgetObserver(nsresult aStatus)
   mIsInLoadGroup = oldIsInLoadGroup;
 
   if (mIsInLoadGroup) {
-    nsCOMPtr<nsIRunnable> ev =
-      NS_NewRunnableMethod(this, &imgRequestProxy::DoRemoveFromLoadGroup);
-    NS_DispatchToCurrentThread(ev);
+    NS_DispatchToCurrentThread(NewRunnableMethod(this, &imgRequestProxy::DoRemoveFromLoadGroup));
   }
 
   NullOutListener();
@@ -675,7 +673,8 @@ imgRequestProxy::GetImagePrincipal(nsIPrincipal** aPrincipal)
     return NS_ERROR_FAILURE;
   }
 
-  NS_ADDREF(*aPrincipal = GetOwner()->GetPrincipal());
+  nsCOMPtr<nsIPrincipal> principal = GetOwner()->GetPrincipal();
+  principal.forget(aPrincipal);
   return NS_OK;
 }
 

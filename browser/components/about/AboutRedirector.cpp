@@ -13,7 +13,6 @@
 #include "nsIScriptSecurityManager.h"
 #include "nsIProtocolHandler.h"
 #include "mozilla/ArrayUtils.h"
-#include "nsDOMString.h"
 #include "nsServiceManagerUtils.h"
 
 namespace mozilla {
@@ -25,7 +24,6 @@ struct RedirEntry {
   const char* id;
   const char* url;
   uint32_t flags;
-  const char* idbOriginPostfix;
 };
 
 /*
@@ -37,9 +35,19 @@ struct RedirEntry {
   URI_SAFE_FOR_UNTRUSTED_CONTENT.
 */
 static RedirEntry kRedirMap[] = {
-  { "certerror", "chrome://browser/content/certerror/aboutCertError.xhtml",
+#ifdef MOZ_SAFE_BROWSING
+  { "blocked", "chrome://browser/content/blockedSite.xhtml",
     nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
     nsIAboutModule::URI_CAN_LOAD_IN_CHILD |
+    nsIAboutModule::ALLOW_SCRIPT |
+    nsIAboutModule::HIDE_FROM_ABOUTABOUT },
+#endif
+  { "certerror", "chrome://browser/content/aboutNetError.xhtml",
+    nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
+    nsIAboutModule::URI_CAN_LOAD_IN_CHILD |
+    nsIAboutModule::ALLOW_SCRIPT |
+    nsIAboutModule::HIDE_FROM_ABOUTABOUT },
+  { "providerdirectory", "chrome://browser/content/aboutProviderDirectory.xhtml",
     nsIAboutModule::ALLOW_SCRIPT |
     nsIAboutModule::HIDE_FROM_ABOUTABOUT },
   { "tabcrashed", "chrome://browser/content/aboutTabCrashed.xhtml",
@@ -48,7 +56,6 @@ static RedirEntry kRedirMap[] = {
     nsIAboutModule::HIDE_FROM_ABOUTABOUT },
   { "feeds", "chrome://browser/content/feeds/subscribe.xhtml",
     nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
-    nsIAboutModule::URI_MUST_LOAD_IN_CHILD |
     nsIAboutModule::ALLOW_SCRIPT |
     nsIAboutModule::HIDE_FROM_ABOUTABOUT },
   { "privatebrowsing", "chrome://browser/content/aboutPrivateBrowsing.xhtml",
@@ -68,27 +75,40 @@ static RedirEntry kRedirMap[] = {
   { "robots", "chrome://browser/content/aboutRobots.xhtml",
     nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
     nsIAboutModule::ALLOW_SCRIPT },
+  { "searchreset", "chrome://browser/content/search/searchReset.xhtml",
+    nsIAboutModule::ALLOW_SCRIPT |
+    nsIAboutModule::HIDE_FROM_ABOUTABOUT },
   { "sessionrestore", "chrome://browser/content/aboutSessionRestore.xhtml",
     nsIAboutModule::ALLOW_SCRIPT },
   { "welcomeback", "chrome://browser/content/aboutWelcomeBack.xhtml",
     nsIAboutModule::ALLOW_SCRIPT },
-#ifdef MOZ_SERVICES_SYNC
   { "sync-tabs", "chrome://browser/content/sync/aboutSyncTabs.xul",
     nsIAboutModule::ALLOW_SCRIPT },
-#endif
+  // Linkable because of indexeddb use (bug 1228118)
   { "home", "chrome://browser/content/abouthome/aboutHome.xhtml",
     nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
+    nsIAboutModule::URI_MUST_LOAD_IN_CHILD |
+    nsIAboutModule::ALLOW_SCRIPT |
     nsIAboutModule::MAKE_LINKABLE |
-    nsIAboutModule::ALLOW_SCRIPT },
-  { "newtab", "chrome://browser/content/newtab/newTab.xhtml",
+    nsIAboutModule::ENABLE_INDEXED_DB },
+  // the newtab's actual URL will be determined when the channel is created
+  { "newtab", "about:blank",
     nsIAboutModule::ALLOW_SCRIPT },
   { "permissions", "chrome://browser/content/preferences/aboutPermissions.xul",
     nsIAboutModule::ALLOW_SCRIPT },
   { "downloads", "chrome://browser/content/downloads/contentAreaDownloadsView.xul",
     nsIAboutModule::ALLOW_SCRIPT },
-  {
-    "debugging", "chrome://devtools/content/aboutdebugging/aboutdebugging.xhtml",
+#ifdef MOZ_SERVICES_HEALTHREPORT
+  { "healthreport", "chrome://browser/content/abouthealthreport/abouthealth.xhtml",
     nsIAboutModule::ALLOW_SCRIPT },
+#endif
+  { "accounts", "chrome://browser/content/aboutaccounts/aboutaccounts.xhtml",
+    nsIAboutModule::ALLOW_SCRIPT },
+  { "reader", "chrome://global/content/reader/aboutReader.html",
+    nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
+    nsIAboutModule::ALLOW_SCRIPT |
+    nsIAboutModule::URI_MUST_LOAD_IN_CHILD |
+    nsIAboutModule::HIDE_FROM_ABOUTABOUT },
 };
 static const int kRedirTotal = ArrayLength(kRedirMap);
 
@@ -127,18 +147,25 @@ AboutRedirector::NewChannel(nsIURI* aURI,
   for (int i = 0; i < kRedirTotal; i++) {
     if (!strcmp(path.get(), kRedirMap[i].id)) {
       nsAutoCString url;
+      nsLoadFlags loadFlags = static_cast<nsLoadFlags>(nsIChannel::LOAD_NORMAL);
 
-      // check if about:newtab got overridden
       if (path.EqualsLiteral("newtab")) {
+        // let the aboutNewTabService decide where to redirect
         nsCOMPtr<nsIAboutNewTabService> aboutNewTabService =
           do_GetService("@mozilla.org/browser/aboutnewtab-service;1", &rv);
         NS_ENSURE_SUCCESS(rv, rv);
-        bool overridden = false;
-        rv = aboutNewTabService->GetOverridden(&overridden);
+        rv = aboutNewTabService->GetDefaultURL(url);
         NS_ENSURE_SUCCESS(rv, rv);
-        if (overridden) {
-          rv = aboutNewTabService->GetNewTabURL(url);
-          NS_ENSURE_SUCCESS(rv, rv);
+
+        // if about:newtab points to an external resource we have to make sure
+        // the content is signed and trusted
+        bool remoteEnabled = false;
+        rv = aboutNewTabService->GetRemoteEnabled(&remoteEnabled);
+        NS_ENSURE_SUCCESS(rv, rv);
+        if (remoteEnabled) {
+          NS_ENSURE_ARG_POINTER(aLoadInfo);
+          aLoadInfo->SetVerifySignedContent(true);
+          loadFlags = static_cast<nsLoadFlags>(nsIChannel::LOAD_REPLACE);
         }
       }
       // fall back to the specified url in the map
@@ -160,9 +187,9 @@ AboutRedirector::NewChannel(nsIURI* aURI,
                                &isUIResource);
       NS_ENSURE_SUCCESS(rv, rv);
 
-      nsLoadFlags loadFlags =
-        isUIResource ? static_cast<nsLoadFlags>(nsIChannel::LOAD_NORMAL)
-                     : static_cast<nsLoadFlags>(nsIChannel::LOAD_REPLACE);
+      loadFlags = isUIResource
+                    ? static_cast<nsLoadFlags>(nsIChannel::LOAD_NORMAL)
+                    : static_cast<nsLoadFlags>(nsIChannel::LOAD_REPLACE);
 
       rv = NS_NewChannelInternal(getter_AddRefs(tempChannel),
                                  tempURI,
@@ -196,29 +223,6 @@ AboutRedirector::GetURIFlags(nsIURI *aURI, uint32_t *result)
     }
   }
 
-  return NS_ERROR_ILLEGAL_VALUE;
-}
-
-NS_IMETHODIMP
-AboutRedirector::GetIndexedDBOriginPostfix(nsIURI *aURI, nsAString &result)
-{
-  NS_ENSURE_ARG_POINTER(aURI);
-
-  nsAutoCString name = GetAboutModuleName(aURI);
-
-  for (int i = 0; i < kRedirTotal; i++) {
-    if (name.Equals(kRedirMap[i].id)) {
-      const char* postfix = kRedirMap[i].idbOriginPostfix;
-      if (!postfix) {
-        break;
-      }
-
-      result.AssignASCII(postfix);
-      return NS_OK;
-    }
-  }
-
-  SetDOMStringToNull(result);
   return NS_ERROR_ILLEGAL_VALUE;
 }
 

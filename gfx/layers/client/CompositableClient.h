@@ -16,7 +16,6 @@
 #include "mozilla/layers/CompositorTypes.h"
 #include "mozilla/layers/LayersTypes.h"  // for LayersBackend, TextureDumpMode
 #include "mozilla/layers/TextureClient.h"  // for TextureClient
-#include "mozilla/layers/TextureClientRecycleAllocator.h" // for TextureClientRecycleAllocator
 #include "nsISupportsImpl.h"            // for MOZ_COUNT_CTOR, etc
 
 namespace mozilla {
@@ -28,6 +27,7 @@ class ImageContainer;
 class CompositableForwarder;
 class CompositableChild;
 class PCompositableChild;
+class TextureClientRecycleAllocator;
 
 /**
  * Handle RemoveTextureFromCompositableAsync() transaction.
@@ -148,6 +148,12 @@ public:
                                 TextureFlags aTextureFlags,
                                 TextureAllocationFlags aAllocFlags = ALLOC_DEFAULT);
 
+  already_AddRefed<TextureClient>
+  CreateTextureClientFromSurface(gfx::SourceSurface* aSurface,
+                                 BackendSelector aSelector,
+                                 TextureFlags aTextureFlags,
+                                 TextureAllocationFlags aAllocFlags = ALLOC_DEFAULT);
+
   /**
    * Establishes the connection with compositor side through IPDL
    */
@@ -196,6 +202,12 @@ public:
   virtual void ClearCachedResources();
 
   /**
+   * Shrink memory usage.
+   * Called when "memory-pressure" is observed.
+   */
+  virtual void HandleMemoryPressure();
+
+  /**
    * Should be called when deataching a TextureClient from a Compositable, because
    * some platforms need to do some extra book keeping when this happens (for
    * example to properly keep track of fences on Gonk).
@@ -220,15 +232,11 @@ public:
 
   void InitIPDLActor(PCompositableChild* aActor, uint64_t aAsyncID = 0);
 
-  static void TransactionCompleteted(PCompositableChild* aActor, uint64_t aTransactionId);
-
-  static void HoldUntilComplete(PCompositableChild* aActor, AsyncTransactionTracker* aTracker);
-
-  static uint64_t GetTrackersHolderId(PCompositableChild* aActor);
-
   TextureFlags GetTextureFlags() const { return mTextureFlags; }
 
   TextureClientRecycleAllocator* GetTextureClientRecycler();
+
+  bool HasTextureClientRecycler() { return !!mTextureClientRecycler; }
 
   static void DumpTextureClient(std::stringstream& aStream,
                                 TextureClient* aTexture,

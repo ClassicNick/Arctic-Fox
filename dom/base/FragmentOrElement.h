@@ -142,13 +142,12 @@ public:
   virtual bool TextIsOnlyWhitespace() override;
   virtual bool HasTextForTranslation() override;
   virtual void AppendTextTo(nsAString& aResult) override;
-  MOZ_WARN_UNUSED_RESULT
+  MOZ_MUST_USE
   virtual bool AppendTextTo(nsAString& aResult, const mozilla::fallible_t&) override;
   virtual nsIContent *GetBindingParent() const override;
   virtual nsXBLBinding *GetXBLBinding() const override;
   virtual void SetXBLBinding(nsXBLBinding* aBinding,
                              nsBindingManager* aOldBindingManager = nullptr) override;
-  virtual ShadowRoot *GetShadowRoot() const override;
   virtual ShadowRoot *GetContainingShadow() const override;
   virtual nsTArray<nsIContent*> &DestInsertionPoints() override;
   virtual nsTArray<nsIContent*> *GetExistingDestInsertionPoints() const override;

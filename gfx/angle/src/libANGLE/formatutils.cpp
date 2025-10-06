@@ -10,7 +10,8 @@
 #include "libANGLE/formatutils.h"
 #include "libANGLE/Context.h"
 #include "libANGLE/Framebuffer.h"
-#include "libANGLE/renderer/Renderer.h"
+
+using namespace angle;
 
 namespace gl
 {
@@ -19,14 +20,28 @@ namespace gl
 // can decide the true, sized, internal format. The ES2FormatMap determines the internal format for all valid
 // format and type combinations.
 
-typedef std::pair<GLenum, GLenum> FormatTypePair;
-typedef std::pair<FormatTypePair, GLenum> FormatPair;
-typedef std::map<FormatTypePair, GLenum> FormatMap;
+typedef std::pair<FormatType, GLenum> FormatPair;
+typedef std::map<FormatType, GLenum> FormatMap;
+
+FormatType::FormatType() : format(GL_NONE), type(GL_NONE)
+{
+}
+
+FormatType::FormatType(GLenum format_, GLenum type_) : format(format_), type(type_)
+{
+}
+
+bool FormatType::operator<(const FormatType &other) const
+{
+    if (format != other.format)
+        return format < other.format;
+    return type < other.type;
+}
 
 // A helper function to insert data into the format map with fewer characters.
 static inline void InsertFormatMapping(FormatMap *map, GLenum format, GLenum type, GLenum internalFormat)
 {
-    map->insert(FormatPair(FormatTypePair(format, type), internalFormat));
+    map->insert(FormatPair(FormatType(format, type), internalFormat));
 }
 
 FormatMap BuildFormatMap()
@@ -219,6 +234,54 @@ static bool RequireExtOrExt(GLuint, const Extensions &extensions)
     return extensions.*bool1 || extensions.*bool2;
 }
 
+// Special function for half float formats with three or four channels.
+static bool HalfFloatSupport(GLuint clientVersion, const Extensions &extensions)
+{
+    return clientVersion >= 3 || extensions.textureHalfFloat;
+}
+
+static bool HalfFloatRenderableSupport(GLuint clientVersion, const Extensions &extensions)
+{
+    return HalfFloatSupport(clientVersion, extensions) && extensions.colorBufferHalfFloat;
+}
+
+// Special function for half float formats with one or two channels.
+static bool HalfFloatSupportRG(GLuint clientVersion, const Extensions &extensions)
+{
+    return clientVersion >= 3 || (extensions.textureHalfFloat && extensions.textureRG);
+}
+
+static bool HalfFloatRenderableSupportRG(GLuint clientVersion, const Extensions &extensions)
+{
+    return HalfFloatSupportRG(clientVersion, extensions) && extensions.colorBufferHalfFloat;
+}
+
+// Special function for float formats with three or four channels.
+static bool FloatSupport(GLuint clientVersion, const Extensions &extensions)
+{
+    return clientVersion >= 3 || extensions.textureFloat;
+}
+
+static bool FloatRenderableSupport(GLuint clientVersion, const Extensions &extensions)
+{
+    // We don't expose colorBufferFloat in ES2, but we silently support rendering to float.
+    return FloatSupport(clientVersion, extensions) &&
+           (extensions.colorBufferFloat || clientVersion == 2);
+}
+
+// Special function for float formats with one or two channels.
+static bool FloatSupportRG(GLuint clientVersion, const Extensions &extensions)
+{
+    return clientVersion >= 3 || (extensions.textureFloat && extensions.textureRG);
+}
+
+static bool FloatRenderableSupportRG(GLuint clientVersion, const Extensions &extensions)
+{
+    // We don't expose colorBufferFloat in ES2, but we silently support rendering to float.
+    return FloatSupportRG(clientVersion, extensions) &&
+           (extensions.colorBufferFloat || clientVersion == 2);
+}
+
 InternalFormat::InternalFormat()
     : redBits(0),
       greenBits(0),
@@ -400,23 +463,23 @@ static InternalFormatInfoMap BuildInternalFormatInfoMap()
     map.insert(InternalFormatInfoPair(GL_BGR5_A1_ANGLEX,    RGBAFormat( 5,  5,  5,  1, 0, GL_BGRA_EXT,     GL_UNSIGNED_SHORT_1_5_5_5_REV_EXT, GL_UNSIGNED_NORMALIZED, false, RequireExt<&Extensions::textureFormatBGRA8888>, RequireExt<&Extensions::textureFormatBGRA8888>, AlwaysSupported)));
 
     // Floating point renderability and filtering is provided by OES_texture_float and OES_texture_half_float
-    //                               | Internal format     |          | D |S | Format             | Type                                   | Comp   | SRGB |  Texture supported                                                             | Renderable                                                                    | Filterable                                    |
-    //                               |                     |          |   |  |                    |                                        | type   |      |                                                                                |                                                                               |                                               |
-    map.insert(InternalFormatInfoPair(GL_R16F,              RGBAFormat(16,  0,  0,  0, 0, GL_RED,          GL_HALF_FLOAT,                   GL_FLOAT, false, RequireESOrExtAndExt<3, &Extensions::textureHalfFloat, &Extensions::textureRG>, RequireESOrExtAndExt<3, &Extensions::textureHalfFloat, &Extensions::textureRG>, RequireExt<&Extensions::textureHalfFloatLinear>)));
-    map.insert(InternalFormatInfoPair(GL_RG16F,             RGBAFormat(16, 16,  0,  0, 0, GL_RG,           GL_HALF_FLOAT,                   GL_FLOAT, false, RequireESOrExtAndExt<3, &Extensions::textureHalfFloat, &Extensions::textureRG>, RequireESOrExtAndExt<3, &Extensions::textureHalfFloat, &Extensions::textureRG>, RequireExt<&Extensions::textureHalfFloatLinear>)));
-    map.insert(InternalFormatInfoPair(GL_RGB16F,            RGBAFormat(16, 16, 16,  0, 0, GL_RGB,          GL_HALF_FLOAT,                   GL_FLOAT, false, RequireESOrExt<3, &Extensions::textureHalfFloat>,                               RequireESOrExt<3, &Extensions::textureHalfFloat>,                               RequireExt<&Extensions::textureHalfFloatLinear>)));
-    map.insert(InternalFormatInfoPair(GL_RGBA16F,           RGBAFormat(16, 16, 16, 16, 0, GL_RGBA,         GL_HALF_FLOAT,                   GL_FLOAT, false, RequireESOrExt<3, &Extensions::textureHalfFloat>,                               RequireESOrExt<3, &Extensions::textureHalfFloat>,                               RequireExt<&Extensions::textureHalfFloatLinear>)));
-    map.insert(InternalFormatInfoPair(GL_R32F,              RGBAFormat(32,  0,  0,  0, 0, GL_RED,          GL_FLOAT,                        GL_FLOAT, false, RequireESOrExtAndExt<3, &Extensions::textureFloat, &Extensions::textureRG>,     RequireESOrExtAndExt<3, &Extensions::textureFloat, &Extensions::textureRG>,     RequireExt<&Extensions::textureFloatLinear>    )));
-    map.insert(InternalFormatInfoPair(GL_RG32F,             RGBAFormat(32, 32,  0,  0, 0, GL_RG,           GL_FLOAT,                        GL_FLOAT, false, RequireESOrExtAndExt<3, &Extensions::textureFloat, &Extensions::textureRG>,     RequireESOrExtAndExt<3, &Extensions::textureFloat, &Extensions::textureRG>,     RequireExt<&Extensions::textureFloatLinear>    )));
-    map.insert(InternalFormatInfoPair(GL_RGB32F,            RGBAFormat(32, 32, 32,  0, 0, GL_RGB,          GL_FLOAT,                        GL_FLOAT, false, RequireESOrExt<3, &Extensions::textureFloat>,                                   RequireESOrExt<3, &Extensions::textureFloat>,                                   RequireExt<&Extensions::textureFloatLinear>    )));
-    map.insert(InternalFormatInfoPair(GL_RGBA32F,           RGBAFormat(32, 32, 32, 32, 0, GL_RGBA,         GL_FLOAT,                        GL_FLOAT, false, RequireESOrExt<3, &Extensions::textureFloat>,                                   RequireESOrExt<3, &Extensions::textureFloat>,                                   RequireExt<&Extensions::textureFloatLinear>    )));
+    //                               | Internal format     |          | D |S | Format             | Type                                   | Comp   | SRGB |  Texture supported | Renderable                  | Filterable                                    |
+    //                               |                     |          |   |  |                    |                                        | type   |      |                    |                             |                                               |
+    map.insert(InternalFormatInfoPair(GL_R16F,              RGBAFormat(16,  0,  0,  0, 0, GL_RED,          GL_HALF_FLOAT,                   GL_FLOAT, false, HalfFloatSupportRG, HalfFloatRenderableSupportRG, RequireExt<&Extensions::textureHalfFloatLinear>)));
+    map.insert(InternalFormatInfoPair(GL_RG16F,             RGBAFormat(16, 16,  0,  0, 0, GL_RG,           GL_HALF_FLOAT,                   GL_FLOAT, false, HalfFloatSupportRG, HalfFloatRenderableSupportRG, RequireExt<&Extensions::textureHalfFloatLinear>)));
+    map.insert(InternalFormatInfoPair(GL_RGB16F,            RGBAFormat(16, 16, 16,  0, 0, GL_RGB,          GL_HALF_FLOAT,                   GL_FLOAT, false, HalfFloatSupport,   HalfFloatRenderableSupport,   RequireExt<&Extensions::textureHalfFloatLinear>)));
+    map.insert(InternalFormatInfoPair(GL_RGBA16F,           RGBAFormat(16, 16, 16, 16, 0, GL_RGBA,         GL_HALF_FLOAT,                   GL_FLOAT, false, HalfFloatSupport,   HalfFloatRenderableSupport,   RequireExt<&Extensions::textureHalfFloatLinear>)));
+    map.insert(InternalFormatInfoPair(GL_R32F,              RGBAFormat(32,  0,  0,  0, 0, GL_RED,          GL_FLOAT,                        GL_FLOAT, false, FloatSupportRG,     FloatRenderableSupportRG,     RequireExt<&Extensions::textureFloatLinear>    )));
+    map.insert(InternalFormatInfoPair(GL_RG32F,             RGBAFormat(32, 32,  0,  0, 0, GL_RG,           GL_FLOAT,                        GL_FLOAT, false, FloatSupportRG,     FloatRenderableSupportRG,     RequireExt<&Extensions::textureFloatLinear>    )));
+    map.insert(InternalFormatInfoPair(GL_RGB32F,            RGBAFormat(32, 32, 32,  0, 0, GL_RGB,          GL_FLOAT,                        GL_FLOAT, false, FloatSupport,       FloatRenderableSupport,       RequireExt<&Extensions::textureFloatLinear>    )));
+    map.insert(InternalFormatInfoPair(GL_RGBA32F,           RGBAFormat(32, 32, 32, 32, 0, GL_RGBA,         GL_FLOAT,                        GL_FLOAT, false, FloatSupport,       FloatRenderableSupport,       RequireExt<&Extensions::textureFloatLinear>    )));
 
     // Depth stencil formats
     //                               | Internal format         |                  | D |S | X | Format            | Type                             | Component type        | Supported                                    | Renderable                                                                         | Filterable                                  |
     map.insert(InternalFormatInfoPair(GL_DEPTH_COMPONENT16,     DepthStencilFormat(16, 0,  0, GL_DEPTH_COMPONENT, GL_UNSIGNED_SHORT,                 GL_UNSIGNED_NORMALIZED, RequireES<2>,                                  RequireES<2>,                                                                        RequireESOrExt<3, &Extensions::depthTextures>)));
     map.insert(InternalFormatInfoPair(GL_DEPTH_COMPONENT24,     DepthStencilFormat(24, 0,  0, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT,                   GL_UNSIGNED_NORMALIZED, RequireES<3>,                                  RequireES<3>,                                                                        RequireESOrExt<3, &Extensions::depthTextures>)));
     map.insert(InternalFormatInfoPair(GL_DEPTH_COMPONENT32F,    DepthStencilFormat(32, 0,  0, GL_DEPTH_COMPONENT, GL_FLOAT,                          GL_FLOAT,               RequireES<3>,                                  RequireES<3>,                                                                        RequireESOrExt<3, &Extensions::depthTextures>)));
-    map.insert(InternalFormatInfoPair(GL_DEPTH_COMPONENT32_OES, DepthStencilFormat(32, 0,  0, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT,                   GL_UNSIGNED_NORMALIZED, RequireExt<&Extensions::depthTextures>,        RequireExt<&Extensions::depthTextures>,                                              AlwaysSupported                              )));
+    map.insert(InternalFormatInfoPair(GL_DEPTH_COMPONENT32_OES, DepthStencilFormat(32, 0,  0, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT,                   GL_UNSIGNED_NORMALIZED, RequireExtOrExt<&Extensions::depthTextures, &Extensions::depth32>, RequireExtOrExt<&Extensions::depthTextures, &Extensions::depth32>, AlwaysSupported                            )));
     map.insert(InternalFormatInfoPair(GL_DEPTH24_STENCIL8,      DepthStencilFormat(24, 8,  0, GL_DEPTH_STENCIL,   GL_UNSIGNED_INT_24_8,              GL_UNSIGNED_NORMALIZED, RequireESOrExt<3, &Extensions::depthTextures>, RequireESOrExtOrExt<3, &Extensions::depthTextures, &Extensions::packedDepthStencil>, AlwaysSupported                              )));
     map.insert(InternalFormatInfoPair(GL_DEPTH32F_STENCIL8,     DepthStencilFormat(32, 8, 24, GL_DEPTH_STENCIL,   GL_FLOAT_32_UNSIGNED_INT_24_8_REV, GL_FLOAT,               RequireES<3>,                                  RequireES<3>,                                                                        AlwaysSupported                              )));
     // STENCIL_INDEX8 is special-cased, see around the bottom of the list.
@@ -517,6 +580,21 @@ static InternalFormatInfoMap BuildInternalFormatInfoMap()
     // - It affects only validation of internalformat in RenderbufferStorageMultisample.
     //                               | Internal format  |                  |D |S |X | Format          | Type            | Component type        | Supported   | Renderable  | Filterable   |
     map.insert(InternalFormatInfoPair(GL_STENCIL_INDEX8, DepthStencilFormat(0, 8, 0, GL_DEPTH_STENCIL, GL_UNSIGNED_BYTE, GL_UNSIGNED_NORMALIZED, RequireES<2>, RequireES<2>, NeverSupported)));
+
+    // From GL_ANGLE_lossy_etc_decode
+    map.insert(InternalFormatInfoPair(GL_ETC1_RGB8_LOSSY_DECODE_ANGLE, CompressedFormat(4, 4, 64, 3, GL_ETC1_RGB8_OES, GL_UNSIGNED_BYTE, false, RequireExt<&Extensions::lossyETCDecode>, NeverSupported, AlwaysSupported)));
+
+    // From GL_EXT_texture_norm16
+    //                               | Internal format     |          | R | G | B | A |S | Format         | Type                           | Component type        | SRGB | Texture supported                        | Renderable                               | Filterable    |
+    map.insert(InternalFormatInfoPair(GL_R16_EXT,           RGBAFormat(16,  0,  0,  0, 0, GL_RED,          GL_UNSIGNED_SHORT,               GL_UNSIGNED_NORMALIZED, false, RequireExt<&Extensions::textureNorm16>,    RequireExt<&Extensions::textureNorm16>,    AlwaysSupported)));
+    map.insert(InternalFormatInfoPair(GL_R16_SNORM_EXT,     RGBAFormat(16,  0,  0,  0, 0, GL_RED,          GL_SHORT,                        GL_SIGNED_NORMALIZED,   false, RequireExt<&Extensions::textureNorm16>,    NeverSupported,                            AlwaysSupported)));
+    map.insert(InternalFormatInfoPair(GL_RG16_EXT,          RGBAFormat(16, 16,  0,  0, 0, GL_RG,           GL_UNSIGNED_SHORT,               GL_UNSIGNED_NORMALIZED, false, RequireExt<&Extensions::textureNorm16>,    RequireExt<&Extensions::textureNorm16>,    AlwaysSupported)));
+    map.insert(InternalFormatInfoPair(GL_RG16_SNORM_EXT,    RGBAFormat(16, 16,  0,  0, 0, GL_RG,           GL_SHORT,                        GL_SIGNED_NORMALIZED,   false, RequireExt<&Extensions::textureNorm16>,    NeverSupported,                            AlwaysSupported)));
+    map.insert(InternalFormatInfoPair(GL_RGB16_EXT,         RGBAFormat(16, 16, 16,  0, 0, GL_RGB,          GL_UNSIGNED_SHORT,               GL_UNSIGNED_NORMALIZED, false, RequireExt<&Extensions::textureNorm16>,    NeverSupported,                            AlwaysSupported)));
+    map.insert(InternalFormatInfoPair(GL_RGB16_SNORM_EXT,   RGBAFormat(16, 16, 16,  0, 0, GL_RGB,          GL_SHORT,                        GL_SIGNED_NORMALIZED,   false, RequireExt<&Extensions::textureNorm16>,    NeverSupported,                            AlwaysSupported)));
+    map.insert(InternalFormatInfoPair(GL_RGBA16_EXT,        RGBAFormat(16, 16, 16, 16, 0, GL_RGBA,         GL_UNSIGNED_SHORT,               GL_UNSIGNED_NORMALIZED, false, RequireExt<&Extensions::textureNorm16>,    RequireExt<&Extensions::textureNorm16>,    AlwaysSupported)));
+    map.insert(InternalFormatInfoPair(GL_RGBA16_SNORM_EXT,  RGBAFormat(16, 16, 16, 16, 0, GL_RGBA,         GL_SHORT,                        GL_SIGNED_NORMALIZED,   false, RequireExt<&Extensions::textureNorm16>,    NeverSupported,                            AlwaysSupported)));
+
     // clang-format on
 
     return map;
@@ -615,92 +693,146 @@ const InternalFormat &GetInternalFormatInfo(GLenum internalFormat)
     }
 }
 
-GLuint InternalFormat::computeRowPitch(GLenum formatType, GLsizei width, GLint alignment, GLint rowLength) const
+gl::ErrorOrResult<GLuint> InternalFormat::computeRowPitch(GLenum formatType,
+                                                          GLsizei width,
+                                                          GLint alignment,
+                                                          GLint rowLength) const
 {
-    ASSERT(alignment > 0 && isPow2(alignment));
-    GLuint rowBytes;
-    if (rowLength > 0)
-    {
-        ASSERT(!compressed);
-        rowBytes = pixelBytes * rowLength;
-    }
-    else
-    {
-        rowBytes = computeBlockSize(formatType, width, 1);
-    }
-    return rx::roundUp(rowBytes, static_cast<GLuint>(alignment));
-}
-
-GLuint InternalFormat::computeDepthPitch(GLenum formatType,
-                                         GLsizei width,
-                                         GLsizei height,
-                                         GLint alignment,
-                                         GLint rowLength,
-                                         GLint imageHeight) const
-{
-    GLuint rows;
-    if (imageHeight > 0)
-    {
-        rows = imageHeight;
-    }
-    else
-    {
-        rows = height;
-    }
-    return computeRowPitch(formatType, width, alignment, rowLength) * rows;
-}
-
-GLuint InternalFormat::computeBlockSize(GLenum formatType, GLsizei width, GLsizei height) const
-{
+    // Compressed images do not use pack/unpack parameters.
     if (compressed)
     {
-        GLsizei numBlocksWide = (width + compressedBlockWidth - 1) / compressedBlockWidth;
-        GLsizei numBlocksHight = (height + compressedBlockHeight - 1) / compressedBlockHeight;
-        return (pixelBytes * numBlocksWide * numBlocksHight);
+        ASSERT(rowLength == 0);
+        return computeCompressedImageSize(formatType, gl::Extents(width, 1, 1));
+    }
+
+    CheckedNumeric<GLuint> checkedRowBytes(0);
+    if (rowLength > 0)
+    {
+        CheckedNumeric<GLuint> checkePixelBytes(pixelBytes);
+        checkedRowBytes = checkePixelBytes * rowLength;
     }
     else
     {
-        const Type &typeInfo = GetTypeInfo(formatType);
-        if (typeInfo.specialInterpretation)
-        {
-            return typeInfo.bytes * width * height;
-        }
-        else
-        {
-            return componentCount * typeInfo.bytes * width * height;
-        }
+        CheckedNumeric<GLuint> checkedWidth(width);
+        const auto &typeInfo = GetTypeInfo(formatType);
+        CheckedNumeric<GLuint> checkedComponents(typeInfo.specialInterpretation ? 1u
+                                                                                : componentCount);
+        CheckedNumeric<GLuint> checkedTypeBytes(typeInfo.bytes);
+        checkedRowBytes = checkedWidth * checkedComponents * checkedTypeBytes;
     }
+
+    ASSERT(alignment > 0 && isPow2(alignment));
+    CheckedNumeric<GLuint> checkedAlignment(alignment);
+    auto aligned = rx::roundUp(checkedRowBytes, checkedAlignment);
+    ANGLE_TRY_CHECKED_MATH(aligned);
+    return aligned.ValueOrDie();
 }
 
-GLuint InternalFormat::computeSkipPixels(GLint rowPitch,
-                                         GLint depthPitch,
-                                         GLint skipImages,
-                                         GLint skipRows,
-                                         GLint skipPixels) const
+gl::ErrorOrResult<GLuint> InternalFormat::computeDepthPitch(GLenum formatType,
+                                                            GLsizei width,
+                                                            GLsizei height,
+                                                            GLint alignment,
+                                                            GLint rowLength,
+                                                            GLint imageHeight) const
 {
-    return skipImages * depthPitch + skipRows * rowPitch + skipPixels * pixelBytes;
+    GLuint rows =
+        (imageHeight > 0 ? static_cast<GLuint>(imageHeight) : static_cast<GLuint>(height));
+    GLuint rowPitch = 0;
+    ANGLE_TRY_RESULT(computeRowPitch(formatType, width, alignment, rowLength), rowPitch);
+
+    CheckedNumeric<GLuint> checkedRowPitch(rowPitch);
+    auto depthPitch = checkedRowPitch * rows;
+    ANGLE_TRY_CHECKED_MATH(depthPitch);
+    return depthPitch.ValueOrDie();
+}
+
+gl::ErrorOrResult<GLuint> InternalFormat::computeCompressedImageSize(GLenum formatType,
+                                                                     const gl::Extents &size) const
+{
+    CheckedNumeric<GLuint> checkedWidth(size.width);
+    CheckedNumeric<GLuint> checkedHeight(size.height);
+    CheckedNumeric<GLuint> checkedDepth(size.depth);
+    CheckedNumeric<GLuint> checkedBlockWidth(compressedBlockWidth);
+    CheckedNumeric<GLuint> checkedBlockHeight(compressedBlockHeight);
+
+    ASSERT(compressed);
+    auto numBlocksWide = (checkedWidth + checkedBlockWidth - 1u) / checkedBlockWidth;
+    auto numBlocksHigh = (checkedHeight + checkedBlockHeight - 1u) / checkedBlockHeight;
+    auto bytes         = numBlocksWide * numBlocksHigh * pixelBytes * checkedDepth;
+    ANGLE_TRY_CHECKED_MATH(bytes);
+    return bytes.ValueOrDie();
+}
+
+gl::ErrorOrResult<GLuint> InternalFormat::computeSkipBytes(GLuint rowPitch,
+                                                           GLuint depthPitch,
+                                                           GLint skipImages,
+                                                           GLint skipRows,
+                                                           GLint skipPixels,
+                                                           bool applySkipImages) const
+{
+    CheckedNumeric<GLuint> checkedRowPitch(rowPitch);
+    CheckedNumeric<GLuint> checkedDepthPitch(depthPitch);
+    CheckedNumeric<GLuint> checkedSkipImages(static_cast<GLuint>(skipImages));
+    CheckedNumeric<GLuint> checkedSkipRows(static_cast<GLuint>(skipRows));
+    CheckedNumeric<GLuint> checkedSkipPixels(static_cast<GLuint>(skipPixels));
+    CheckedNumeric<GLuint> checkedPixelBytes(pixelBytes);
+    auto checkedSkipImagesBytes = checkedSkipImages * checkedDepthPitch;
+    if (!applySkipImages)
+    {
+        checkedSkipImagesBytes = 0;
+    }
+    auto skipBytes = checkedSkipImagesBytes + checkedSkipRows * checkedRowPitch +
+                     checkedSkipPixels * checkedPixelBytes;
+    ANGLE_TRY_CHECKED_MATH(skipBytes);
+    return skipBytes.ValueOrDie();
+}
+
+gl::ErrorOrResult<GLuint> InternalFormat::computeUnpackSize(
+    GLenum formatType,
+    const gl::Extents &size,
+    const gl::PixelUnpackState &unpack) const
+{
+    // Compressed images do not use unpack parameters.
+    if (compressed)
+    {
+        return computeCompressedImageSize(formatType, size);
+    }
+
+    base::CheckedNumeric<GLuint> checkedGroups(unpack.rowLength > 0 ? unpack.rowLength
+                                                                    : size.width);
+    base::CheckedNumeric<GLuint> checkedRows(unpack.imageHeight > 0 ? unpack.imageHeight
+                                                                    : size.height);
+
+    // Compute the groups of all the layers in (0,depth-1)
+    auto layerGroups = checkedGroups * checkedRows * (size.depth - 1);
+
+    // Compute the groups in the last layer (for non-3D textures, the only one)
+    auto lastLayerGroups = checkedGroups * (size.height - 1) + size.width;
+
+    // The total size is the sum times the bytes per pixel.
+    auto totalSize = (layerGroups + lastLayerGroups) * pixelBytes;
+
+    ANGLE_TRY_CHECKED_MATH(totalSize);
+
+    return totalSize.ValueOrDie();
 }
 
 GLenum GetSizedInternalFormat(GLenum internalFormat, GLenum type)
 {
-    const InternalFormat& formatInfo = GetInternalFormatInfo(internalFormat);
+    const InternalFormat &formatInfo = GetInternalFormatInfo(internalFormat);
     if (formatInfo.pixelBytes > 0)
     {
         return internalFormat;
     }
-    else
+
+    static const FormatMap formatMap = BuildFormatMap();
+    auto iter                        = formatMap.find(FormatType(internalFormat, type));
+    if (iter != formatMap.end())
     {
-        static const FormatMap formatMap = BuildFormatMap();
-        FormatMap::const_iterator iter = formatMap.find(FormatTypePair(internalFormat, type));
-        if (iter != formatMap.end())
-        {
-            return iter->second;
-        }
-        else
-        {
-            return GL_NONE;
-        }
+        return iter->second;
     }
+
+    return GL_NONE;
 }
 
 const FormatSet &GetAllSizedInternalFormats()

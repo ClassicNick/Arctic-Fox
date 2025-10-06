@@ -63,7 +63,7 @@ nsFilterInstance::PaintFilteredFrame(nsIFrame *aFilteredFrame,
                                      nsSVGFilterPaintCallback *aPaintCallback,
                                      const nsRegion *aDirtyArea)
 {
-  auto& filterChain = aFilteredFrame->StyleSVGReset()->mFilters;
+  auto& filterChain = aFilteredFrame->StyleEffects()->mFilters;
   UniquePtr<UserSpaceMetrics> metrics = UserSpaceMetricsForFrame(aFilteredFrame);
   nsFilterInstance instance(aFilteredFrame, aFilteredFrame->GetContent(), *metrics,
                             filterChain, aPaintCallback, aTransform,
@@ -83,7 +83,7 @@ nsFilterInstance::GetPostFilterDirtyArea(nsIFrame *aFilteredFrame,
   }
 
   gfxMatrix unused; // aPaintTransform arg not used since we're not painting
-  auto& filterChain = aFilteredFrame->StyleSVGReset()->mFilters;
+  auto& filterChain = aFilteredFrame->StyleEffects()->mFilters;
   UniquePtr<UserSpaceMetrics> metrics = UserSpaceMetricsForFrame(aFilteredFrame);
   nsFilterInstance instance(aFilteredFrame, aFilteredFrame->GetContent(), *metrics,
                             filterChain, nullptr, unused, nullptr,
@@ -103,7 +103,7 @@ nsFilterInstance::GetPreFilterNeededArea(nsIFrame *aFilteredFrame,
                                          const nsRegion& aPostFilterDirtyRegion)
 {
   gfxMatrix unused; // aPaintTransform arg not used since we're not painting
-  auto& filterChain = aFilteredFrame->StyleSVGReset()->mFilters;
+  auto& filterChain = aFilteredFrame->StyleEffects()->mFilters;
   UniquePtr<UserSpaceMetrics> metrics = UserSpaceMetricsForFrame(aFilteredFrame);
   nsFilterInstance instance(aFilteredFrame, aFilteredFrame->GetContent(), *metrics,
                             filterChain, nullptr, unused,
@@ -134,7 +134,7 @@ nsFilterInstance::GetPostFilterBounds(nsIFrame *aFilteredFrame,
   }
 
   gfxMatrix unused; // aPaintTransform arg not used since we're not painting
-  auto& filterChain = aFilteredFrame->StyleSVGReset()->mFilters;
+  auto& filterChain = aFilteredFrame->StyleEffects()->mFilters;
   UniquePtr<UserSpaceMetrics> metrics = UserSpaceMetricsForFrame(aFilteredFrame);
   nsFilterInstance instance(aFilteredFrame, aFilteredFrame->GetContent(), *metrics,
                             filterChain, nullptr, unused, nullptr,
@@ -213,7 +213,7 @@ nsFilterInstance::nsFilterInstance(nsIFrame *aTargetFrame,
   mTargetBounds.UnionRect(mTargetBBoxInFilterSpace, targetBounds);
 
   // Build the filter graph.
-  rv = BuildPrimitives(aFilterChain);
+  rv = BuildPrimitives(aFilterChain, aTargetFrame);
   if (NS_FAILED(rv)) {
     return;
   }
@@ -273,13 +273,14 @@ nsFilterInstance::FilterSpaceToUserSpace(const gfxRect& aFilterSpaceRect) const
 }
 
 nsresult
-nsFilterInstance::BuildPrimitives(const nsTArray<nsStyleFilter>& aFilterChain)
+nsFilterInstance::BuildPrimitives(const nsTArray<nsStyleFilter>& aFilterChain,
+                                  nsIFrame* aTargetFrame)
 {
   NS_ASSERTION(!mPrimitiveDescriptions.Length(),
                "expected to start building primitives from scratch");
 
   for (uint32_t i = 0; i < aFilterChain.Length(); i++) {
-    nsresult rv = BuildPrimitivesForFilter(aFilterChain[i]);
+    nsresult rv = BuildPrimitivesForFilter(aFilterChain[i], aTargetFrame);
     if (NS_FAILED(rv)) {
       return rv;
     }
@@ -291,7 +292,8 @@ nsFilterInstance::BuildPrimitives(const nsTArray<nsStyleFilter>& aFilterChain)
 }
 
 nsresult
-nsFilterInstance::BuildPrimitivesForFilter(const nsStyleFilter& aFilter)
+nsFilterInstance::BuildPrimitivesForFilter(const nsStyleFilter& aFilter,
+                                           nsIFrame* aTargetFrame)
 {
   NS_ASSERTION(mUserSpaceToFilterSpaceScale.width > 0.0f &&
                mFilterSpaceToUserSpaceScale.height > 0.0f,
@@ -299,7 +301,8 @@ nsFilterInstance::BuildPrimitivesForFilter(const nsStyleFilter& aFilter)
 
   if (aFilter.GetType() == NS_STYLE_FILTER_URL) {
     // Build primitives for an SVG filter.
-    nsSVGFilterInstance svgFilterInstance(aFilter, mTargetContent,
+    nsSVGFilterInstance svgFilterInstance(aFilter, aTargetFrame,
+                                          mTargetContent,
                                           mMetrics, mTargetBBox,
                                           mUserSpaceToFilterSpaceScale,
                                           mFilterSpaceToUserSpaceScale);
@@ -354,7 +357,7 @@ nsFilterInstance::BuildSourcePaint(SourceInfo *aSource,
   RefPtr<DrawTarget> offscreenDT =
     gfxPlatform::GetPlatform()->CreateOffscreenContentDrawTarget(
       neededRect.Size(), SurfaceFormat::B8G8R8A8);
-  if (!offscreenDT) {
+  if (!offscreenDT || !offscreenDT->IsValid()) {
     return NS_ERROR_OUT_OF_MEMORY;
   }
 
@@ -364,7 +367,8 @@ nsFilterInstance::BuildSourcePaint(SourceInfo *aSource,
   }
 
   if (!mPaintTransform.IsSingular()) {
-    RefPtr<gfxContext> gfx = new gfxContext(offscreenDT);
+    RefPtr<gfxContext> gfx = gfxContext::CreateOrNull(offscreenDT);
+    MOZ_ASSERT(gfx); // already checked the draw target above
     gfx->Save();
     gfx->Multiply(mPaintTransform *
                   deviceToFilterSpace *
@@ -418,7 +422,7 @@ nsFilterInstance::BuildSourceImage(DrawTarget* aTargetDT)
   RefPtr<DrawTarget> offscreenDT =
     gfxPlatform::GetPlatform()->CreateOffscreenContentDrawTarget(
       neededRect.Size(), SurfaceFormat::B8G8R8A8);
-  if (!offscreenDT) {
+  if (!offscreenDT || !offscreenDT->IsValid()) {
     return NS_ERROR_OUT_OF_MEMORY;
   }
 
@@ -443,17 +447,19 @@ nsFilterInstance::BuildSourceImage(DrawTarget* aTargetDT)
   if (!deviceToFilterSpace.Invert()) {
     return NS_ERROR_FAILURE;
   }
-  RefPtr<gfxContext> ctx = new gfxContext(offscreenDT);
+  RefPtr<gfxContext> ctx = gfxContext::CreateOrNull(offscreenDT);
+  MOZ_ASSERT(ctx); // already checked the draw target above
   ctx->SetMatrix(
     ctx->CurrentMatrix().Translate(-neededRect.TopLeft()).
                          PreMultiply(deviceToFilterSpace));
 
-  mPaintCallback->Paint(*ctx, mTargetFrame, mPaintTransform, &dirty);
+  DrawResult result =
+    mPaintCallback->Paint(*ctx, mTargetFrame, mPaintTransform, &dirty);
 
   mSourceGraphic.mSourceSurface = offscreenDT->Snapshot();
   mSourceGraphic.mSurfaceRect = neededRect;
 
-  return NS_OK;
+  return (result == DrawResult::SUCCESS) ? NS_OK : NS_ERROR_FAILURE;
 }
 
 nsresult

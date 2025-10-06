@@ -21,7 +21,7 @@ const TEST_URI = `
   <div class="test">Testing the cubic-bezier tooltip!</div>
 `;
 
-add_task(function*() {
+add_task(function* () {
   yield addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
   let {inspector, view} = yield openRuleView();
   yield selectNode("div", inspector);
@@ -59,12 +59,12 @@ function* testAppears(view, swatch) {
   let bezierPanel = bezier.tooltip.panel;
   ok(bezierPanel, "The XUL panel for the cubic-bezier tooltip exists");
 
-  let onShown = bezier.tooltip.once("shown");
+  let onBezierWidgetReady = bezier.once("ready");
   swatch.click();
-  yield onShown;
+  yield onBezierWidgetReady;
 
   ok(true, "The cubic-bezier tooltip was shown on click of the cibuc swatch");
   ok(!inplaceEditor(swatch.parentNode),
     "The inplace editor wasn't shown as a result of the cibuc swatch click");
-  bezier.hide();
+  yield hideTooltipAndWaitForRuleViewChanged(bezier, view);
 }

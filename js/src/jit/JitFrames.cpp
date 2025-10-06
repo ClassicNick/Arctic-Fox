@@ -298,7 +298,7 @@ JitFrameIterator::machineState() const
     uintptr_t* spill = spillBase();
     MachineState machine;
 
-    for (GeneralRegisterBackwardIterator iter(reader.allGprSpills()); iter.more(); iter++)
+    for (GeneralRegisterBackwardIterator iter(reader.allGprSpills()); iter.more(); ++iter)
         machine.setRegisterLocation(*iter, --spill);
 
     uint8_t* spillAlign = alignDoubleSpillWithOffset(reinterpret_cast<uint8_t*>(spill), 0);
@@ -306,7 +306,7 @@ JitFrameIterator::machineState() const
     char* floatSpill = reinterpret_cast<char*>(spillAlign);
     FloatRegisterSet fregs = reader.allFloatSpills().set();
     fregs = fregs.reduceSetForPush();
-    for (FloatRegisterBackwardIterator iter(fregs); iter.more(); iter++) {
+    for (FloatRegisterBackwardIterator iter(fregs); iter.more(); ++iter) {
         floatSpill -= (*iter).size();
         for (uint32_t a = 0; a < (*iter).numAlignedAliased(); a++) {
             // Only say that registers that actually start here start here.
@@ -486,13 +486,13 @@ BaselineFrameAndStackPointersFromTryNote(JSTryNote* tn, const JitFrameIterator& 
 
 static void
 SettleOnTryNote(JSContext* cx, JSTryNote* tn, const JitFrameIterator& frame,
-                ScopeIter& si, ResumeFromException* rfe, jsbytecode** pc)
+                EnvironmentIter& ei, ResumeFromException* rfe, jsbytecode** pc)
 {
     RootedScript script(cx, frame.baselineFrame()->script());
 
-    // Unwind scope chain (pop block objects).
+    // Unwind environment chain (pop block objects).
     if (cx->isExceptionPending())
-        UnwindScope(cx, si, UnwindScopeToTryPc(script, tn));
+        UnwindEnvironment(cx, ei, UnwindEnvironmentToTryPc(script, tn));
 
     // Compute base pointer and stack pointer.
     BaselineFrameAndStackPointersFromTryNote(tn, frame, &rfe->framePointer, &rfe->stackPointer);
@@ -538,7 +538,7 @@ class TryNoteIterBaseline : public TryNoteIter<BaselineFrameStackDepthOp>
 };
 
 // Close all live iterators on a BaselineFrame due to exception unwinding. The
-// pc parameter is updated to where the scopes have been unwound to.
+// pc parameter is updated to where the envs have been unwound to.
 static void
 CloseLiveIteratorsBaselineForUncatchableException(JSContext* cx, const JitFrameIterator& frame,
                                                   jsbytecode* pc)
@@ -558,7 +558,7 @@ CloseLiveIteratorsBaselineForUncatchableException(JSContext* cx, const JitFrameI
 }
 
 static bool
-ProcessTryNotesBaseline(JSContext* cx, const JitFrameIterator& frame, ScopeIter& si,
+ProcessTryNotesBaseline(JSContext* cx, const JitFrameIterator& frame, EnvironmentIter& ei,
                         ResumeFromException* rfe, jsbytecode** pc)
 {
     RootedScript script(cx, frame.baselineFrame()->script());
@@ -574,7 +574,7 @@ ProcessTryNotesBaseline(JSContext* cx, const JitFrameIterator& frame, ScopeIter&
             if (cx->isClosingGenerator())
                 continue;
 
-            SettleOnTryNote(cx, tn, frame, si, rfe, pc);
+            SettleOnTryNote(cx, tn, frame, ei, rfe, pc);
 
             // Ion can compile try-catch, but bailing out to catch
             // exceptions is slow. Reset the warm-up counter so that if we
@@ -588,7 +588,7 @@ ProcessTryNotesBaseline(JSContext* cx, const JitFrameIterator& frame, ScopeIter&
           }
 
           case JSTRY_FINALLY: {
-            SettleOnTryNote(cx, tn, frame, si, rfe, pc);
+            SettleOnTryNote(cx, tn, frame, ei, rfe, pc);
             rfe->kind = ResumeFromException::RESUME_FINALLY;
             rfe->target = script->baselineScript()->nativeCodeForPC(script, *pc);
             // Drop the exception instead of leaking cross compartment data.
@@ -607,7 +607,7 @@ ProcessTryNotesBaseline(JSContext* cx, const JitFrameIterator& frame, ScopeIter&
             if (!UnwindIteratorForException(cx, iterObject)) {
                 // See comment in the JSTRY_FOR_IN case in Interpreter.cpp's
                 // ProcessTryNotes.
-                SettleOnTryNote(cx, tn, frame, si, rfe, pc);
+                SettleOnTryNote(cx, tn, frame, ei, rfe, pc);
                 MOZ_ASSERT(**pc == JSOP_ENDITER);
                 return false;
             }
@@ -676,8 +676,8 @@ HandleExceptionBaseline(JSContext* cx, const JitFrameIterator& frame, ResumeFrom
         }
 
         if (script->hasTrynotes()) {
-            ScopeIter si(cx, frame.baselineFrame(), pc);
-            if (!ProcessTryNotesBaseline(cx, frame, si, rfe, &pc))
+            EnvironmentIter ei(cx, frame.baselineFrame(), pc);
+            if (!ProcessTryNotesBaseline(cx, frame, ei, rfe, &pc))
                 goto again;
             if (rfe->kind != ResumeFromException::RESUME_ENTRY_FRAME) {
                 // No need to increment the PCCounts number of execution here,
@@ -746,7 +746,7 @@ struct AutoResetLastProfilerFrameOnReturnFromException
 void
 HandleException(ResumeFromException* rfe)
 {
-    JSContext* cx = GetJSContextFromJitCode();
+    JSContext* cx = GetJSContextFromMainThread();
     TraceLoggerThread* logger = TraceLoggerForMainThread(cx->runtime());
 
     AutoResetLastProfilerFrameOnReturnFromException profFrameReset(cx, rfe);
@@ -1049,7 +1049,7 @@ MarkIonJSFrame(JSTracer* trc, const JitFrameIterator& frame)
     uintptr_t* spill = frame.spillBase();
     LiveGeneralRegisterSet gcRegs = safepoint.gcSpills();
     LiveGeneralRegisterSet valueRegs = safepoint.valueSpills();
-    for (GeneralRegisterBackwardIterator iter(safepoint.allGprSpills()); iter.more(); iter++) {
+    for (GeneralRegisterBackwardIterator iter(safepoint.allGprSpills()); iter.more(); ++iter) {
         --spill;
         if (gcRegs.has(*iter))
             TraceGenericPointerRoot(trc, reinterpret_cast<gc::Cell**>(spill), "ion-gc-spill");
@@ -1136,7 +1136,7 @@ UpdateIonJSFrameForMinorGC(JSTracer* trc, const JitFrameIterator& frame)
 
     LiveGeneralRegisterSet slotsRegs = safepoint.slotsOrElementsSpills();
     uintptr_t* spill = frame.spillBase();
-    for (GeneralRegisterBackwardIterator iter(safepoint.allGprSpills()); iter.more(); iter++) {
+    for (GeneralRegisterBackwardIterator iter(safepoint.allGprSpills()); iter.more(); ++iter) {
         --spill;
         if (slotsRegs.has(*iter))
             nursery.forwardBufferPointer(reinterpret_cast<HeapSlot**>(spill));
@@ -1628,7 +1628,7 @@ RInstructionResults::frame() const
     return fp_;
 }
 
-RelocatableValue&
+HeapPtr<Value>&
 RInstructionResults::operator [](size_t index)
 {
     return (*results_)[index];
@@ -1682,7 +1682,7 @@ SnapshotIterator::fromStack(int32_t offset) const
 static Value
 FromObjectPayload(uintptr_t payload)
 {
-    // Note: Both MIRType_Object and MIRType_ObjectOrNull are encoded in
+    // Note: Both MIRType::Object and MIRType::ObjectOrNull are encoded in
     // snapshots using JSVAL_TYPE_OBJECT.
     return ObjectOrNullValue(reinterpret_cast<JSObject*>(payload));
 }
@@ -1901,8 +1901,11 @@ SnapshotIterator::maybeRead(const RValueAllocation& a, MaybeReadFallback& fallba
         return allocationValue(a);
 
     if (fallback.canRecoverResults()) {
+        // Code paths which are calling maybeRead are not always capable of
+        // returning an error code, as these code paths used to be infallible.
+        AutoEnterOOMUnsafeRegion oomUnsafe;
         if (!initInstructionResults(fallback))
-            MOZ_CRASH("Unable to recover allocations.");
+            oomUnsafe.crash("js::jit::SnapshotIterator::maybeRead");
 
         if (allocationReadable(a))
             return allocationValue(a);
@@ -2250,9 +2253,9 @@ InlineFrameIterator::InlineFrameIterator(JSContext* cx, const JitFrameIterator* 
 }
 
 InlineFrameIterator::InlineFrameIterator(JSRuntime* rt, const JitFrameIterator* iter)
-  : calleeTemplate_(rt),
+  : calleeTemplate_(rt->contextFromMainThread()),
     calleeRVA_(),
-    script_(rt)
+    script_(rt->contextFromMainThread())
 {
     resetOn(iter);
 }
@@ -2393,13 +2396,13 @@ InlineFrameIterator::callee(MaybeReadFallback& fallback) const
 }
 
 JSObject*
-InlineFrameIterator::computeScopeChain(Value scopeChainValue, MaybeReadFallback& fallback,
-                                       bool* hasCallObj) const
+InlineFrameIterator::computeEnvironmentChain(Value envChainValue, MaybeReadFallback& fallback,
+                                             bool* hasCallObj) const
 {
-    if (scopeChainValue.isObject()) {
+    if (envChainValue.isObject()) {
         if (hasCallObj) {
             if (fallback.canRecoverResults()) {
-                RootedObject obj(fallback.maybeCx, &scopeChainValue.toObject());
+                RootedObject obj(fallback.maybeCx, &envChainValue.toObject());
                 *hasCallObj = isFunctionFrame() && callee(fallback)->needsCallObject();
                 return obj;
             } else {
@@ -2408,20 +2411,20 @@ InlineFrameIterator::computeScopeChain(Value scopeChainValue, MaybeReadFallback&
             }
         }
 
-        return &scopeChainValue.toObject();
+        return &envChainValue.toObject();
     }
 
     // Note we can hit this case even for functions with a CallObject, in case
-    // we are walking the frame during the function prologue, before the scope
+    // we are walking the frame during the function prologue, before the env
     // chain has been initialized.
     if (isFunctionFrame())
         return callee(fallback)->environment();
 
     // Ion does not handle non-function scripts that have anything other than
-    // the global on their scope chain.
+    // the global on their env chain.
     MOZ_ASSERT(!script()->isForEval());
     MOZ_ASSERT(!script()->hasNonSyntacticScope());
-    return &script()->global().lexicalScope();
+    return &script()->global().lexicalEnvironment();
 }
 
 bool
@@ -2483,7 +2486,7 @@ InlineFrameIterator::isConstructing() const
 {
     // Skip the current frame and look at the caller's.
     if (more()) {
-        InlineFrameIterator parent(GetJSContextFromJitCode(), this);
+        InlineFrameIterator parent(GetJSContextFromMainThread(), this);
         ++parent;
 
         // Inlined Getters and Setters are never constructing.
@@ -2556,7 +2559,7 @@ JitFrameIterator::dumpBaseline() const
     fprintf(stderr, "  file %s line %" PRIuSIZE "\n",
             script()->filename(), script()->lineno());
 
-    JSContext* cx = GetJSContextFromJitCode();
+    JSContext* cx = GetJSContextFromMainThread();
     RootedScript script(cx);
     jsbytecode* pc;
     baselineScriptAndPc(script.address(), &pc);
@@ -2617,7 +2620,7 @@ InlineFrameIterator::dump() const
     for (unsigned i = 0; i < si.numAllocations() - 1; i++) {
         if (isFunction) {
             if (i == 0)
-                fprintf(stderr, "  scope chain: ");
+                fprintf(stderr, "  env chain: ");
             else if (i == 1)
                 fprintf(stderr, "  this: ");
             else if (i - 2 < calleeTemplate()->nargs())
@@ -2625,7 +2628,7 @@ InlineFrameIterator::dump() const
             else {
                 if (i - 2 == calleeTemplate()->nargs() && numActualArgs() > calleeTemplate()->nargs()) {
                     DumpOp d(calleeTemplate()->nargs());
-                    unaliasedForEachActual(GetJSContextFromJitCode(), d, ReadFrame_Overflown, fallback);
+                    unaliasedForEachActual(GetJSContextFromMainThread(), d, ReadFrame_Overflown, fallback);
                 }
 
                 fprintf(stderr, "  slot %d: ", int(i - 2 - calleeTemplate()->nargs()));
@@ -2660,7 +2663,7 @@ JitFrameIterator::dump() const
       case JitFrame_Bailout:
       case JitFrame_IonJS:
       {
-        InlineFrameIterator frames(GetJSContextFromJitCode(), this);
+        InlineFrameIterator frames(GetJSContextFromMainThread(), this);
         for (;;) {
             frames.dump();
             if (!frames.more())
@@ -2714,16 +2717,16 @@ JitFrameIterator::verifyReturnAddressUsingNativeToBytecodeMap()
     JitRuntime* jitrt = rt->jitRuntime();
 
     // Look up and print bytecode info for the native address.
-    JitcodeGlobalEntry entry;
-    if (!jitrt->getJitcodeGlobalTable()->lookup(returnAddressToFp_, &entry, rt))
+    const JitcodeGlobalEntry* entry = jitrt->getJitcodeGlobalTable()->lookup(returnAddressToFp_);
+    if (!entry)
         return true;
 
     JitSpew(JitSpew_Profiling, "Found nativeToBytecode entry for %p: %p - %p",
-            returnAddressToFp_, entry.nativeStartAddr(), entry.nativeEndAddr());
+            returnAddressToFp_, entry->nativeStartAddr(), entry->nativeEndAddr());
 
     JitcodeGlobalEntry::BytecodeLocationVector location;
     uint32_t depth = UINT32_MAX;
-    if (!entry.callStackAtAddr(rt, returnAddressToFp_, location, &depth))
+    if (!entry->callStackAtAddr(rt, returnAddressToFp_, location, &depth))
         return false;
     MOZ_ASSERT(depth > 0 && depth != UINT32_MAX);
     MOZ_ASSERT(location.length() == depth);
@@ -2737,7 +2740,7 @@ JitFrameIterator::verifyReturnAddressUsingNativeToBytecodeMap()
 
     if (type_ == JitFrame_IonJS) {
         // Create an InlineFrameIterator here and verify the mapped info against the iterator info.
-        InlineFrameIterator inlineFrames(GetJSContextFromJitCode(), this);
+        InlineFrameIterator inlineFrames(GetJSContextFromMainThread(), this);
         for (size_t idx = 0; idx < location.length(); idx++) {
             MOZ_ASSERT(idx < location.length());
             MOZ_ASSERT_IF(idx < location.length() - 1, inlineFrames.more());
@@ -2868,25 +2871,25 @@ JitProfilingFrameIterator::tryInitWithTable(JitcodeGlobalTable* table, void* pc,
     if (!pc)
         return false;
 
-    JitcodeGlobalEntry entry;
-    if (!table->lookup(pc, &entry, rt))
+    const JitcodeGlobalEntry* entry = table->lookup(pc);
+    if (!entry)
         return false;
 
     JSScript* callee = frameScript();
 
-    MOZ_ASSERT(entry.isIon() || entry.isBaseline() || entry.isIonCache() || entry.isDummy());
+    MOZ_ASSERT(entry->isIon() || entry->isBaseline() || entry->isIonCache() || entry->isDummy());
 
     // Treat dummy lookups as an empty frame sequence.
-    if (entry.isDummy()) {
+    if (entry->isDummy()) {
         type_ = JitFrame_Entry;
         fp_ = nullptr;
         returnAddressToFp_ = nullptr;
         return true;
     }
 
-    if (entry.isIon()) {
+    if (entry->isIon()) {
         // If looked-up callee doesn't match frame callee, don't accept lastProfilingCallSite
-        if (entry.ionEntry().getScript(0) != callee)
+        if (entry->ionEntry().getScript(0) != callee)
             return false;
 
         type_ = JitFrame_IonJS;
@@ -2894,9 +2897,9 @@ JitProfilingFrameIterator::tryInitWithTable(JitcodeGlobalTable* table, void* pc,
         return true;
     }
 
-    if (entry.isBaseline()) {
+    if (entry->isBaseline()) {
         // If looked-up callee doesn't match frame callee, don't accept lastProfilingCallSite
-        if (forLastCallSite && entry.baselineEntry().script() != callee)
+        if (forLastCallSite && entry->baselineEntry().script() != callee)
             return false;
 
         type_ = JitFrame_BaselineJS;
@@ -2904,9 +2907,9 @@ JitProfilingFrameIterator::tryInitWithTable(JitcodeGlobalTable* table, void* pc,
         return true;
     }
 
-    if (entry.isIonCache()) {
-        JitcodeGlobalEntry ionEntry;
-        table->lookupInfallible(entry.ionCacheEntry().rejoinAddr(), &ionEntry, rt);
+    if (entry->isIonCache()) {
+        void* ptr = entry->ionCacheEntry().rejoinAddr();
+        const JitcodeGlobalEntry& ionEntry = table->lookupInfallible(ptr);
         MOZ_ASSERT(ionEntry.isIon());
 
         if (ionEntry.ionEntry().getScript(0) != callee)
@@ -2921,13 +2924,27 @@ JitProfilingFrameIterator::tryInitWithTable(JitcodeGlobalTable* table, void* pc,
 }
 
 void
-JitProfilingFrameIterator::fixBaselineDebugModeOSRReturnAddress()
+JitProfilingFrameIterator::fixBaselineReturnAddress()
 {
     MOZ_ASSERT(type_ == JitFrame_BaselineJS);
     BaselineFrame* bl = (BaselineFrame*)(fp_ - BaselineFrame::FramePointerOffset -
                                          BaselineFrame::Size());
-    if (BaselineDebugModeOSRInfo* info = bl->getDebugModeOSRInfo())
+
+    // Debug mode OSR for Baseline uses a "continuation fixer" and stashes the
+    // actual return address in an auxiliary structure.
+    if (BaselineDebugModeOSRInfo* info = bl->getDebugModeOSRInfo()) {
         returnAddressToFp_ = info->resumeAddr;
+        return;
+    }
+
+    // Resuming a generator via .throw() pushes a bogus return address onto
+    // the stack. We have the actual jsbytecode* stashed on the frame itself;
+    // translate that into the Baseline code address.
+    if (jsbytecode* override = bl->maybeOverridePc()) {
+        JSScript* script = bl->script();
+        returnAddressToFp_ = script->baselineScript()->nativeCodeForPC(script, override);
+        return;
+    }
 }
 
 void
@@ -2982,7 +2999,7 @@ JitProfilingFrameIterator::moveToNextFrame(CommonFrameLayout* frame)
         returnAddressToFp_ = frame->returnAddress();
         fp_ = GetPreviousRawFrame<uint8_t*>(frame);
         type_ = JitFrame_BaselineJS;
-        fixBaselineDebugModeOSRReturnAddress();
+        fixBaselineReturnAddress();
         return;
     }
 

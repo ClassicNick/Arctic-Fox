@@ -171,13 +171,13 @@ nsresult nsWebShellWindow::Initialize(nsIXULWindow* aParent,
   }
 
   mWindow->SetWidgetListener(this);
-  mWindow->Create((nsIWidget *)parentWidget,          // Parent nsIWidget
-                  nullptr,                            // Native parent widget
-                  deskRect,                           // Widget dimensions
-                  &widgetInitData);                   // Widget initialization data
+  rv = mWindow->Create((nsIWidget *)parentWidget, // Parent nsIWidget
+                       nullptr,                   // Native parent widget
+                       deskRect,                  // Widget dimensions
+                       &widgetInitData);          // Widget initialization data
+  NS_ENSURE_SUCCESS(rv, rv);
 
-  LayoutDeviceIntRect r;
-  mWindow->GetClientBounds(r);
+  LayoutDeviceIntRect r = mWindow->GetClientBounds();
   // Match the default background color of content. Important on windows
   // since we no longer use content child widgets.
   mWindow->SetBackgroundColor(NS_RGB(255,255,255));
@@ -281,7 +281,7 @@ nsWebShellWindow::WindowResized(nsIWidget* aWidget, int32_t aWidth, int32_t aHei
 {
   nsCOMPtr<nsIBaseWindow> shellAsWin(do_QueryInterface(mDocShell));
   if (shellAsWin) {
-    shellAsWin->SetPositionAndSize(0, 0, aWidth, aHeight, false);
+    shellAsWin->SetPositionAndSize(0, 0, aWidth, aHeight, 0);
   }
   // Persist size, but not immediately, in case this OS is firing
   // repeated size events as the user drags the sizing handle
@@ -365,11 +365,27 @@ nsWebShellWindow::SizeModeChanged(nsSizeMode sizeMode)
     ourWindow->DispatchCustomEvent(NS_LITERAL_STRING("sizemodechange"));
   }
 
+  nsIPresShell* presShell;
+  if ((presShell = GetPresShell())) {
+    presShell->GetPresContext()->SizeModeChanged(sizeMode);
+  }
+
   // Note the current implementation of SetSizeMode just stores
   // the new state; it doesn't actually resize. So here we store
   // the state and pass the event on to the OS. The day is coming
   // when we'll handle the event here, and the return result will
   // then need to be different.
+}
+
+void
+nsWebShellWindow::UIResolutionChanged()
+{
+  nsCOMPtr<nsPIDOMWindowOuter> ourWindow =
+    mDocShell ? mDocShell->GetWindow() : nullptr;
+  if (ourWindow) {
+    MOZ_ASSERT(ourWindow->IsOuterWindow());
+    ourWindow->DispatchCustomEvent(NS_LITERAL_STRING("resolutionchange"));
+  }
 }
 
 void

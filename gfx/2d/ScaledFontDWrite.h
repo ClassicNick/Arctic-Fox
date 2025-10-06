@@ -40,14 +40,19 @@ public:
 
   void CopyGlyphsToSink(const GlyphBuffer &aBuffer, ID2D1GeometrySink *aSink);
 
+  virtual void GetGlyphDesignMetrics(const uint16_t* aGlyphIndices, uint32_t aNumGlyphs, GlyphMetrics* aGlyphMetrics);
+
   virtual bool GetFontFileData(FontFileDataOutput aDataCallback, void *aBaton);
 
   virtual AntialiasMode GetDefaultAAMode();
 
 #ifdef USE_SKIA
   virtual SkTypeface* GetSkTypeface();
+  bool GetFontDataFromSystemFonts(IDWriteFactory* aFactory);
+  bool DefaultToArialFont(IDWriteFontCollection* aSystemFonts);
 #endif
 
+  // The font and font family are only used with Skia
   RefPtr<IDWriteFont> mFont;
   RefPtr<IDWriteFontFamily> mFontFamily;
   RefPtr<IDWriteFontFace> mFontFace;

@@ -9,12 +9,12 @@
 
 #include "HttpBaseChannel.h"
 #include "nsTArray.h"
-#include "nsIPackagedAppChannelListener.h"
 #include "nsICachingChannel.h"
 #include "nsICacheEntry.h"
 #include "nsICacheEntryOpenCallback.h"
 #include "nsIDNSListener.h"
 #include "nsIApplicationCacheChannel.h"
+#include "nsIChannelWithDivertableParentListener.h"
 #include "nsIProtocolProxyCallback.h"
 #include "nsIHttpAuthenticableChannel.h"
 #include "nsIAsyncVerifyRedirectCallback.h"
@@ -22,6 +22,7 @@
 #include "nsIThreadRetargetableStreamListener.h"
 #include "nsWeakReference.h"
 #include "TimingStruct.h"
+#include "ADivertableParentChannel.h"
 #include "AutoClose.h"
 #include "nsIStreamListener.h"
 #include "nsISupportsPrimitives.h"
@@ -60,7 +61,6 @@ public:
 class nsHttpChannel final : public HttpBaseChannel
                           , public HttpAsyncAborter<nsHttpChannel>
                           , public nsIStreamListener
-                          , public nsIPackagedAppChannelListener
                           , public nsICachingChannel
                           , public nsICacheEntryOpenCallback
                           , public nsITransportEventSink
@@ -73,12 +73,12 @@ class nsHttpChannel final : public HttpBaseChannel
                           , public nsIDNSListener
                           , public nsSupportsWeakReference
                           , public nsICorsPreflightCallback
+                          , public nsIChannelWithDivertableParentListener
 {
 public:
     NS_DECL_ISUPPORTS_INHERITED
     NS_DECL_NSIREQUESTOBSERVER
     NS_DECL_NSISTREAMLISTENER
-    NS_DECL_NSIPACKAGEDAPPCHANNELLISTENER
     NS_DECL_NSITHREADRETARGETABLESTREAMLISTENER
     NS_DECL_NSICACHEINFOCHANNEL
     NS_DECL_NSICACHINGCHANNEL
@@ -91,6 +91,7 @@ public:
     NS_DECL_NSIASYNCVERIFYREDIRECTCALLBACK
     NS_DECL_NSITHREADRETARGETABLEREQUEST
     NS_DECL_NSIDNSLISTENER
+    NS_DECL_NSICHANNELWITHDIVERTABLEPARENTLISTENER
     NS_DECLARE_STATIC_IID_ACCESSOR(NS_HTTPCHANNEL_IID)
 
     // nsIHttpAuthenticableChannel. We can't use
@@ -118,7 +119,8 @@ public:
 
     virtual nsresult Init(nsIURI *aURI, uint32_t aCaps, nsProxyInfo *aProxyInfo,
                           uint32_t aProxyResolveFlags,
-                          nsIURI *aProxyURI) override;
+                          nsIURI *aProxyURI,
+                          const nsID& aChannelId) override;
 
     nsresult OnPush(const nsACString &uri, Http2PushedStream *pushedStream);
 
@@ -269,7 +271,7 @@ private:
     nsresult Connect();
     void     SpeculativeConnect();
     nsresult SetupTransaction();
-    void     SetupTransactionSchedulingContext();
+    void     SetupTransactionRequestContext();
     nsresult CallOnStartRequest();
     nsresult ProcessResponse();
     nsresult ContinueProcessResponse1(nsresult);
@@ -277,6 +279,7 @@ private:
     nsresult ProcessNormal();
     nsresult ContinueProcessNormal(nsresult);
     void     ProcessAltService();
+    bool     ShouldBypassProcessNotModified();
     nsresult ProcessNotModified();
     nsresult AsyncProcessRedirection(uint32_t httpStatus);
     nsresult ContinueProcessRedirection(nsresult);
@@ -367,6 +370,17 @@ private:
     nsresult ProcessSecurityHeaders();
 
     /**
+     * Taking care of the Content-Signature header and fail the channel if
+     * the signature verification fails or is required but the header is not
+     * present.
+     * This sets mListener to ContentVerifier, which buffers the entire response
+     * before verifying the Content-Signature header. If the verification is
+     * successful, the load proceeds as usual. If the verification fails, a
+     * NS_ERROR_INVALID_SIGNATURE is thrown and a fallback loaded in nsDocShell
+     */
+    nsresult ProcessContentSignatureHeader(nsHttpResponseHead *aResponseHead);
+
+    /**
      * A function that will, if the feature is enabled, send security reports.
      */
     void ProcessSecurityReport(nsresult status);
@@ -406,7 +420,7 @@ private:
     void UpdateAggregateCallbacks();
 
     static bool HasQueryString(nsHttpRequestHead::ParsedMethodType method, nsIURI * uri);
-    bool ResponseWouldVary(nsICacheEntry* entry) const;
+    bool ResponseWouldVary(nsICacheEntry* entry);
     bool IsResumable(int64_t partialLen, int64_t contentLength,
                      bool ignoreMissingPartialLen = false) const;
     nsresult MaybeSetupByteRangeRequest(int64_t partialLen, int64_t contentLength,
@@ -420,6 +434,10 @@ private:
     void SetPushedStream(Http2PushedStream *stream);
 
     void MaybeWarnAboutAppCache();
+
+    void SetLoadGroupUserAgentOverride();
+
+    void SetDoNotTrack();
 
 private:
     nsCOMPtr<nsICancelable>           mProxyRequest;
@@ -482,6 +500,10 @@ private:
     uint32_t                          mTransactionReplaced      : 1;
     uint32_t                          mAuthRetryPending         : 1;
     uint32_t                          mProxyAuthPending         : 1;
+    // Set if before the first authentication attempt a custom authorization
+    // header has been set on the channel.  This will make that custom header
+    // go to the server instead of any cached credentials.
+    uint32_t                          mCustomAuthHeader         : 1;
     uint32_t                          mResuming                 : 1;
     uint32_t                          mInitedCacheEntry         : 1;
     // True if we are loading a fallback cache entry from the
@@ -505,7 +527,7 @@ private:
     // when true, after we finish read from cache we must check all data
     // had been loaded from cache. If not, then an error has to be propagated
     // to the consumer.
-    uint32_t                          mConcurentCacheAccess : 1;
+    uint32_t                          mConcurrentCacheAccess : 1;
     // whether the request is setup be byte-range
     uint32_t                          mIsPartialRequest : 1;
     // true iff there is AutoRedirectVetoNotifier on the stack
@@ -520,6 +542,11 @@ private:
     uint32_t                          mIsPackagedAppResource : 1;
     // True if CORS preflight has been performed
     uint32_t                          mIsCorsPreflightDone : 1;
+
+    // if the http transaction was performed (i.e. not cached) and
+    // the result in OnStopRequest was known to be correctly delimited
+    // by chunking, content-length, or h2 end-stream framing
+    uint32_t                          mStronglyFramed : 1;
 
     nsCOMPtr<nsIChannel>              mPreflightChannel;
 
@@ -541,6 +568,8 @@ private:
 
     // If non-null, warnings should be reported to this object.
     HttpChannelSecurityWarningReporter* mWarningReporter;
+
+    RefPtr<ADivertableParentChannel> mParentChannel;
 protected:
     virtual void DoNotifyListenerCleanup() override;
 

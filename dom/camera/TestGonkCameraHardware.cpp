@@ -153,15 +153,15 @@ TestGonkCameraHardwareListener::HandleEvent(nsIDOMEvent* aEvent)
         OnTakePictureError(mTarget);
       } else if (errorType.EqualsLiteral("system")) {
         if (!NS_WARN_IF(!mCameraThread)) {
-          class DeferredSystemFailure : public nsRunnable
+          class DeferredSystemFailure : public Runnable
           {
           public:
             DeferredSystemFailure(nsGonkCameraControl* aTarget)
               : mTarget(aTarget)
             { }
 
-            NS_IMETHODIMP
-            Run()
+            NS_IMETHOD
+            Run() override
             {
               OnSystemError(mTarget, CameraControlListener::kSystemService, 100, 0);
               return NS_OK;
@@ -228,7 +228,7 @@ TestGonkCameraHardwareListener::HandleEvent(nsIDOMEvent* aEvent)
 
 NS_IMPL_ISUPPORTS(TestGonkCameraHardwareListener, nsIDOMEventListener)
 
-class TestGonkCameraHardware::ControlMessage : public nsRunnable
+class TestGonkCameraHardware::ControlMessage : public Runnable
 {
 public:
   ControlMessage(TestGonkCameraHardware* aTestHw)

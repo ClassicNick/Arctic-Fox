@@ -1,8 +1,9 @@
 <!DOCTYPE HTML>
 <html>
 <head>
-  <title>Test for Login Manager</title>
-  <script type="text/javascript" src="/tests/SimpleTest/SimpleTest.js"></script>  
+  <meta charset="utf-8">
+  <title>Test XML document prompts</title>
+  <script type="text/javascript" src="/tests/SimpleTest/SimpleTest.js"></script>
   <script type="text/javascript" src="pwmgr_common.js"></script>
   <script type="text/javascript" src="prompt_common.js"></script>
   <link rel="stylesheet" type="text/css" href="/tests/SimpleTest/test.css" />
@@ -57,7 +58,7 @@ function handleDialog(doc, testNum) {
   var password = passfield.getAttribute("value");
   var dialog    = doc.getElementById("commonDialog");
 
-  switch(testNum) {
+  switch (testNum) {
     case 1:
         is(username, "xmluser1", "Checking provided username");
         is(password, "xmlpass1", "Checking provided password");
@@ -126,7 +127,7 @@ function xmlLoad(responseDoc) {
   var password = responseDoc.getElementById("pass").textContent;
   var authok = responseDoc.getElementById("ok").textContent;
 
-  switch(testNum) {
+  switch (testNum) {
     case 1:
         is(username, "xmluser1", "Checking provided username");
         is(password, "xmlpass1", "Checking provided password");
@@ -143,12 +144,12 @@ function xmlLoad(responseDoc) {
         ok(false, "Uhh, unhandled switch for testNum #" + testNum);
         break;
   }
-  
+
   doTest();
 }
 
 function doTest() {
-  switch(++testNum) {
+  switch (++testNum) {
     case 1:
         startCallbackTimer();
         makeRequest("authenticate.sjs?user=xmluser1&pass=xmlpass1&realm=xml");

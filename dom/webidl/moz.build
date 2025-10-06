@@ -1,4 +1,4 @@
-# -*- Mode: python; c-basic-offset: 4; indent-tabs-mode: nil; tab-width: 40 -*-
+# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
 # vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -11,6 +11,7 @@ GENERATED_WEBIDL_FILES = [
 PREPROCESSED_WEBIDL_FILES = [
     'HTMLMediaElement.webidl',
     'Navigator.webidl',
+    'Node.webidl',
     'Promise.webidl',
     'PromiseDebugging.webidl',
     'ServiceWorkerRegistration.webidl',
@@ -19,8 +20,7 @@ PREPROCESSED_WEBIDL_FILES = [
 
 WEBIDL_FILES = [
     'AbstractWorker.webidl',
-    'ActivityRequestHandler.webidl',
-    'AlarmsManager.webidl',
+    'AddonManager.webidl',
     'AnalyserNode.webidl',
     'Animatable.webidl',
     'Animation.webidl',
@@ -32,7 +32,6 @@ WEBIDL_FILES = [
     'AnonymousContent.webidl',
     'AppInfo.webidl',
     'AppNotificationServiceOptions.webidl',
-    'Apps.webidl',
     'APZTestData.webidl',
     'ArchiveReader.webidl',
     'ArchiveRequest.webidl',
@@ -52,6 +51,7 @@ WEBIDL_FILES = [
     'AutocompleteInfo.webidl',
     'AVInputPort.webidl',
     'BarProp.webidl',
+    'BaseKeyframeTypes.webidl',
     'BatteryManager.webidl',
     'BeforeAfterKeyboardEvent.webidl',
     'BeforeUnloadEvent.webidl',
@@ -108,10 +108,12 @@ WEBIDL_FILES = [
     'CSSTransition.webidl',
     'CSSValue.webidl',
     'CSSValueList.webidl',
+    'CustomElementsRegistry.webidl',
     'DataContainerEvent.webidl',
-    'DataStore.webidl',
-    'DataStoreImpl.webidl',
     'DataTransfer.webidl',
+    'DataTransferItem.webidl',
+    'DataTransferItemList.webidl',
+    'DecoderDoctorNotification.webidl',
     'DedicatedWorkerGlobalScope.webidl',
     'DelayNode.webidl',
     'DesktopNotification.webidl',
@@ -143,10 +145,8 @@ WEBIDL_FILES = [
     'DOMTransaction.webidl',
     'Downloads.webidl',
     'DragEvent.webidl',
-    'DummyBinding.webidl',
     'DynamicsCompressorNode.webidl',
     'Element.webidl',
-    'EngineeringMode.webidl',
     'Event.webidl',
     'EventHandler.webidl',
     'EventListener.webidl',
@@ -162,6 +162,15 @@ WEBIDL_FILES = [
     'FileMode.webidl',
     'FileReader.webidl',
     'FileReaderSync.webidl',
+    'FileSystem.webidl',
+    'FileSystemDirectoryEntry.webidl',
+    'FileSystemDirectoryReader.webidl',
+    'FileSystemEntry.webidl',
+    'FileSystemFileEntry.webidl',
+    'FlyWebDiscoveryManager.webidl',
+    'FlyWebFetchEvent.webidl',
+    'FlyWebPublish.webidl',
+    'FlyWebWebSocketEvent.webidl',
     'FocusEvent.webidl',
     'FontFace.webidl',
     'FontFaceSet.webidl',
@@ -172,6 +181,7 @@ WEBIDL_FILES = [
     'Geolocation.webidl',
     'GeometryUtils.webidl',
     'GetUserMediaRequest.webidl',
+    'Grid.webidl',
     'HDMIInputPort.webidl',
     'Headers.webidl',
     'HeapSnapshot.webidl',
@@ -197,7 +207,6 @@ WEBIDL_FILES = [
     'HTMLDocument.webidl',
     'HTMLElement.webidl',
     'HTMLEmbedElement.webidl',
-    'HTMLExtAppElement.webidl',
     'HTMLFieldSetElement.webidl',
     'HTMLFontElement.webidl',
     'HTMLFormControlsCollection.webidl',
@@ -233,7 +242,6 @@ WEBIDL_FILES = [
     'HTMLPictureElement.webidl',
     'HTMLPreElement.webidl',
     'HTMLProgressElement.webidl',
-    'HTMLPropertiesCollection.webidl',
     'HTMLQuoteElement.webidl',
     'HTMLScriptElement.webidl',
     'HTMLSelectElement.webidl',
@@ -269,6 +277,7 @@ WEBIDL_FILES = [
     'IDBRequest.webidl',
     'IDBTransaction.webidl',
     'IDBVersionChangeEvent.webidl',
+    'IIRFilterNode.webidl',
     'ImageBitmap.webidl',
     'ImageBitmapRenderingContext.webidl',
     'ImageCapture.webidl',
@@ -279,16 +288,11 @@ WEBIDL_FILES = [
     'InputPort.webidl',
     'InputPortManager.webidl',
     'InspectorUtils.webidl',
-    'InterAppConnection.webidl',
-    'InterAppConnectionRequest.webidl',
-    'InterAppMessagePort.webidl',
     'IterableIterator.webidl',
     'KeyAlgorithm.webidl',
     'KeyboardEvent.webidl',
     'KeyEvent.webidl',
-    'Keyframe.webidl',
     'KeyframeEffect.webidl',
-    'KillSwitch.webidl',
     'LegacyQueryInterface.webidl',
     'LinkStyle.webidl',
     'ListBoxObject.webidl',
@@ -308,6 +312,7 @@ WEBIDL_FILES = [
     'MediaStreamError.webidl',
     'MediaStreamTrack.webidl',
     'MediaTrackConstraintSet.webidl',
+    'MediaTrackSettings.webidl',
     'MediaTrackSupportedConstraints.webidl',
     'MenuBoxObject.webidl',
     'MessageChannel.webidl',
@@ -321,7 +326,6 @@ WEBIDL_FILES = [
     'MobileMessageThread.webidl',
     'MouseEvent.webidl',
     'MouseScrollEvent.webidl',
-    'MozActivity.webidl',
     'MozCellBroadcast.webidl',
     'MozCellBroadcastMessage.webidl',
     'MozIcc.webidl',
@@ -347,7 +351,6 @@ WEBIDL_FILES = [
     'NetDashboard.webidl',
     'NetworkInformation.webidl',
     'NetworkOptions.webidl',
-    'Node.webidl',
     'NodeFilter.webidl',
     'NodeIterator.webidl',
     'NodeList.webidl',
@@ -364,14 +367,12 @@ WEBIDL_FILES = [
     'PannerNode.webidl',
     'ParentNode.webidl',
     'Performance.webidl',
-    'PerformanceCompositeTiming.webidl',
     'PerformanceEntry.webidl',
     'PerformanceMark.webidl',
     'PerformanceMeasure.webidl',
     'PerformanceNavigation.webidl',
     'PerformanceObserver.webidl',
     'PerformanceObserverEntryList.webidl',
-    'PerformanceRenderTiming.webidl',
     'PerformanceResourceTiming.webidl',
     'PerformanceTiming.webidl',
     'PeriodicWave.webidl',
@@ -388,18 +389,16 @@ WEBIDL_FILES = [
     'Presentation.webidl',
     'PresentationAvailability.webidl',
     'PresentationConnection.webidl',
+    'PresentationConnectionList.webidl',
     'PresentationDeviceInfoManager.webidl',
     'PresentationReceiver.webidl',
     'PresentationRequest.webidl',
     'ProcessingInstruction.webidl',
     'ProfileTimelineMarker.webidl',
-    'PropertyIndexedKeyframes.webidl',
     'RadioNodeList.webidl',
     'Range.webidl',
     'Rect.webidl',
     'Request.webidl',
-    'RequestSyncManager.webidl',
-    'RequestSyncScheduler.webidl',
     'ResourceStats.webidl',
     'ResourceStatsManager.webidl',
     'Response.webidl',
@@ -433,7 +432,6 @@ WEBIDL_FILES = [
     'StyleSheetList.webidl',
     'SubtleCrypto.webidl',
     'SVGAElement.webidl',
-    'SVGAltGlyphElement.webidl',
     'SVGAngle.webidl',
     'SVGAnimatedAngle.webidl',
     'SVGAnimatedBoolean.webidl',
@@ -551,6 +549,7 @@ WEBIDL_FILES = [
     'TelephonyCallGroup.webidl',
     'TelephonyCallId.webidl',
     'Text.webidl',
+    'TextClause.webidl',
     'TextDecoder.webidl',
     'TextEncoder.webidl',
     'TextTrack.webidl',
@@ -586,7 +585,7 @@ WEBIDL_FILES = [
     'VideoStreamTrack.webidl',
     'VideoTrack.webidl',
     'VideoTrackList.webidl',
-    'VRDevice.webidl',
+    'VRDisplay.webidl',
     'VTTCue.webidl',
     'VTTRegion.webidl',
     'WaveShaperNode.webidl',
@@ -632,7 +631,7 @@ if CONFIG['MOZ_WEBRTC']:
         'PeerConnectionImplEnums.webidl',
         'PeerConnectionObserver.webidl',
         'PeerConnectionObserverEnums.webidl',
-	'RTCCertificate.webidl',
+        'RTCCertificate.webidl',
         'RTCConfiguration.webidl',
         'RTCIceCandidate.webidl',
         'RTCIdentityAssertion.webidl',
@@ -657,6 +656,7 @@ if CONFIG['MOZ_WEBSPEECH']:
         'SpeechRecognitionResult.webidl',
         'SpeechRecognitionResultList.webidl',
         'SpeechSynthesis.webidl',
+        'SpeechSynthesisErrorEvent.webidl',
         'SpeechSynthesisEvent.webidl',
         'SpeechSynthesisUtterance.webidl',
         'SpeechSynthesisVoice.webidl',
@@ -665,6 +665,7 @@ if CONFIG['MOZ_WEBSPEECH']:
 if CONFIG['MOZ_GAMEPAD']:
     WEBIDL_FILES += [
         'Gamepad.webidl',
+        'GamepadServiceTest.webidl'
     ]
 
 WEBIDL_FILES += [
@@ -674,7 +675,6 @@ WEBIDL_FILES += [
     'DeviceStorageChangeEvent.webidl',
     'DOMTransactionEvent.webidl',
     'HashChangeEvent.webidl',
-    'MozApplicationEvent.webidl',
     'MozSettingsEvent.webidl',
     'PageTransitionEvent.webidl',
     'PopStateEvent.webidl',
@@ -689,7 +689,8 @@ WEBIDL_FILES += [
 # We only expose our prefable test interfaces in debug builds, just to be on
 # the safe side.
 if CONFIG['MOZ_DEBUG']:
-    WEBIDL_FILES += ['TestInterfaceJS.webidl',
+    WEBIDL_FILES += ['TestFunctions.webidl',
+                     'TestInterfaceJS.webidl',
                      'TestInterfaceJSDictionaries.webidl',
                      'TestInterfaceJSMaplikeSetlikeIterable.webidl']
 
@@ -714,6 +715,7 @@ if CONFIG['MOZ_B2G_BT']:
         'BluetoothPairingListener.webidl',
         'BluetoothPbapParameters.webidl',
         'BluetoothPbapRequestHandle.webidl',
+        'BluetoothUUID.webidl',
     ]
 
 if CONFIG['MOZ_SIMPLEPUSH']:
@@ -727,6 +729,7 @@ else:
         'PushManager.webidl',
         'PushMessageData.webidl',
         'PushSubscription.webidl',
+        'PushSubscriptionOptions.webidl',
     ]
 
 if CONFIG['MOZ_NFC']:
@@ -752,6 +755,7 @@ if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'gonk':
         'MozNetworkStatsAlarm.webidl',
         'MozNetworkStatsData.webidl',
         'MozNetworkStatsInterface.webidl',
+        'MozNetworkStatsManager.webidl',
         'MozSpeakerManager.webidl',
         'MozWifiCapabilities.webidl',
         'MozWifiManager.webidl',
@@ -768,6 +772,7 @@ if CONFIG['MOZ_B2G_FM']:
     ]
 
 GENERATED_EVENTS_WEBIDL_FILES = [
+    'AddonEvent.webidl',
     'AnimationPlaybackEvent.webidl',
     'AutocompleteErrorEvent.webidl',
     'BlobEvent.webidl',
@@ -781,7 +786,6 @@ GENERATED_EVENTS_WEBIDL_FILES = [
     'CFStateChangeEvent.webidl',
     'CloseEvent.webidl',
     'DataErrorEvent.webidl',
-    'DataStoreChangeEvent.webidl',
     'DeviceLightEvent.webidl',
     'DeviceOrientationEvent.webidl',
     'DeviceProximityEvent.webidl',
@@ -790,18 +794,17 @@ GENERATED_EVENTS_WEBIDL_FILES = [
     'DOMTransactionEvent.webidl',
     'DownloadEvent.webidl',
     'ErrorEvent.webidl',
-    'ExternalAppEvent.webidl',
     'FontFaceSetLoadEvent.webidl',
     'HashChangeEvent.webidl',
+    'HiddenPluginEvent.webidl',
     'IccChangeEvent.webidl',
     'ImageCaptureErrorEvent.webidl',
     'MediaStreamEvent.webidl',
-    'MozApplicationEvent.webidl',
+    'MediaStreamTrackEvent.webidl',
     'MozCellBroadcastEvent.webidl',
     'MozClirModeEvent.webidl',
     'MozContactChangeEvent.webidl',
     'MozEmergencyCbModeEvent.webidl',
-    'MozInterAppMessageEvent.webidl',
     'MozMessageDeletedEvent.webidl',
     'MozMmsEvent.webidl',
     'MozOtaStatusEvent.webidl',
@@ -816,6 +819,7 @@ GENERATED_EVENTS_WEBIDL_FILES = [
     'PopStateEvent.webidl',
     'PopupBlockedEvent.webidl',
     'PresentationConnectionAvailableEvent.webidl',
+    'PresentationConnectionClosedEvent.webidl',
     'ProgressEvent.webidl',
     'RecordErrorEvent.webidl',
     'ScrollViewChangeEvent.webidl',
@@ -833,11 +837,11 @@ GENERATED_EVENTS_WEBIDL_FILES = [
     'UDPMessageEvent.webidl',
     'UserProximityEvent.webidl',
     'USSDReceivedEvent.webidl',
+    'WebGLContextEvent.webidl',
 ]
 
 if CONFIG['MOZ_WEBRTC']:
     GENERATED_EVENTS_WEBIDL_FILES += [
-        'MediaStreamTrackEvent.webidl',
         'RTCDataChannelEvent.webidl',
         'RTCPeerConnectionIceEvent.webidl',
         'RTCTrackEvent.webidl',
@@ -846,6 +850,7 @@ if CONFIG['MOZ_WEBRTC']:
 if CONFIG['MOZ_WEBSPEECH']:
     GENERATED_EVENTS_WEBIDL_FILES += [
         'SpeechRecognitionEvent.webidl',
+        'SpeechSynthesisErrorEvent.webidl',
         'SpeechSynthesisEvent.webidl',
     ]
 
@@ -900,12 +905,35 @@ if CONFIG['MOZ_BUILD_APP'] in ['browser', 'mobile/android', 'xulrunner']:
         'External.webidl',
     ]
 
-if CONFIG['MOZ_PAY']:
+if CONFIG['MOZ_EME']:
     WEBIDL_FILES += [
-        'MozPaymentProvider.webidl'
+        'MediaEncryptedEvent.webidl',
+        'MediaKeyError.webidl',
+        'MediaKeyMessageEvent.webidl',
+        'MediaKeys.webidl',
+        'MediaKeySession.webidl',
+        'MediaKeysRequestStatus.webidl',
+        'MediaKeyStatusMap.webidl',
+        'MediaKeySystemAccess.webidl',
+        'WidevineCDMManifest.webidl',
     ]
 
 if CONFIG['MOZ_B2G']:
     WEBIDL_FILES += [
-        'Identity.webidl'
+        'Apps.webidl',
+        'Identity.webidl',
+        'MozApplicationEvent.webidl'
+    ]
+    GENERATED_EVENTS_WEBIDL_FILES += [
+        'MozApplicationEvent.webidl'
+    ]
+
+if CONFIG['MOZ_WIDGET_TOOLKIT'] != 'android':
+    WEBIDL_FILES += [
+        'AlarmsManager.webidl',
+    ]
+
+if CONFIG['ACCESSIBILITY']:
+    WEBIDL_FILES += [
+        'AccessibleNode.webidl',
     ]

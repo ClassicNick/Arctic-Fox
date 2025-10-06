@@ -50,7 +50,7 @@ function init() {
   try {
     ps = Cc["@mozilla.org/push/Service;1"]
            .getService(Ci.nsIPushService);
-  } catch(e) {
+  } catch (e) {
     dump("Could not acquire PushService\n");
   }
 
@@ -78,7 +78,7 @@ function display(info, pushService) {
 
   if (info.principal.appId) {
     let b2gtitle = document.createElement('h3');
-    let trueFalse = bundle.GetStringFromName(info.principal.isInBrowserElement ? 'true' : 'false');
+    let trueFalse = bundle.GetStringFromName(info.principal.isInIsolatedMozBrowserElement ? 'true' : 'false');
 
     let b2gtitleStr =
       bundle.formatStringFromName('b2gtitle', [ brandBundle.getString("brandShortName"),
@@ -125,7 +125,7 @@ function display(info, pushService) {
 
   let pushItem = createItem(bundle.GetStringFromName('pushEndpoint'), bundle.GetStringFromName('waiting'));
   if (pushService) {
-    pushService.getRegistration(info.scope, info.principal, (status, pushRecord) => {
+    pushService.getSubscription(info.scope, info.principal, (status, pushRecord) => {
       if (Components.isSuccessCode(status)) {
         pushItem.data = JSON.stringify(pushRecord);
       } else {

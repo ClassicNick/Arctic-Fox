@@ -19,7 +19,8 @@ XPCOMUtils.defineLazyModuleGetter(this, "Messaging",
 
 XPCOMUtils.defineLazyModuleGetter(this, "PlacesUtils",
                                   "resource://gre/modules/PlacesUtils.jsm");
-
+XPCOMUtils.defineLazyModuleGetter(this, "Task",
+                                  "resource://gre/modules/Task.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "PrivateBrowsingUtils",
                                   "resource://gre/modules/PrivateBrowsingUtils.jsm");
 
@@ -41,6 +42,8 @@ function PushRecord(props) {
   this.p256dhPrivateKey = props.p256dhPrivateKey;
   this.authenticationSecret = props.authenticationSecret;
   this.systemRecord = !!props.systemRecord;
+  this.appServerKey = props.appServerKey;
+  this.recentMessageIDs = props.recentMessageIDs;
   this.setQuota(props.quota);
   this.ctime = (typeof props.ctime === "number") ? props.ctime : 0;
 }
@@ -89,6 +92,29 @@ PushRecord.prototype = {
     this.lastPush = Date.now();
   },
 
+  /**
+   * Records a message ID sent to this push registration. We track the last few
+   * messages sent to each registration to avoid firing duplicate events for
+   * unacknowledged messages.
+   */
+  noteRecentMessageID(id) {
+    if (this.recentMessageIDs) {
+      this.recentMessageIDs.unshift(id);
+    } else {
+      this.recentMessageIDs = [id];
+    }
+    // Drop older message IDs from the end of the list.
+    let maxRecentMessageIDs = Math.min(
+      this.recentMessageIDs.length,
+      Math.max(prefs.get("maxRecentMessageIDsPerSubscription"), 0)
+    );
+    this.recentMessageIDs.length = maxRecentMessageIDs || 0;
+  },
+
+  hasRecentMessageID(id) {
+    return this.recentMessageIDs && this.recentMessageIDs.includes(id);
+  },
+
   reduceQuota() {
     if (!this.quotaApplies()) {
       return;
@@ -109,23 +135,19 @@ PushRecord.prototype = {
    *  visited the site, or `-Infinity` if the site is not in the user's history.
    *  The time is expressed in milliseconds since Epoch.
    */
-  getLastVisit() {
+  getLastVisit: Task.async(function* () {
     if (!this.quotaApplies() || this.isTabOpen()) {
       // If the registration isn't subject to quota, or the user already
       // has the site open, skip expensive database queries.
-      return Promise.resolve(Date.now());
+      return Date.now();
     }
 
     if (AppConstants.MOZ_ANDROID_HISTORY) {
-      return Messaging.sendRequestForResult({
+      let result = yield Messaging.sendRequestForResult({
         type: "History:GetPrePathLastVisitedTimeMilliseconds",
         prePath: this.uri.prePath,
-      }).then(result => {
-        if (result == 0) {
-          return -Infinity;
-        }
-        return result;
       });
+      return result == 0 ? -Infinity : result;
     }
 
     // Places History transition types that can fire a
@@ -140,36 +162,35 @@ PushRecord.prototype = {
       Ci.nsINavHistoryService.TRANSITION_REDIRECT_TEMPORARY
     ].join(",");
 
-    return PlacesUtils.withConnectionWrapper("PushRecord.getLastVisit", db => {
-      // We're using a custom query instead of `nsINavHistoryQueryOptions`
-      // because the latter doesn't expose a way to filter by transition type:
-      // `setTransitions` performs a logical "and," but we want an "or." We
-      // also avoid an unneeded left join on `moz_favicons`, and an `ORDER BY`
-      // clause that emits a suboptimal index warning.
-      return db.executeCached(
-        `SELECT MAX(p.last_visit_date)
-         FROM moz_places p
-         INNER JOIN moz_historyvisits h ON p.id = h.place_id
-         WHERE (
-           p.url >= :urlLowerBound AND p.url <= :urlUpperBound AND
-           h.visit_type IN (${QUOTA_REFRESH_TRANSITIONS_SQL})
-         )
-        `,
-        {
-          // Restrict the query to all pages for this origin.
-          urlLowerBound: this.uri.prePath,
-          urlUpperBound: this.uri.prePath + "\x7f",
-        }
-      );
-    }).then(rows => {
-      if (!rows.length) {
-        return -Infinity;
+    let db =  yield PlacesUtils.promiseDBConnection();
+    // We're using a custom query instead of `nsINavHistoryQueryOptions`
+    // because the latter doesn't expose a way to filter by transition type:
+    // `setTransitions` performs a logical "and," but we want an "or." We
+    // also avoid an unneeded left join on `moz_favicons`, and an `ORDER BY`
+    // clause that emits a suboptimal index warning.
+    let rows = yield db.executeCached(
+      `SELECT MAX(visit_date) AS lastVisit
+       FROM moz_places p
+       JOIN moz_historyvisits ON p.id = place_id
+       WHERE rev_host = get_unreversed_host(:host || '.') || '.'
+         AND url BETWEEN :prePath AND :prePath || X'FFFF'
+         AND visit_type IN (${QUOTA_REFRESH_TRANSITIONS_SQL})
+      `,
+      {
+        // Restrict the query to all pages for this origin.
+        host: this.uri.host,
+        prePath: this.uri.prePath,
       }
-      // Places records times in microseconds.
-      let lastVisit = rows[0].getResultByIndex(0);
-      return lastVisit / 1000;
-    });
-  },
+    );
+
+    if (!rows.length) {
+      return -Infinity;
+    }
+    // Places records times in microseconds.
+    let lastVisit = rows[0].getResultByName("lastVisit");
+
+    return lastVisit / 1000;
+  }),
 
   isTabOpen() {
     let windows = Services.wm.getEnumerator("navigator:browser");
@@ -230,14 +251,33 @@ PushRecord.prototype = {
       this.principal.originAttributes, pattern);
   },
 
+  hasAuthenticationSecret() {
+    return !!this.authenticationSecret &&
+           this.authenticationSecret.byteLength == 16;
+  },
+
+  matchesAppServerKey(key) {
+    if (!this.appServerKey) {
+      return !key;
+    }
+    if (!key) {
+      return false;
+    }
+    return this.appServerKey.length === key.length &&
+           this.appServerKey.every((value, index) => value === key[index]);
+  },
+
   toSubscription() {
     return {
       endpoint: this.pushEndpoint,
       lastPush: this.lastPush,
       pushCount: this.pushCount,
       p256dhKey: this.p256dhPublicKey,
+      p256dhPrivateKey: this.p256dhPrivateKey,
       authenticationSecret: this.authenticationSecret,
+      appServerKey: this.appServerKey,
       quota: this.quotaApplies() ? this.quota : -1,
+      systemRecord: this.systemRecord,
     };
   },
 };

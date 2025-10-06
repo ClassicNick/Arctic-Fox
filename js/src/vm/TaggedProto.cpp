@@ -10,6 +10,9 @@
 #include "jsobj.h"
 
 #include "gc/Barrier.h"
+#include "gc/Zone.h"
+
+#include "vm/Caches-inl.h"
 
 namespace js {
 
@@ -29,4 +32,46 @@ InternalBarrierMethods<TaggedProto>::postBarrier(TaggedProto* vp, TaggedProto pr
                                                    nextObj);
 }
 
+/* static */ void
+InternalBarrierMethods<TaggedProto>::readBarrier(const TaggedProto& proto)
+{
+    InternalBarrierMethods<JSObject*>::readBarrier(proto.toObjectOrNull());
+}
+
 } // namespace js
+
+js::HashNumber
+js::TaggedProto::hashCode() const
+{
+    return Zone::UniqueIdToHash(uniqueId());
+}
+
+bool
+js::TaggedProto::hasUniqueId() const
+{
+    if (!isObject())
+        return true;
+    JSObject* obj = toObject();
+    return obj->zone()->hasUniqueId(obj);
+}
+
+bool
+js::TaggedProto::ensureUniqueId() const
+{
+    if (!isObject())
+        return true;
+    uint64_t unusedId;
+    JSObject* obj = toObject();
+    return obj->zone()->getUniqueId(obj, &unusedId);
+}
+
+uint64_t
+js::TaggedProto::uniqueId() const
+{
+    if (isDynamic())
+        return uint64_t(1);
+    JSObject* obj = toObjectOrNull();
+    if (!obj)
+        return uint64_t(0);
+    return obj->zone()->getUniqueIdInfallible(obj);
+}

@@ -124,10 +124,10 @@ public:
   GetService();
 
   bool
-  RegisterWorker(JSContext* aCx, WorkerPrivate* aWorkerPrivate);
+  RegisterWorker(WorkerPrivate* aWorkerPrivate);
 
   void
-  UnregisterWorker(JSContext* aCx, WorkerPrivate* aWorkerPrivate);
+  UnregisterWorker(WorkerPrivate* aWorkerPrivate);
 
   void
   RemoveSharedWorker(WorkerDomainInfo* aDomainInfo,
@@ -181,10 +181,10 @@ public:
   }
 
   static void
-  SetDefaultRuntimeOptions(const JS::RuntimeOptions& aRuntimeOptions)
+  SetDefaultContextOptions(const JS::ContextOptions& aContextOptions)
   {
     AssertIsOnMainThread();
-    sDefaultJSSettings.runtimeOptions = aRuntimeOptions;
+    sDefaultJSSettings.contextOptions = aContextOptions;
   }
 
   void
@@ -197,7 +197,7 @@ public:
   UpdatePlatformOverridePreference(const nsAString& aValue);
 
   void
-  UpdateAllWorkerRuntimeOptions();
+  UpdateAllWorkerContextOptions();
 
   void
   UpdateAllWorkerLanguages(const nsTArray<nsString>& aLanguages);
@@ -249,6 +249,11 @@ public:
   void
   SendOfflineStatusChangeEventToAllWorkers(bool aIsOffline);
 
+  void
+  MemoryPressureAllWorkers();
+
+  uint32_t ClampedHardwareConcurrency() const;
+
 private:
   RuntimeService();
   ~RuntimeService();
@@ -270,7 +275,7 @@ private:
                       nsTArray<WorkerPrivate*>& aWorkers);
 
   bool
-  ScheduleWorker(JSContext* aCx, WorkerPrivate* aWorkerPrivate);
+  ScheduleWorker(WorkerPrivate* aWorkerPrivate);
 
   static void
   ShutdownIdleThreads(nsITimer* aTimer, void* aClosure);

@@ -8,19 +8,20 @@
  * of all the markers in the timeline data.
  */
 
-const { Cc, Ci, Cu, Cr } = require("chrome");
-const { Heritage } = require("resource://devtools/client/shared/widgets/ViewHelpers.jsm");
+const { Heritage } = require("devtools/client/shared/widgets/view-helpers");
 const { AbstractTreeItem } = require("resource://devtools/client/shared/widgets/AbstractTreeItem.jsm");
+const { MarkerBlueprintUtils } = require("devtools/client/performance/modules/marker-blueprint-utils");
 
-const MarkerUtils = require("devtools/client/performance/modules/logic/marker-utils");
-
-const HTML_NS = "http://www.w3.org/1999/xhtml";
-
-const LEVEL_INDENT = 10; // px
-const ARROW_NODE_OFFSET = -15; // px
-const WATERFALL_MARKER_SIDEBAR_SAFE_BOUNDS = 20; // px
-const WATERFALL_MARKER_SIDEBAR_WIDTH = 175; // px
-const WATERFALL_MARKER_TIMEBAR_WIDTH_MIN = 5; // px
+// px
+const LEVEL_INDENT = 10;
+// px
+const ARROW_NODE_OFFSET = -15;
+// px
+const WATERFALL_MARKER_SIDEBAR_SAFE_BOUNDS = 20;
+// px
+const WATERFALL_MARKER_SIDEBAR_WIDTH = 175;
+// px
+const WATERFALL_MARKER_TIMEBAR_WIDTH_MIN = 5;
 
 /**
  * A detailed waterfall view for the timeline data.
@@ -39,7 +40,7 @@ const WATERFALL_MARKER_TIMEBAR_WIDTH_MIN = 5; // px
 function MarkerView({ owner, marker, level, hidden }) {
   AbstractTreeItem.call(this, {
     parent: owner,
-    level: level|0 - (hidden ? 1 : 0)
+    level: level | 0 - (hidden ? 1 : 0)
   });
 
   this.marker = marker;
@@ -54,7 +55,7 @@ MarkerView.prototype = Heritage.extend(AbstractTreeItem.prototype, {
    * Calculates and stores the available width for the waterfall.
    * This should be invoked every time the container node is resized.
    */
-  recalculateBounds: function() {
+  recalculateBounds: function () {
     this.root._waterfallWidth = this.bounds.width
       - WATERFALL_MARKER_SIDEBAR_WIDTH
       - WATERFALL_MARKER_SIDEBAR_SAFE_BOUNDS;
@@ -86,7 +87,7 @@ MarkerView.prototype = Heritage.extend(AbstractTreeItem.prototype, {
    * Gets the current waterfall width.
    * @return number
    */
-  getWaterfallWidth: function() {
+  getWaterfallWidth: function () {
     return this._waterfallWidth;
   },
 
@@ -94,7 +95,7 @@ MarkerView.prototype = Heritage.extend(AbstractTreeItem.prototype, {
    * Gets the data scale amount for the current width and interval.
    * @return number
    */
-  getDataScale: function() {
+  getDataScale: function () {
     let startTime = this.root._interval.startTime|0;
     let endTime = this.root._interval.endTime|0;
     return this.root._waterfallWidth / (endTime - startTime);
@@ -106,7 +107,7 @@ MarkerView.prototype = Heritage.extend(AbstractTreeItem.prototype, {
    * @param nsIDOMNode arrowNode
    * @return nsIDOMNode
    */
-  _displaySelf: function(document, arrowNode) {
+  _displaySelf: function (document, arrowNode) {
     let targetNode = document.createElement("hbox");
     targetNode.className = "waterfall-tree-item";
     targetNode.setAttribute("otmt", this.marker.isOffMainThread);
@@ -135,7 +136,7 @@ MarkerView.prototype = Heritage.extend(AbstractTreeItem.prototype, {
    * Populates this node in the waterfall tree with the corresponding "markers".
    * @param array:AbstractTreeItem children
    */
-  _populateSelf: function(children) {
+  _populateSelf: function (children) {
     let submarkers = this.marker.submarkers;
     if (!submarkers || !submarkers.length) {
       return;
@@ -148,7 +149,7 @@ MarkerView.prototype = Heritage.extend(AbstractTreeItem.prototype, {
       let marker = submarkers[i];
 
       // Skip filtered markers
-      if (!MarkerUtils.isMarkerValid(marker, this.filter)) {
+      if (!MarkerBlueprintUtils.shouldDisplayMarker(marker, this.filter)) {
         continue;
       }
 
@@ -171,14 +172,15 @@ MarkerView.prototype = Heritage.extend(AbstractTreeItem.prototype, {
    * @param nsIDOMNode targetNode
    * @param nsIDOMNode arrowNode
    */
-  _buildMarkerCells: function(doc, targetNode, arrowNode) {
+  _buildMarkerCells: function (doc, targetNode, arrowNode) {
     let marker = this.marker;
-    let blueprint = MarkerUtils.getBlueprintFor(marker);
+    let blueprint = MarkerBlueprintUtils.getBlueprintFor(marker);
     let startTime = this.root._interval.startTime;
     let endTime = this.root._interval.endTime;
 
     let sidebarCell = this._buildMarkerSidebar(doc, blueprint, marker);
-    let timebarCell = this._buildMarkerTimebar(doc, blueprint, marker, startTime, endTime, arrowNode);
+    let timebarCell = this._buildMarkerTimebar(doc, blueprint, marker, startTime,
+                                               endTime, arrowNode);
 
     targetNode.appendChild(sidebarCell);
     targetNode.appendChild(timebarCell);
@@ -199,7 +201,7 @@ MarkerView.prototype = Heritage.extend(AbstractTreeItem.prototype, {
    * Functions creating each cell in this waterfall view.
    * Invoked by `_displaySelf`.
    */
-  _buildMarkerSidebar: function(doc, style, marker) {
+  _buildMarkerSidebar: function (doc, style, marker) {
     let cell = doc.createElement("hbox");
     cell.className = "waterfall-sidebar theme-sidebar";
     cell.setAttribute("width", WATERFALL_MARKER_SIDEBAR_WIDTH);
@@ -212,7 +214,7 @@ MarkerView.prototype = Heritage.extend(AbstractTreeItem.prototype, {
     cell.appendChild(bullet);
 
     let name = doc.createElement("description");
-    let label = MarkerUtils.getMarkerLabel(marker);
+    let label = MarkerBlueprintUtils.getMarkerLabel(marker);
     name.className = "plain waterfall-marker-name";
     name.style.transform = `translateX(${this.level * LEVEL_INDENT}px)`;
     name.setAttribute("crop", "end");
@@ -223,7 +225,7 @@ MarkerView.prototype = Heritage.extend(AbstractTreeItem.prototype, {
 
     return cell;
   },
-  _buildMarkerTimebar: function(doc, style, marker, startTime, endTime, arrowNode) {
+  _buildMarkerTimebar: function (doc, style, marker, startTime, endTime, arrowNode) {
     let cell = doc.createElement("hbox");
     cell.className = "waterfall-marker waterfall-background-ticks";
     cell.setAttribute("align", "center");
@@ -233,7 +235,7 @@ MarkerView.prototype = Heritage.extend(AbstractTreeItem.prototype, {
     let offset = (marker.start - startTime) * dataScale;
     let width = (marker.end - marker.start) * dataScale;
 
-    arrowNode.style.transform =`translateX(${offset + ARROW_NODE_OFFSET}px)`;
+    arrowNode.style.transform = `translateX(${offset + ARROW_NODE_OFFSET}px)`;
     cell.appendChild(arrowNode);
 
     let bar = doc.createElement("hbox");
@@ -249,7 +251,7 @@ MarkerView.prototype = Heritage.extend(AbstractTreeItem.prototype, {
   /**
    * Adds the event listeners for this particular tree item.
    */
-  _addEventListeners: function() {
+  _addEventListeners: function () {
     this.on("focus", this._onItemFocus);
     this.on("blur", this._onItemBlur);
   },
@@ -257,14 +259,14 @@ MarkerView.prototype = Heritage.extend(AbstractTreeItem.prototype, {
   /**
    * Handler for the "blur" event on the root item.
    */
-  _onItemBlur: function() {
+  _onItemBlur: function () {
     this.root.emit("unselected");
   },
 
   /**
    * Handler for the "mousedown" event on the root item.
    */
-  _onItemFocus: function(e, item) {
+  _onItemFocus: function (e, item) {
     this.root.emit("selected", item.marker);
   }
 });
@@ -282,13 +284,19 @@ MarkerView.prototype = Heritage.extend(AbstractTreeItem.prototype, {
  *         True if the marker fits inside the specified time range.
  */
 function isMarkerInRange(e, start, end) {
-  let m_start = e.start|0;
-  let m_end = e.end|0;
+  let mStart = e.start|0;
+  let mEnd = e.end|0;
 
-  return (m_start >= start && m_end <= end) || // bounds inside
-         (m_start < start && m_end > end) || // bounds outside
-         (m_start < start && m_end >= start && m_end <= end) || // overlap start
-         (m_end > end && m_start >= start && m_start <= end); // overlap end
+  return (
+    // bounds inside
+    (mStart >= start && mEnd <= end) ||
+    // bounds outside
+    (mStart < start && mEnd > end) ||
+    // overlap start
+    (mStart < start && mEnd >= start && mEnd <= end) ||
+    // overlap end
+    (mEnd > end && mStart >= start && mStart <= end)
+  );
 }
 
 exports.MarkerView = MarkerView;

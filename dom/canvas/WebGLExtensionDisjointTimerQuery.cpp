@@ -6,10 +6,11 @@
 
 #include "WebGLExtensions.h"
 
+#include "gfxPrefs.h"
+#include "GLContext.h"
 #include "mozilla/dom/ToJSValue.h"
 #include "mozilla/dom/WebGLRenderingContextBinding.h"
 #include "mozilla/dom/BindingUtils.h"
-#include "GLContext.h"
 #include "WebGLContext.h"
 #include "WebGLTimerQuery.h"
 
@@ -117,6 +118,7 @@ WebGLExtensionDisjointTimerQuery::EndQueryEXT(GLenum target)
 
   mContext->MakeContextCurrent();
   mContext->GL()->fEndQuery(target);
+  mActiveQuery->QueueAvailablity();
   mActiveQuery = nullptr;
 }
 
@@ -139,6 +141,7 @@ WebGLExtensionDisjointTimerQuery::QueryCounterEXT(WebGLTimerQuery* query,
   mContext->MakeContextCurrent();
   mContext->GL()->fQueryCounter(query->mGLName, target);
   query->mTarget = LOCAL_GL_TIMESTAMP_EXT;
+  query->QueueAvailablity();
 }
 
 void
@@ -174,7 +177,9 @@ WebGLExtensionDisjointTimerQuery::GetQueryEXT(JSContext* cx, GLenum target,
       return;
     }
     GLint bits = 0;
-    mContext->GL()->fGetQueryiv(target, pname, &bits);
+    if (mContext->HasTimestampBits()) {
+      mContext->GL()->fGetQueryiv(target, pname, &bits);
+    }
     retval.set(JS::Int32Value(int32_t(bits)));
     break;
   }
@@ -221,7 +226,8 @@ WebGLExtensionDisjointTimerQuery::GetQueryObjectEXT(JSContext* cx,
     mContext->GL()->fGetQueryObjectuiv(query->mGLName,
                                        LOCAL_GL_QUERY_RESULT_AVAILABLE_EXT,
                                        &avail);
-    retval.set(JS::BooleanValue(bool(avail)));
+    bool canBeAvailable = query->CanBeAvailable() || gfxPrefs::WebGLImmediateQueries();
+    retval.set(JS::BooleanValue(bool(avail) && canBeAvailable));
     break;
   }
   default:
@@ -241,6 +247,11 @@ WebGLExtensionDisjointTimerQuery::IsSupported(const WebGLContext* webgl)
          gl->IsSupported(gl::GLFeature::query_counter); // provides GL_TIMESTAMP
 }
 
+void
+WebGLExtensionDisjointTimerQuery::OnMarkLost()
+{
+  mActiveQuery = nullptr;
+}
 
 IMPL_WEBGL_EXTENSION_GOOP(WebGLExtensionDisjointTimerQuery, EXT_disjoint_timer_query)
 

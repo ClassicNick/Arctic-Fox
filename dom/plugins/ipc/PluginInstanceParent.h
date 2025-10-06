@@ -18,13 +18,13 @@
 #endif
 
 #include "npfunctions.h"
-#include "nsAutoPtr.h"
 #include "nsDataHashtable.h"
 #include "nsHashKeys.h"
 #include "nsRect.h"
 #include "PluginDataResolver.h"
 
-#include "mozilla/unused.h"
+#include "mozilla/Unused.h"
+#include "mozilla/EventForwards.h"
 
 class gfxASurface;
 class gfxContext;
@@ -316,18 +316,6 @@ public:
         aOutput = mSrcAttribute;
     }
 
-    /**
-     * This function tells us whether this plugin instance would have been
-     * whitelisted for Shumway if Shumway had been enabled. This is being used
-     * for the purpose of gathering telemetry on Flash hangs that could
-     * potentially be avoided by using Shumway instead.
-     */
-    bool
-    IsWhitelistedForShumway() const
-    {
-        return mIsWhitelistedForShumway;
-    }
-
     virtual bool
     AnswerPluginFocusChange(const bool& gotFocus) override;
 
@@ -342,6 +330,10 @@ public:
     nsresult BeginUpdateBackground(const nsIntRect& aRect,
                                    DrawTarget** aDrawTarget);
     nsresult EndUpdateBackground(const nsIntRect& aRect);
+#if defined(XP_WIN)
+    nsresult SetScrollCaptureId(uint64_t aScrollCaptureId);
+    nsresult GetScrollCaptureContainer(mozilla::layers::ImageContainer** aContainer);
+#endif
     void DidComposite();
 
     bool IsUsingDirectDrawing();
@@ -363,6 +355,14 @@ public:
         const mozilla::widget::CandidateWindowPosition& aPosition) override;
     virtual bool
     RecvRequestCommitOrCancel(const bool& aCommitted) override;
+
+    // for reserved shortcut key handling with windowed plugin on Windows
+    nsresult HandledWindowedPluginKeyEvent(
+      const mozilla::NativeEventData& aKeyEventData,
+      bool aIsConsumed);
+    virtual bool
+    RecvOnWindowedPluginKeyEvent(
+      const mozilla::NativeEventData& aKeyEventData) override;
 
 private:
     // Create an appropriate platform surface for a background of size
@@ -398,7 +398,6 @@ private:
     NPP mNPP;
     const NPNetscapeFuncs* mNPNIface;
     nsCString mSrcAttribute;
-    bool mIsWhitelistedForShumway;
     NPWindowType mWindowType;
     int16_t mDrawingModel;
 

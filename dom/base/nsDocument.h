@@ -44,7 +44,7 @@
 #include "nsGkAtoms.h"
 #include "nsIApplicationCache.h"
 #include "nsIApplicationCacheContainer.h"
-#include "nsStyleSet.h"
+#include "mozilla/StyleSetHandle.h"
 #include "PLDHashTable.h"
 #include "nsAttrAndChildArray.h"
 #include "nsDOMAttributeMap.h"
@@ -68,6 +68,7 @@
 #include "jsfriendapi.h"
 #include "ImportManager.h"
 #include "mozilla/LinkedList.h"
+#include "CustomElementsRegistry.h"
 
 #define XML_DECLARATION_BITS_DECLARATION_EXISTS   (1 << 0)
 #define XML_DECLARATION_BITS_ENCODING_EXISTS      (1 << 1)
@@ -111,7 +112,6 @@ private:
   RefPtr<nsDocument> mDocument;
 
 public:
-  RefPtr<gfx::VRDeviceProxy> mVRHMDDevice;
   // This value should be true if the fullscreen request is
   // originated from chrome code.
   bool mIsCallerChrome = false;
@@ -132,7 +132,7 @@ public:
  * and 'id' mappings of a given string. This is so that
  * nsHTMLDocument::ResolveName only has to do one hash lookup instead
  * of two. It's not clear whether this still matters for performance.
- * 
+ *
  * We also store the document.all result list here. This is mainly so that
  * when all elements with the given ID are removed and we remove
  * the ID's nsIdentifierMapEntry, the document.all result is released too.
@@ -263,48 +263,6 @@ private:
 
 namespace mozilla {
 namespace dom {
-
-class CustomElementHashKey : public PLDHashEntryHdr
-{
-public:
-  typedef CustomElementHashKey *KeyType;
-  typedef const CustomElementHashKey *KeyTypePointer;
-
-  CustomElementHashKey(int32_t aNamespaceID, nsIAtom *aAtom)
-    : mNamespaceID(aNamespaceID),
-      mAtom(aAtom)
-  {}
-  explicit CustomElementHashKey(const CustomElementHashKey* aKey)
-    : mNamespaceID(aKey->mNamespaceID),
-      mAtom(aKey->mAtom)
-  {}
-  ~CustomElementHashKey()
-  {}
-
-  KeyType GetKey() const { return const_cast<KeyType>(this); }
-  bool KeyEquals(const KeyTypePointer aKey) const
-  {
-    MOZ_ASSERT(mNamespaceID != kNameSpaceID_Unknown,
-               "This equals method is not transitive, nor symmetric. "
-               "A key with a namespace of kNamespaceID_Unknown should "
-               "not be stored in a hashtable.");
-    return (kNameSpaceID_Unknown == aKey->mNamespaceID ||
-            mNamespaceID == aKey->mNamespaceID) &&
-           aKey->mAtom == mAtom;
-  }
-
-  static KeyTypePointer KeyToPointer(KeyType aKey) { return aKey; }
-  static PLDHashNumber HashKey(const KeyTypePointer aKey)
-  {
-    return aKey->mAtom->hash();
-  }
-  enum { ALLOW_MEMMOVE = true };
-
-private:
-  int32_t mNamespaceID;
-  nsCOMPtr<nsIAtom> mAtom;
-};
-
 struct LifecycleCallbackArgs
 {
   nsString name;
@@ -374,40 +332,6 @@ struct CustomElementData
 
 private:
   virtual ~CustomElementData() {}
-};
-
-// The required information for a custom element as defined in:
-// https://dvcs.w3.org/hg/webcomponents/raw-file/tip/spec/custom/index.html
-struct CustomElementDefinition
-{
-  CustomElementDefinition(JSObject* aPrototype,
-                          nsIAtom* aType,
-                          nsIAtom* aLocalName,
-                          mozilla::dom::LifecycleCallbacks* aCallbacks,
-                          uint32_t aNamespaceID,
-                          uint32_t aDocOrder);
-
-  // The prototype to use for new custom elements of this type.
-  JS::Heap<JSObject *> mPrototype;
-
-  // The type (name) for this custom element.
-  nsCOMPtr<nsIAtom> mType;
-
-  // The localname to (e.g. <button is=type> -- this would be button).
-  nsCOMPtr<nsIAtom> mLocalName;
-
-  // The lifecycle callbacks to call for this custom element.
-  nsAutoPtr<mozilla::dom::LifecycleCallbacks> mCallbacks;
-
-  // Whether we're currently calling the created callback for a custom element
-  // of this type.
-  bool mElementIsBeingCreated;
-
-  // Element namespace.
-  int32_t mNamespaceID;
-
-  // The document custom element order.
-  uint32_t mDocOrder;
 };
 
 class Registry : public nsISupports
@@ -616,7 +540,7 @@ protected:
     // don't hand out references to the docshell.  The shims should all allow
     // getInterface back on us, but other than that each one should only
     // implement one interface.
-    
+
     // XXXbz I wish we could just derive the _allcaps thing from _i
 #define DECL_SHIM(_i, _allcaps)                                              \
     class _i##Shim final : public nsIInterfaceRequestor,                     \
@@ -655,7 +579,7 @@ protected:
   nsresult AddExternalResource(nsIURI* aURI, nsIContentViewer* aViewer,
                                nsILoadGroup* aLoadGroup,
                                nsIDocument* aDisplayDocument);
-  
+
   nsClassHashtable<nsURIHashKey, ExternalResource> mMap;
   nsRefPtrHashtable<nsURIHashKey, PendingLoad> mPendingLoads;
   bool mHaveShutDown;
@@ -735,7 +659,7 @@ public:
    */
   virtual void SetContentType(const nsAString& aContentType) override;
 
-  virtual nsresult SetBaseURI(nsIURI* aURI) override;
+  virtual void SetBaseURI(nsIURI* aURI) override;
 
   /**
    * Get/Set the base target of a link in a document.
@@ -776,15 +700,17 @@ public:
    * its presentation context (presentation contexts <b>must not</b> be
    * shared among multiple presentation shells).
    */
-  virtual already_AddRefed<nsIPresShell> CreateShell(nsPresContext* aContext,
-                                                     nsViewManager* aViewManager,
-                                                     nsStyleSet* aStyleSet) override;
+  virtual already_AddRefed<nsIPresShell> CreateShell(
+      nsPresContext* aContext,
+      nsViewManager* aViewManager,
+      mozilla::StyleSetHandle aStyleSet) override;
   virtual void DeleteShell() override;
 
   virtual nsresult GetAllowPlugins(bool* aAllowPlugins) override;
 
   virtual already_AddRefed<mozilla::dom::UndoManager> GetUndoManager() override;
 
+  static bool IsElementAnimateEnabled(JSContext* aCx, JSObject* aObject);
   static bool IsWebAnimationsEnabled(JSContext* aCx, JSObject* aObject);
   virtual mozilla::dom::DocumentTimeline* Timeline() override;
   virtual void GetAnimations(
@@ -796,36 +722,37 @@ public:
   virtual Element* FindContentForSubDocument(nsIDocument *aDocument) const override;
   virtual Element* GetRootElementInternal() const override;
 
-  virtual void EnsureOnDemandBuiltInUASheet(mozilla::CSSStyleSheet* aSheet) override;
+  virtual void EnsureOnDemandBuiltInUASheet(mozilla::StyleSheetHandle aSheet) override;
 
   /**
    * Get the (document) style sheets owned by this document.
    * These are ordered, highest priority last
    */
   virtual int32_t GetNumberOfStyleSheets() const override;
-  virtual mozilla::CSSStyleSheet* GetStyleSheetAt(int32_t aIndex) const override;
-  virtual int32_t GetIndexOfStyleSheet(mozilla::CSSStyleSheet* aSheet) const override;
-  virtual void AddStyleSheet(mozilla::CSSStyleSheet* aSheet) override;
-  virtual void RemoveStyleSheet(mozilla::CSSStyleSheet* aSheet) override;
+  virtual mozilla::StyleSheetHandle GetStyleSheetAt(int32_t aIndex) const override;
+  virtual int32_t GetIndexOfStyleSheet(
+      const mozilla::StyleSheetHandle aSheet) const override;
+  virtual void AddStyleSheet(mozilla::StyleSheetHandle aSheet) override;
+  virtual void RemoveStyleSheet(mozilla::StyleSheetHandle aSheet) override;
 
   virtual void UpdateStyleSheets(
-      nsTArray<RefPtr<mozilla::CSSStyleSheet>>& aOldSheets,
-      nsTArray<RefPtr<mozilla::CSSStyleSheet>>& aNewSheets) override;
-  virtual void AddStyleSheetToStyleSets(mozilla::CSSStyleSheet* aSheet);
-  virtual void RemoveStyleSheetFromStyleSets(mozilla::CSSStyleSheet* aSheet);
+      nsTArray<mozilla::StyleSheetHandle::RefPtr>& aOldSheets,
+      nsTArray<mozilla::StyleSheetHandle::RefPtr>& aNewSheets) override;
+  virtual void AddStyleSheetToStyleSets(mozilla::StyleSheetHandle aSheet);
+  virtual void RemoveStyleSheetFromStyleSets(mozilla::StyleSheetHandle aSheet);
 
-  virtual void InsertStyleSheetAt(mozilla::CSSStyleSheet* aSheet,
+  virtual void InsertStyleSheetAt(mozilla::StyleSheetHandle aSheet,
                                   int32_t aIndex) override;
-  virtual void SetStyleSheetApplicableState(mozilla::CSSStyleSheet* aSheet,
+  virtual void SetStyleSheetApplicableState(mozilla::StyleSheetHandle aSheet,
                                             bool aApplicable) override;
 
   virtual nsresult LoadAdditionalStyleSheet(additionalSheetType aType,
                                             nsIURI* aSheetURI) override;
   virtual nsresult AddAdditionalStyleSheet(additionalSheetType aType,
-                                           mozilla::CSSStyleSheet* aSheet) override;
+                                           mozilla::StyleSheetHandle aSheet) override;
   virtual void RemoveAdditionalStyleSheet(additionalSheetType aType,
                                           nsIURI* sheetURI) override;
-  virtual mozilla::CSSStyleSheet* FirstAdditionalAuthorSheet() override;
+  virtual mozilla::StyleSheetHandle GetFirstAdditionalAuthorSheet() override;
 
   virtual nsIChannel* GetChannel() const override {
     return mChannel;
@@ -885,11 +812,11 @@ public:
   virtual void DocumentStatesChanged(
                  mozilla::EventStates aStateMask) override;
 
-  virtual void StyleRuleChanged(mozilla::CSSStyleSheet* aStyleSheet,
+  virtual void StyleRuleChanged(mozilla::StyleSheetHandle aStyleSheet,
                                 mozilla::css::Rule* aStyleRule) override;
-  virtual void StyleRuleAdded(mozilla::CSSStyleSheet* aStyleSheet,
+  virtual void StyleRuleAdded(mozilla::StyleSheetHandle aStyleSheet,
                               mozilla::css::Rule* aStyleRule) override;
-  virtual void StyleRuleRemoved(mozilla::CSSStyleSheet* aStyleSheet,
+  virtual void StyleRuleRemoved(mozilla::StyleSheetHandle aStyleSheet,
                                 mozilla::css::Rule* aStyleRule) override;
 
   virtual void FlushPendingNotifications(mozFlushType aType) override;
@@ -961,7 +888,7 @@ public:
   void ReportUseCounters();
 
 private:
-  void AddOnDemandBuiltInUASheet(mozilla::CSSStyleSheet* aSheet);
+  void AddOnDemandBuiltInUASheet(mozilla::StyleSheetHandle aSheet);
   nsRadioGroupStruct* GetRadioGroupInternal(const nsAString& aName) const;
   void SendToConsole(nsCOMArray<nsISecurityConsoleMessage>& aMessages);
 
@@ -1001,7 +928,8 @@ public:
 
   virtual already_AddRefed<Element> CreateElem(const nsAString& aName,
                                                nsIAtom* aPrefix,
-                                               int32_t aNamespaceID) override;
+                                               int32_t aNamespaceID,
+                                               nsAString* aIs = nullptr) override;
 
   virtual void Sanitize() override;
 
@@ -1143,7 +1071,7 @@ public:
                             const nsAString& aIntegrity) override;
 
   virtual nsresult LoadChromeSheetSync(nsIURI* uri, bool isAgentSheet,
-                                       mozilla::CSSStyleSheet** sheet) override;
+                                       mozilla::StyleSheetHandle::RefPtr* aSheet) override;
 
   virtual nsISupports* GetCurrentContentSink() override;
 
@@ -1200,7 +1128,6 @@ public:
     mozilla::UniquePtr<FullscreenRequest>&& aRequest) override;
   virtual void RestorePreviousFullScreenState() override;
   virtual bool IsFullscreenLeaf() override;
-  virtual bool IsFullScreenDoc() override;
   virtual nsresult
     RemoteFrameFullscreenChanged(nsIDOMElement* aFrameElement) override;
 
@@ -1234,6 +1161,8 @@ public:
   //
   already_AddRefed<nsSimpleContentList> BlockedTrackingNodes() const;
 
+  static bool IsUnprefixedFullscreenEnabled(JSContext* aCx, JSObject* aObject);
+
   // Do the "fullscreen element ready check" from the fullscreen spec.
   // It returns true if the given element is allowed to go into fullscreen.
   bool FullscreenElementReadyCheck(Element* aElement, bool aWasCallerChrome);
@@ -1264,8 +1193,6 @@ public:
   Element* GetFullscreenElement() override;
 
   void RequestPointerLock(Element* aElement) override;
-  bool ShouldLockPointer(Element* aElement, Element* aCurrentLock,
-                         bool aNoFocusCheck = false);
   bool SetPointerLock(Element* aElement, int aCursorStyle);
   static void UnlockPointer(nsIDocument* aDoc = nullptr);
 
@@ -1330,14 +1257,12 @@ public:
   virtual void GetLastStyleSheetSet(nsString& aSheetSet) override;
   virtual mozilla::dom::DOMStringList* StyleSheetSets() override;
   virtual void EnableStyleSheetsForSet(const nsAString& aSheetSet) override;
-  using nsIDocument::CreateElement;
-  using nsIDocument::CreateElementNS;
   virtual already_AddRefed<Element> CreateElement(const nsAString& aTagName,
-                                                  const nsAString& aTypeExtension,
-                                                  mozilla::ErrorResult& rv) override;
+                                                  const mozilla::dom::ElementCreationOptions& aOptions,
+                                                  ErrorResult& rv) override;
   virtual already_AddRefed<Element> CreateElementNS(const nsAString& aNamespaceURI,
                                                     const nsAString& aQualifiedName,
-                                                    const nsAString& aTypeExtension,
+                                                    const mozilla::dom::ElementCreationOptions& aOptions,
                                                     mozilla::ErrorResult& rv) override;
   virtual void UseRegistryFromDocument(nsIDocument* aDocument) override;
 
@@ -1481,19 +1406,23 @@ public:
 
   js::ExpandoAndGeneration mExpandoAndGeneration;
 
+#ifdef MOZ_EME
+  bool ContainsEMEContent();
+#endif
+
   bool ContainsMSEContent();
 
 protected:
   already_AddRefed<nsIPresShell> doCreateShell(nsPresContext* aContext,
                                                nsViewManager* aViewManager,
-                                               nsStyleSet* aStyleSet);
+                                               mozilla::StyleSetHandle aStyleSet);
 
   void RemoveDocStyleSheetsFromStyleSets();
   void RemoveStyleSheetsFromStyleSets(
-      nsTArray<RefPtr<mozilla::CSSStyleSheet>>& aSheets,
+      const nsTArray<mozilla::StyleSheetHandle::RefPtr>& aSheets,
       mozilla::SheetType aType);
   void ResetStylesheetsToURI(nsIURI* aURI);
-  void FillStyleSet(nsStyleSet* aStyleSet);
+  void FillStyleSet(mozilla::StyleSetHandle aStyleSet);
 
   // Return whether all the presshells for this document are safe to flush
   bool IsSafeToFlush() const;
@@ -1544,9 +1473,9 @@ protected:
   // EndLoad() has already happened.
   nsWeakPtr mWeakSink;
 
-  nsTArray<RefPtr<mozilla::CSSStyleSheet>> mStyleSheets;
-  nsTArray<RefPtr<mozilla::CSSStyleSheet>> mOnDemandBuiltInUASheets;
-  nsTArray<RefPtr<mozilla::CSSStyleSheet>> mAdditionalSheets[AdditionalSheetTypeCount];
+  nsTArray<mozilla::StyleSheetHandle::RefPtr> mStyleSheets;
+  nsTArray<mozilla::StyleSheetHandle::RefPtr> mOnDemandBuiltInUASheets;
+  nsTArray<mozilla::StyleSheetHandle::RefPtr> mAdditionalSheets[AdditionalSheetTypeCount];
 
   // Array of observers
   nsTObserverArray<nsIDocumentObserver*> mObservers;
@@ -1579,6 +1508,27 @@ private:
   static mozilla::Maybe<nsTArray<RefPtr<mozilla::dom::CustomElementData>>> sProcessingStack;
 
   static bool CustomElementConstructor(JSContext* aCx, unsigned aArgc, JS::Value* aVp);
+
+  /**
+   * Looking up a custom element definition.
+   * https://html.spec.whatwg.org/#look-up-a-custom-element-definition
+   */
+  mozilla::dom::CustomElementDefinition* LookupCustomElementDefinition(
+    const nsAString& aLocalName, uint32_t aNameSpaceID, const nsAString* aIs);
+
+  /**
+   * Check if the passed custom element name, aOptions.mIs, is a registered
+   * custom element type or not, then return the custom element name for future
+   * usage.
+   *
+   * If there is no existing custom element definition for this name, throw a
+   * NotFoundError.
+   */
+  nsString* CheckCustomElementName(
+    const mozilla::dom::ElementCreationOptions& aOptions,
+    const nsAString& aLocalName,
+    uint32_t aNamespaceID,
+    ErrorResult& rv);
 
 public:
   // Enqueue created callback or register upgrade candidate for
@@ -1643,11 +1593,7 @@ public:
   // terminated instead of letting it finish at its own pace.
   bool mParserAborted:1;
 
-  friend class nsPointerLockPermissionRequest;
   friend class nsCallRequestFullScreen;
-  // When set, trying to lock the pointer doesn't require permission from the
-  // user.
-  bool mAllowRelocking:1;
 
   // ScreenOrientation "pending promise" as described by
   // http://www.w3.org/TR/screen-orientation/
@@ -1666,10 +1612,6 @@ public:
   // 'style-sheet-applicable-state-changed' notification.
   bool mSSApplicableStateNotificationPending:1;
 
-  // The number of pointer lock requests which are cancelled by the user.
-  // The value is saturated to kPointerLockRequestLimit+1 = 3.
-  uint8_t mCancelledPointerLockRequests:2;
-
   // Whether we have reported use counters for this document with Telemetry yet.
   // Normally this is only done at document destruction time, but for image
   // documents (SVG documents) that are not guaranteed to be destroyed, we
@@ -1677,6 +1619,10 @@ public:
   // pointing to them.  We track whether we ever reported use counters so
   // that we only report them once for the document.
   bool mReportedUseCounters:1;
+
+  // Whether we have filled our pres shell's style set with the document's
+  // additional sheets and sheets from the nsStyleSheetService.
+  bool mStyleSetFilled:1;
 
   uint8_t mPendingFullscreenRequests;
 
@@ -1705,14 +1651,13 @@ private:
   friend class nsUnblockOnloadEvent;
   // Recomputes the visibility state but doesn't set the new value.
   mozilla::dom::VisibilityState GetVisibilityState() const;
-  void NotifyStyleSheetAdded(mozilla::CSSStyleSheet* aSheet, bool aDocumentSheet);
-  void NotifyStyleSheetRemoved(mozilla::CSSStyleSheet* aSheet, bool aDocumentSheet);
+  void NotifyStyleSheetAdded(mozilla::StyleSheetHandle aSheet, bool aDocumentSheet);
+  void NotifyStyleSheetRemoved(mozilla::StyleSheetHandle aSheet, bool aDocumentSheet);
 
   void PostUnblockOnloadEvent();
   void DoUnblockOnload();
 
   nsresult CheckFrameOptions();
-  bool IsLoopDocument(nsIChannel* aChannel);
   nsresult InitCSP(nsIChannel* aChannel);
 
   /**
@@ -1776,6 +1721,8 @@ private:
   nsTArray<RefPtr<nsFrameLoader> > mInitializableFrameLoaders;
   nsTArray<nsCOMPtr<nsIRunnable> > mFrameLoaderFinalizers;
   RefPtr<nsRunnableMethod<nsDocument> > mFrameLoaderRunner;
+
+  nsCOMPtr<nsIRunnable> mMaybeEndOutermostXBLUpdateRunner;
 
   nsRevocableEventPtr<nsRunnableMethod<nsDocument, void, false> >
     mPendingTitleChangeEvent;

@@ -6,6 +6,7 @@
 #include "AudioNodeStream.h"
 
 #include "MediaStreamGraphImpl.h"
+#include "MediaStreamListener.h"
 #include "AudioNodeEngine.h"
 #include "ThreeDPoint.h"
 #include "AudioChannelFormat.h"
@@ -29,7 +30,7 @@ namespace mozilla {
 AudioNodeStream::AudioNodeStream(AudioNodeEngine* aEngine,
                                  Flags aFlags,
                                  TrackRate aSampleRate)
-  : ProcessedMediaStream(nullptr),
+  : ProcessedMediaStream(),
     mEngine(aEngine),
     mSampleRate(aSampleRate),
     mFlags(aFlags),
@@ -74,7 +75,6 @@ AudioNodeStream::Create(AudioContext* aCtx, AudioNodeEngine* aEngine,
   // MediaRecorders use an AudioNodeStream, but no AudioNode
   AudioNode* node = aEngine->NodeMainThread();
   MediaStreamGraph* graph = aGraph ? aGraph : aCtx->Graph();
-  MOZ_ASSERT(graph->GraphRate() == aCtx->SampleRate());
 
   RefPtr<AudioNodeStream> stream =
     new AudioNodeStream(aEngine, aFlags, graph->GraphRate());
@@ -385,9 +385,9 @@ public:
   void Run() override
   {
     auto ns = static_cast<AudioNodeStream*>(mStream);
-    ns->mBufferStartTime -= mAdvance;
+    ns->mTracksStartTime -= mAdvance;
 
-    StreamBuffer::Track* track = ns->EnsureTrack(AUDIO_TRACK);
+    StreamTracks::Track* track = ns->EnsureTrack(AUDIO_TRACK);
     track->Get<AudioSegment>()->AppendNullData(mAdvance);
 
     ns->GraphImpl()->DecrementSuspendCount(mStream);
@@ -454,8 +454,8 @@ AudioNodeStream::ObtainInputBlock(AudioBlock& aTmpChunk,
   }
 
   aTmpChunk.AllocateChannels(outputChannelCount);
-  // The static storage here should be 1KB, so it's fine
-  AutoTArray<float, GUESS_AUDIO_CHANNELS*WEBAUDIO_BLOCK_SIZE> downmixBuffer;
+  DownmixBufferType downmixBuffer;
+  ASSERT_ALIGNED16(downmixBuffer.Elements());
 
   for (uint32_t i = 0; i < inputChunkCount; ++i) {
     AccumulateInputChunk(i, *inputChunks[i], &aTmpChunk, &downmixBuffer);
@@ -466,7 +466,7 @@ void
 AudioNodeStream::AccumulateInputChunk(uint32_t aInputIndex,
                                       const AudioBlock& aChunk,
                                       AudioBlock* aBlock,
-                                      nsTArray<float>* aDownmixBuffer)
+                                      DownmixBufferType* aDownmixBuffer)
 {
   AutoTArray<const float*,GUESS_AUDIO_CHANNELS> channels;
   UpMixDownMixChunk(&aChunk, aBlock->ChannelCount(), channels, *aDownmixBuffer);
@@ -492,7 +492,7 @@ void
 AudioNodeStream::UpMixDownMixChunk(const AudioBlock* aChunk,
                                    uint32_t aOutputChannelCount,
                                    nsTArray<const float*>& aOutputChannels,
-                                   nsTArray<float>& aDownmixBuffer)
+                                   DownmixBufferType& aDownmixBuffer)
 {
   for (uint32_t i = 0; i < aChunk->ChannelCount(); i++) {
     aOutputChannels.AppendElement(static_cast<const float*>(aChunk->mChannelData[i]));
@@ -630,9 +630,9 @@ AudioNodeStream::ProduceOutputBeforeInput(GraphTime aFrom)
 void
 AudioNodeStream::AdvanceOutputSegment()
 {
-  StreamBuffer::Track* track = EnsureTrack(AUDIO_TRACK);
+  StreamTracks::Track* track = EnsureTrack(AUDIO_TRACK);
   // No more tracks will be coming
-  mBuffer.AdvanceKnownTracksTime(STREAM_TIME_MAX);
+  mTracks.AdvanceKnownTracksTime(STREAM_TIME_MAX);
 
   AudioSegment* segment = track->Get<AudioSegment>();
 
@@ -648,14 +648,14 @@ AudioNodeStream::AdvanceOutputSegment()
     AudioSegment tmpSegment;
     tmpSegment.AppendAndConsumeChunk(&copyChunk);
     l->NotifyQueuedTrackChanges(Graph(), AUDIO_TRACK,
-                                segment->GetDuration(), 0, tmpSegment);
+                                segment->GetDuration(), TrackEventCommand::TRACK_EVENT_NONE, tmpSegment);
   }
 }
 
 void
 AudioNodeStream::FinishOutput()
 {
-  StreamBuffer::Track* track = EnsureTrack(AUDIO_TRACK);
+  StreamTracks::Track* track = EnsureTrack(AUDIO_TRACK);
   track->SetEnded();
 
   for (uint32_t j = 0; j < mListeners.Length(); ++j) {
@@ -663,7 +663,7 @@ AudioNodeStream::FinishOutput()
     AudioSegment emptySegment;
     l->NotifyQueuedTrackChanges(Graph(), AUDIO_TRACK,
                                 track->GetSegment()->GetDuration(),
-                                MediaStreamListener::TRACK_EVENT_ENDED, emptySegment);
+                                TrackEventCommand::TRACK_EVENT_ENDED, emptySegment);
   }
 }
 

@@ -35,7 +35,6 @@
 #include "nsIWebBrowserPersist.h"
 #include "nsCWebBrowserPersist.h"
 #include "nsIServiceManager.h"
-#include "nsAutoPtr.h"
 #include "nsFocusManager.h"
 #include "Layers.h"
 #include "gfxContext.h"
@@ -658,6 +657,12 @@ nsWebBrowser::LoadURIWithOptions(const char16_t* aURI, uint32_t aLoadFlags,
 }
 
 NS_IMETHODIMP
+nsWebBrowser::SetOriginAttributesBeforeLoading(JS::Handle<JS::Value> aOriginAttributes)
+{
+  return mDocShellAsNav->SetOriginAttributesBeforeLoading(aOriginAttributes);
+}
+
+NS_IMETHODIMP
 nsWebBrowser::LoadURI(const char16_t* aURI, uint32_t aLoadFlags,
                       nsIURI* aReferringURI,
                       nsIInputStream* aPostDataStream,
@@ -1150,7 +1155,7 @@ nsWebBrowser::InitWindow(nativeWindow aParentNativeWindow,
     NS_ENSURE_SUCCESS(SetParentNativeWindow(aParentNativeWindow),
                       NS_ERROR_FAILURE);
 
-  NS_ENSURE_SUCCESS(SetPositionAndSize(aX, aY, aCX, aCY, false),
+  NS_ENSURE_SUCCESS(SetPositionAndSize(aX, aY, aCX, aCY, 0),
                     NS_ERROR_FAILURE);
 
   return NS_OK;
@@ -1180,7 +1185,9 @@ nsWebBrowser::Create()
                                mInitInfo->cx, mInitInfo->cy);
 
     mInternalWidget->SetWidgetListener(this);
-    mInternalWidget->Create(nullptr, mParentNativeWindow, bounds, &widgetInit);
+    rv = mInternalWidget->Create(nullptr, mParentNativeWindow, bounds,
+                                 &widgetInit);
+    NS_ENSURE_SUCCESS(rv, rv);
   }
 
   nsCOMPtr<nsIDocShell> docShell(
@@ -1305,10 +1312,16 @@ nsWebBrowser::GetDevicePixelsPerDesktopPixel(double* aScale)
 NS_IMETHODIMP
 nsWebBrowser::SetPositionDesktopPix(int32_t aX, int32_t aY)
 {
-  // Added to nsIBaseWindow in bug 1247335;
-  // implement if a use-case is found.
-  NS_ASSERTION(false, "implement me!");
-  return NS_ERROR_NOT_IMPLEMENTED;
+  // XXX jfkthame
+  // It's not clear to me whether this will be fully correct across
+  // potential multi-screen, mixed-DPI configurations for all platforms;
+  // we might need to add code paths that make it possible to pass the
+  // desktop-pix parameters all the way through to the native widget,
+  // to avoid the risk of device-pixel coords mapping to the wrong
+  // display on OS X with mixed retina/non-retina screens.
+  double scale = 1.0;
+  GetDevicePixelsPerDesktopPixel(&scale);
+  return SetPosition(NSToIntRound(aX * scale), NSToIntRound(aY * scale));
 }
 
 NS_IMETHODIMP
@@ -1319,7 +1332,7 @@ nsWebBrowser::SetPosition(int32_t aX, int32_t aY)
 
   GetSize(&cx, &cy);
 
-  return SetPositionAndSize(aX, aY, cx, cy, false);
+  return SetPositionAndSize(aX, aY, cx, cy, 0);
 }
 
 NS_IMETHODIMP
@@ -1336,7 +1349,8 @@ nsWebBrowser::SetSize(int32_t aCX, int32_t aCY, bool aRepaint)
 
   GetPosition(&x, &y);
 
-  return SetPositionAndSize(x, y, aCX, aCY, aRepaint);
+  return SetPositionAndSize(x, y, aCX, aCY,
+                            aRepaint ? nsIBaseWindow::eRepaint : 0);
 }
 
 NS_IMETHODIMP
@@ -1347,7 +1361,7 @@ nsWebBrowser::GetSize(int32_t* aCX, int32_t* aCY)
 
 NS_IMETHODIMP
 nsWebBrowser::SetPositionAndSize(int32_t aX, int32_t aY,
-                                 int32_t aCX, int32_t aCY, bool aRepaint)
+                                 int32_t aCX, int32_t aCY, uint32_t aFlags)
 {
   if (!mDocShell) {
     mInitInfo->x = aX;
@@ -1363,12 +1377,13 @@ nsWebBrowser::SetPositionAndSize(int32_t aX, int32_t aY,
     // We also need to resize our widget then.
     if (mInternalWidget) {
       doc_x = doc_y = 0;
-      NS_ENSURE_SUCCESS(mInternalWidget->Resize(aX, aY, aCX, aCY, aRepaint),
+      NS_ENSURE_SUCCESS(mInternalWidget->Resize(aX, aY, aCX, aCY,
+                                                !!(aFlags & nsIBaseWindow::eRepaint)),
                         NS_ERROR_FAILURE);
     }
     // Now reposition/ resize the doc
     NS_ENSURE_SUCCESS(
-      mDocShellAsWin->SetPositionAndSize(doc_x, doc_y, aCX, aCY, aRepaint),
+      mDocShellAsWin->SetPositionAndSize(doc_x, doc_y, aCX, aCY, aFlags),
       NS_ERROR_FAILURE);
   }
 
@@ -1393,8 +1408,7 @@ nsWebBrowser::GetPositionAndSize(int32_t* aX, int32_t* aY,
       *aCY = mInitInfo->cy;
     }
   } else if (mInternalWidget) {
-    LayoutDeviceIntRect bounds;
-    NS_ENSURE_SUCCESS(mInternalWidget->GetBounds(bounds), NS_ERROR_FAILURE);
+    LayoutDeviceIntRect bounds = mInternalWidget->GetBounds();
 
     if (aX) {
       *aX = bounds.x;

@@ -20,7 +20,7 @@
 
 #include "gc/Nursery-inl.h"
 #include "vm/ArrayObject-inl.h"
-#include "vm/ScopeObject-inl.h"
+#include "vm/EnvironmentObject-inl.h"
 #include "vm/Shape-inl.h"
 
 using namespace js;
@@ -84,7 +84,7 @@ ObjectElements::ConvertElementsToDoubles(JSContext* cx, uintptr_t elementsPtr)
 /* static */ bool
 ObjectElements::MakeElementsCopyOnWrite(ExclusiveContext* cx, NativeObject* obj)
 {
-    static_assert(sizeof(HeapSlot) >= sizeof(HeapPtrObject),
+    static_assert(sizeof(HeapSlot) >= sizeof(GCPtrObject),
                   "there must be enough room for the owner object pointer at "
                   "the end of the elements");
     if (!obj->ensureElements(cx, obj->getDenseInitializedLength() + 1))
@@ -294,7 +294,7 @@ NativeObject::setLastProperty(ExclusiveContext* cx, Shape* shape)
 {
     MOZ_ASSERT(!inDictionaryMode());
     MOZ_ASSERT(!shape->inDictionary());
-    MOZ_ASSERT(shape->compartment() == compartment());
+    MOZ_ASSERT(shape->zone() == zone());
     MOZ_ASSERT(shape->numFixedSlots() == numFixedSlots());
     MOZ_ASSERT(shape->getObjectClass() == getClass());
 
@@ -318,7 +318,7 @@ NativeObject::setLastPropertyShrinkFixedSlots(Shape* shape)
 {
     MOZ_ASSERT(!inDictionaryMode());
     MOZ_ASSERT(!shape->inDictionary());
-    MOZ_ASSERT(shape->compartment() == compartment());
+    MOZ_ASSERT(shape->zone() == zone());
     MOZ_ASSERT(lastProperty()->slotSpan() == shape->slotSpan());
     MOZ_ASSERT(shape->getObjectClass() == getClass());
 
@@ -338,7 +338,7 @@ NativeObject::setLastPropertyMakeNonNative(Shape* shape)
 {
     MOZ_ASSERT(!inDictionaryMode());
     MOZ_ASSERT(!shape->getObjectClass()->isNative());
-    MOZ_ASSERT(shape->compartment() == compartment());
+    MOZ_ASSERT(shape->zone() == zone());
     MOZ_ASSERT(shape->slotSpan() == 0);
     MOZ_ASSERT(shape->numFixedSlots() == 0);
 
@@ -1000,7 +1000,7 @@ static inline bool
 CallAddPropertyHook(ExclusiveContext* cx, HandleNativeObject obj, HandleShape shape,
                     HandleValue value)
 {
-    if (JSAddPropertyOp addProperty = obj->getClass()->addProperty) {
+    if (JSAddPropertyOp addProperty = obj->getClass()->getAddProperty()) {
         if (!cx->shouldBeJSContext())
             return false;
 
@@ -1026,7 +1026,7 @@ CallAddPropertyHookDense(ExclusiveContext* cx, HandleNativeObject obj, uint32_t 
         return true;
     }
 
-    if (JSAddPropertyOp addProperty = obj->getClass()->addProperty) {
+    if (JSAddPropertyOp addProperty = obj->getClass()->getAddProperty()) {
         if (!cx->shouldBeJSContext())
             return false;
 
@@ -1043,7 +1043,7 @@ CallAddPropertyHookDense(ExclusiveContext* cx, HandleNativeObject obj, uint32_t 
 }
 
 static bool
-UpdateShapeTypeAndValue(ExclusiveContext* cx, NativeObject* obj, Shape* shape, const Value& value)
+UpdateShapeTypeAndValue(ExclusiveContext* cx, HandleNativeObject obj, HandleShape shape, const Value& value)
 {
     jsid id = shape->propid();
     if (shape->hasSlot()) {
@@ -1080,14 +1080,14 @@ PurgeProtoChain(ExclusiveContext* cx, JSObject* objArg, HandleId id)
         if (shape)
             return obj->as<NativeObject>().shadowingShapeChange(cx, *shape);
 
-        obj = obj->getProto();
+        obj = obj->staticPrototype();
     }
 
     return true;
 }
 
 static bool
-PurgeScopeChainHelper(ExclusiveContext* cx, HandleObject objArg, HandleId id)
+PurgeEnvironmentChainHelper(ExclusiveContext* cx, HandleObject objArg, HandleId id)
 {
     /* Re-root locally so we can re-assign. */
     RootedObject obj(cx, objArg);
@@ -1099,17 +1099,18 @@ PurgeScopeChainHelper(ExclusiveContext* cx, HandleObject objArg, HandleId id)
     if (JSID_IS_INT(id))
         return true;
 
-    if (!PurgeProtoChain(cx, obj->getProto(), id))
+    if (!PurgeProtoChain(cx, obj->staticPrototype(), id))
         return false;
 
     /*
-     * We must purge the scope chain only for Call objects as they are the only
-     * kind of cacheable non-global object that can gain properties after outer
-     * properties with the same names have been cached or traced. Call objects
-     * may gain such properties via eval introducing new vars; see bug 490364.
+     * We must purge the environment chain only for Call objects as they are
+     * the only kind of cacheable non-global object that can gain properties
+     * after outer properties with the same names have been cached or
+     * traced. Call objects may gain such properties via eval introducing new
+     * vars; see bug 490364.
      */
     if (obj->is<CallObject>()) {
-        while ((obj = obj->enclosingScope()) != nullptr) {
+        while ((obj = obj->enclosingEnvironment()) != nullptr) {
             if (!PurgeProtoChain(cx, obj, id))
                 return false;
         }
@@ -1119,16 +1120,17 @@ PurgeScopeChainHelper(ExclusiveContext* cx, HandleObject objArg, HandleId id)
 }
 
 /*
- * PurgeScopeChain does nothing if obj is not itself a prototype or parent
- * scope, else it reshapes the scope and prototype chains it links. It calls
- * PurgeScopeChainHelper, which asserts that obj is flagged as a delegate
- * (i.e., obj has ever been on a prototype or parent chain).
+ * PurgeEnvironmentChain does nothing if obj is not itself a prototype or
+ * parent environment, else it reshapes the scope and prototype chains it
+ * links. It calls PurgeEnvironmentChainHelper, which asserts that obj is
+ * flagged as a delegate (i.e., obj has ever been on a prototype or parent
+ * chain).
  */
 static inline bool
-PurgeScopeChain(ExclusiveContext* cx, HandleObject obj, HandleId id)
+PurgeEnvironmentChain(ExclusiveContext* cx, HandleObject obj, HandleId id)
 {
     if (obj->isDelegate() && obj->isNative())
-        return PurgeScopeChainHelper(cx, obj, id);
+        return PurgeEnvironmentChainHelper(cx, obj, id);
     return true;
 }
 
@@ -1138,7 +1140,7 @@ AddOrChangeProperty(ExclusiveContext* cx, HandleNativeObject obj, HandleId id,
 {
     desc.assertComplete();
 
-    if (!PurgeScopeChain(cx, obj, id))
+    if (!PurgeEnvironmentChain(cx, obj, id))
         return false;
 
     // Use dense storage for new indexed properties where possible.
@@ -1344,11 +1346,13 @@ js::NativeDefineProperty(ExclusiveContext* cx, HandleNativeObject obj, HandleId 
             // redefined, it will.
             if ((desc_.attributes() & JSPROP_RESOLVING) == 0)
                 obj->as<ArgumentsObject>().markLengthOverridden();
-        }
-        if (JSID_IS_SYMBOL(id) && JSID_TO_SYMBOL(id) == cx->wellKnownSymbols().iterator) {
+        } else if (JSID_IS_SYMBOL(id) && JSID_TO_SYMBOL(id) == cx->wellKnownSymbols().iterator) {
             // Do same thing as .length for [@@iterator].
             if ((desc_.attributes() & JSPROP_RESOLVING) == 0)
                 obj->as<ArgumentsObject>().markIteratorOverridden();
+        } else if (JSID_IS_INT(id)) {
+            if ((desc_.attributes() & JSPROP_RESOLVING) == 0)
+                obj->as<ArgumentsObject>().markElementOverridden();
         }
     }
 
@@ -1638,7 +1642,7 @@ js::NativeHasProperty(JSContext* cx, HandleNativeObject obj, HandleId id, bool* 
         // What they all have in common is we do not want to keep walking
         // the prototype chain, and always claim that the property
         // doesn't exist.
-        RootedObject proto(cx, done ? nullptr : pobj->getProto());
+        RootedObject proto(cx, done ? nullptr : pobj->staticPrototype());
 
         // Step 8.
         if (!proto) {
@@ -1731,8 +1735,8 @@ CallGetter(JSContext* cx, HandleObject obj, HandleValue receiver, HandleShape sh
     MOZ_ASSERT(!shape->hasDefaultGetter());
 
     if (shape->hasGetterValue()) {
-        Value fval = shape->getterValue();
-        return InvokeGetter(cx, receiver, fval, vp);
+        RootedValue getter(cx, shape->getterValue());
+        return js::CallGetter(cx, receiver, getter, vp);
     }
 
     // In contrast to normal getters JSGetterOps always want the holder.
@@ -1752,7 +1756,7 @@ GetExistingProperty(JSContext* cx,
         vp.set(obj->getSlot(shape->slot()));
         MOZ_ASSERT_IF(!vp.isMagic(JS_UNINITIALIZED_LEXICAL) &&
                       !obj->isSingleton() &&
-                      !obj->template is<ScopeObject>() &&
+                      !obj->template is<EnvironmentObject>() &&
                       shape->hasDefaultGetter(),
                       ObjectGroupHasProperty(cx, obj->group(), shape->propid(), vp));
     } else {
@@ -1816,6 +1820,14 @@ Detecting(JSContext* cx, JSScript* script, jsbytecode* pc)
 {
     MOZ_ASSERT(script->containsPC(pc));
 
+    // Skip jump target opcodes.
+    while (pc < script->codeEnd() && BytecodeIsJumpTarget(JSOp(*pc)))
+        pc = GetNextPc(pc);
+
+    MOZ_ASSERT(script->containsPC(pc));
+    if (pc >= script->codeEnd())
+        return false;
+
     // General case: a branch or equality op follows the access.
     JSOp op = JSOp(*pc);
     if (CodeSpec[op].format & JOF_DETECTING)
@@ -1873,7 +1885,7 @@ GetNonexistentProperty(JSContext* cx, HandleNativeObject obj, HandleId id,
     // Non-standard extension: Call the getProperty hook. If it sets vp to a
     // value other than undefined, we're done. If not, fall through to the
     // warning/error checks below.
-    if (JSGetterOp getProperty = obj->getClass()->getProperty) {
+    if (JSGetterOp getProperty = obj->getClass()->getGetProperty()) {
         if (!CallJSGetterOp(cx, getProperty, obj, id, vp))
             return false;
 
@@ -2010,7 +2022,7 @@ NativeGetPropertyInline(JSContext* cx,
         //   being resolved.
         // What they all have in common is we do not want to keep walking
         // the prototype chain.
-        RootedObject proto(cx, done ? nullptr : pobj->getProto());
+        RootedObject proto(cx, done ? nullptr : pobj->staticPrototype());
 
         // Step 4.c. The spec algorithm simply returns undefined if proto is
         // null, but see the comment on GetNonexistentProperty.
@@ -2022,7 +2034,7 @@ NativeGetPropertyInline(JSContext* cx,
         // plumbing of JSObject::getGeneric; the top of the loop is where
         // we're going to end up anyway. But if pobj is non-native,
         // that optimization would be incorrect.
-        if (proto->getOps()->getProperty)
+        if (proto->getOpsGetProperty())
             return GeneralizedGetProperty(cx, proto, id, receiver, nameLookup, vp);
 
         pobj = &proto->as<NativeObject>();
@@ -2047,7 +2059,7 @@ bool
 js::GetPropertyForNameLookup(JSContext* cx, HandleObject obj, HandleId id, MutableHandleValue vp)
 {
     RootedValue receiver(cx, ObjectValue(*obj));
-    if (obj->getOps()->getProperty)
+    if (obj->getOpsGetProperty())
         return GeneralizedGetProperty(cx, obj, id, receiver, NameLookup, vp);
     return NativeGetPropertyInline<CanGC>(cx, obj.as<NativeObject>(), receiver, id, NameLookup, vp);
 }
@@ -2110,7 +2122,7 @@ NativeSetExistingDataProperty(JSContext* cx, HandleNativeObject obj, HandleShape
         return result.fail(JSMSG_GETTER_ONLY);
     }
 
-    MOZ_ASSERT(!obj->is<DynamicWithObject>());  // See bug 1128681.
+    MOZ_ASSERT(!obj->is<WithEnvironmentObject>());  // See bug 1128681.
 
     uint32_t sample = cx->runtime()->propertyRemovals;
     RootedId id(cx, shape->propid());
@@ -2171,8 +2183,8 @@ js::SetPropertyByDefining(JSContext* cx, HandleId id, HandleValue v, HandleValue
     // Invalidate SpiderMonkey-specific caches or bail.
     const Class* clasp = receiver->getClass();
 
-    // Purge the property cache of now-shadowed id in receiver's scope chain.
-    if (!PurgeScopeChain(cx, receiver, id))
+    // Purge the property cache of now-shadowed id in receiver's environment chain.
+    if (!PurgeEnvironmentChain(cx, receiver, id))
         return false;
 
     // Steps 5.e.iii-iv. and 5.f.i. Define the new data property.
@@ -2180,8 +2192,8 @@ js::SetPropertyByDefining(JSContext* cx, HandleId id, HandleValue v, HandleValue
         existing
         ? JSPROP_IGNORE_ENUMERATE | JSPROP_IGNORE_READONLY | JSPROP_IGNORE_PERMANENT
         : JSPROP_ENUMERATE;
-    JSGetterOp getter = clasp->getProperty;
-    JSSetterOp setter = clasp->setProperty;
+    JSGetterOp getter = clasp->getGetProperty();
+    JSSetterOp setter = clasp->getSetProperty();
     MOZ_ASSERT(getter != JS_PropertyStub);
     MOZ_ASSERT(setter != JS_StrictPropertyStub);
     if (!DefineProperty(cx, receiver, id, v, getter, setter, attrs, result))
@@ -2220,9 +2232,10 @@ js::SetPropertyOnProto(JSContext* cx, HandleObject obj, HandleId id, HandleValue
 {
     MOZ_ASSERT(!obj->is<ProxyObject>());
 
-    RootedObject proto(cx, obj->getProto());
+    RootedObject proto(cx, obj->staticPrototype());
     if (proto)
         return SetProperty(cx, proto, id, v, receiver, result);
+
     return SetPropertyByDefining(cx, id, v, receiver, result);
 }
 
@@ -2237,9 +2250,6 @@ static bool
 SetNonexistentProperty(JSContext* cx, HandleId id, HandleValue v, HandleValue receiver,
                        QualifiedBool qualified, ObjectOpResult& result)
 {
-    // We should never add properties to lexical blocks.
-    MOZ_ASSERT_IF(receiver.isObject(), !receiver.toObject().is<ClonedBlockObject>());
-
     if (!qualified && receiver.isObject() && receiver.toObject().isUnqualifiedVarObj()) {
         if (!MaybeReportUndeclaredVarAssignment(cx, JSID_TO_STRING(id)))
             return false;
@@ -2348,9 +2358,11 @@ SetExistingProperty(JSContext* cx, HandleNativeObject obj, HandleId id, HandleVa
     MOZ_ASSERT_IF(!shape->hasSetterObject(), shape->hasDefaultSetter());
     if (shape->hasDefaultSetter())
         return result.fail(JSMSG_GETTER_ONLY);
-    Value setter = ObjectValue(*shape->setterObject());
-    if (!InvokeSetter(cx, receiver, setter, v))
+
+    RootedValue setter(cx, ObjectValue(*shape->setterObject()));
+    if (!js::CallSetter(cx, receiver, setter, v))
         return false;
+
     return result.succeed();
 }
 
@@ -2394,7 +2406,7 @@ js::NativeSetProperty(JSContext* cx, HandleNativeObject obj, HandleId id, Handle
         //   being resolved.
         // What they all have in common is we do not want to keep walking
         // the prototype chain.
-        RootedObject proto(cx, done ? nullptr : pobj->getProto());
+        RootedObject proto(cx, done ? nullptr : pobj->staticPrototype());
         if (!proto) {
             // Step 4.d.i (and step 5).
             return SetNonexistentProperty(cx, id, v, receiver, qualified, result);
@@ -2449,7 +2461,7 @@ js::NativeDeleteProperty(JSContext* cx, HandleNativeObject obj, HandleId id,
     if (!shape) {
         // If no property call the class's delProperty hook, passing succeeded
         // as the result parameter. This always succeeds when there is no hook.
-        return CallJSDeletePropertyOp(cx, obj->getClass()->delProperty, obj, id, result);
+        return CallJSDeletePropertyOp(cx, obj->getClass()->getDelProperty(), obj, id, result);
     }
 
     cx->runtime()->gc.poke();
@@ -2458,7 +2470,7 @@ js::NativeDeleteProperty(JSContext* cx, HandleNativeObject obj, HandleId id,
     if (GetShapeAttributes(obj, shape) & JSPROP_PERMANENT)
         return result.failCantDelete();
 
-    if (!CallJSDeletePropertyOp(cx, obj->getClass()->delProperty, obj, id, result))
+    if (!CallJSDeletePropertyOp(cx, obj->getClass()->getDelProperty(), obj, id, result))
         return false;
     if (!result)
         return true;

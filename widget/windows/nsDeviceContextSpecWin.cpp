@@ -4,6 +4,9 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/ArrayUtils.h"
+#include "mozilla/gfx/PrintTargetPDF.h"
+#include "mozilla/gfx/PrintTargetWindows.h"
+#include "mozilla/RefPtr.h"
 
 #include "nsDeviceContextSpecWin.h"
 #include "prmem.h"
@@ -12,7 +15,6 @@
 
 #include <tchar.h>
 
-#include "nsAutoPtr.h"
 #include "nsIWidget.h"
 
 #include "nsTArray.h"
@@ -24,7 +26,6 @@
 #include "nsReadableUtils.h"
 #include "nsStringEnumerator.h"
 
-#include "gfxPDFSurface.h"
 #include "gfxWindowsSurface.h"
 
 #include "nsIFileStreams.h"
@@ -48,6 +49,7 @@ PRLogModuleInfo * kWidgetPrintingLogMod = PR_NewLogModule("printing-widget");
 #define PR_PL(_p1)  MOZ_LOG(kWidgetPrintingLogMod, mozilla::LogLevel::Debug, _p1)
 
 using namespace mozilla;
+using namespace mozilla::gfx;
 
 static const wchar_t kDriverName[] =  L"WINSPOOL";
 
@@ -181,10 +183,11 @@ NS_IMETHODIMP nsDeviceContextSpecWin::Init(nsIWidget* aWidget,
     PR_PL(("***** nsDeviceContextSpecWin::Init - aPrintSettingswas NULL!\n"));
   }
 
-  // Get the Print Name to be used
+  // Get the Printer Name to be used and output format.
   char16_t * printerName = nullptr;
   if (mPrintSettings) {
     mPrintSettings->GetPrinterName(&printerName);
+    mPrintSettings->GetOutputFormat(&mOutputFormat);
   }
 
   // If there is no name then use the default printer
@@ -194,7 +197,7 @@ NS_IMETHODIMP nsDeviceContextSpecWin::Init(nsIWidget* aWidget,
 
   NS_ASSERTION(printerName, "We have to have a printer name");
   if (!printerName || !*printerName) return rv;
- 
+
   return GetDataFromPrinter(printerName, mPrintSettings);
 }
 
@@ -218,26 +221,18 @@ static void CleanAndCopyString(wchar_t*& aStr, const wchar_t* aNewStr)
   }
 }
 
-NS_IMETHODIMP nsDeviceContextSpecWin::GetSurfaceForPrinter(gfxASurface **surface)
+already_AddRefed<PrintTarget> nsDeviceContextSpecWin::MakePrintTarget()
 {
   NS_ASSERTION(mDevMode, "DevMode can't be NULL here");
 
-  *surface = nullptr;
-  RefPtr<gfxASurface> newSurface;
-
-  int16_t outputFormat = 0;
-  if (mPrintSettings) {
-    mPrintSettings->GetOutputFormat(&outputFormat);
-  }
-
-  if (outputFormat == nsIPrintSettings::kOutputFormatPDF) {
+  if (mOutputFormat == nsIPrintSettings::kOutputFormatPDF) {
     nsXPIDLString filename;
     mPrintSettings->GetToFileName(getter_Copies(filename));
 
     double width, height;
     mPrintSettings->GetEffectivePageSize(&width, &height);
     if (width <= 0 || height <= 0) {
-      return NS_ERROR_FAILURE;
+      return nullptr;
     }
 
     // convert twips to points
@@ -246,35 +241,41 @@ NS_IMETHODIMP nsDeviceContextSpecWin::GetSurfaceForPrinter(gfxASurface **surface
 
     nsCOMPtr<nsIFile> file = do_CreateInstance("@mozilla.org/file/local;1");
     nsresult rv = file->InitWithPath(filename);
-    if (NS_FAILED(rv))
-      return rv;
+    if (NS_FAILED(rv)) {
+      return nullptr;
+    }
 
     nsCOMPtr<nsIFileOutputStream> stream = do_CreateInstance("@mozilla.org/network/file-output-stream;1");
     rv = stream->Init(file, -1, -1, 0);
-    if (NS_FAILED(rv))
-      return rv;
-
-    newSurface = new gfxPDFSurface(stream, gfxSize(width, height));
-  } else {
-    if (mDevMode) {
-      NS_WARN_IF_FALSE(mDriverName, "No driver!");
-      HDC dc = ::CreateDCW(mDriverName, mDeviceName, nullptr, mDevMode);
-      if (!dc) {
-        gfxCriticalError(gfxCriticalError::DefaultOptions(false)) << "Failed to create device context in GetSurfaceForPrinter";
-        return NS_ERROR_GFX_PRINTER_NAME_NOT_FOUND;
-      }
-
-      // have this surface take over ownership of this DC
-      newSurface = new gfxWindowsSurface(dc, gfxWindowsSurface::FLAG_TAKE_DC | gfxWindowsSurface::FLAG_FOR_PRINTING);
-      if (newSurface->GetType() == (gfxSurfaceType)-1) {
-        gfxCriticalError() << "Invalid windows surface from " << gfx::hexa(dc);
-        return NS_ERROR_FAILURE;
-      }
+    if (NS_FAILED(rv)) {
+      return nullptr;
     }
+
+    return PrintTargetPDF::CreateOrNull(stream, IntSize::Truncate(width, height));
   }
 
-  newSurface.forget(surface);
-  return NS_OK;
+  if (mDevMode) {
+    NS_WARN_IF_FALSE(mDriverName, "No driver!");
+    HDC dc = ::CreateDCW(mDriverName, mDeviceName, nullptr, mDevMode);
+    if (!dc) {
+      gfxCriticalError(gfxCriticalError::DefaultOptions(false))
+        << "Failed to create device context in GetSurfaceForPrinter";
+      return nullptr;
+    }
+
+    // The PrintTargetWindows takes over ownership of this DC
+    return PrintTargetWindows::CreateOrNull(dc);
+  }
+
+  return nullptr;
+}
+
+float
+nsDeviceContextSpecWin::GetDPI()
+{
+  // To match the previous printing code we need to return 72 when printing to
+  // PDF and 144 when printing to a Windows surface.
+  return mOutputFormat == nsIPrintSettings::kOutputFormatPDF ? 72.0f : 144.0f;
 }
 
 float
@@ -282,6 +283,12 @@ nsDeviceContextSpecWin::GetPrintingScale()
 {
   MOZ_ASSERT(mPrintSettings);
 
+  // To match the previous printing code there is no scaling for PDF.
+  if (mOutputFormat == nsIPrintSettings::kOutputFormatPDF) {
+    return 1.0f;
+  }
+
+  // The print settings will have the resolution stored from the real device.
   int32_t resolution;
   mPrintSettings->GetResolution(&resolution);
   return float(resolution) / GetDPI();
@@ -310,13 +317,13 @@ void nsDeviceContextSpecWin::SetDevMode(LPDEVMODEW aDevMode)
 }
 
 //------------------------------------------------------------------
-void 
+void
 nsDeviceContextSpecWin::GetDevMode(LPDEVMODEW &aDevMode)
 {
   aDevMode = mDevMode;
 }
 
-#define DISPLAY_LAST_ERROR 
+#define DISPLAY_LAST_ERROR
 
 //----------------------------------------------------------------------------------
 // Setup the object's data member with the selected printer's data
@@ -336,7 +343,7 @@ nsDeviceContextSpecWin::GetDataFromPrinter(char16ptr_t aName, nsIPrintSettings* 
 
   HANDLE hPrinter = nullptr;
   wchar_t *name = (wchar_t*)aName; // Windows APIs use non-const name argument
-  
+
   BOOL status = ::OpenPrinterW(name, &hPrinter, nullptr);
   if (status) {
 
@@ -404,7 +411,7 @@ NS_IMPL_ISUPPORTS(nsPrinterEnumeratorWin, nsIPrinterEnumerator)
 
 //----------------------------------------------------------------------------------
 // Return the Default Printer name
-NS_IMETHODIMP 
+NS_IMETHODIMP
 nsPrinterEnumeratorWin::GetDefaultPrinterName(char16_t * *aDefaultPrinterName)
 {
   NS_ENSURE_ARG_POINTER(aDefaultPrinterName);
@@ -414,7 +421,7 @@ nsPrinterEnumeratorWin::GetDefaultPrinterName(char16_t * *aDefaultPrinterName)
   return NS_OK;
 }
 
-NS_IMETHODIMP 
+NS_IMETHODIMP
 nsPrinterEnumeratorWin::InitPrintSettingsFromPrinter(const char16_t *aPrinterName, nsIPrintSettings *aPrintSettings)
 {
   NS_ENSURE_ARG_POINTER(aPrinterName);
@@ -444,7 +451,8 @@ nsPrinterEnumeratorWin::InitPrintSettingsFromPrinter(const char16_t *aPrinterNam
   aPrintSettings->SetPrinterName(aPrinterName);
 
   // We need to get information from the device as well.
-  HDC dc = ::CreateICW(kDriverName, aPrinterName, nullptr, devmode);
+  char16ptr_t printerName = aPrinterName;
+  HDC dc = ::CreateICW(kDriverName, printerName, nullptr, devmode);
   if (NS_WARN_IF(!dc)) {
     return NS_ERROR_FAILURE;
   }
@@ -461,7 +469,7 @@ nsPrinterEnumeratorWin::InitPrintSettingsFromPrinter(const char16_t *aPrinterNam
 //----------------------------------------------------------------------------------
 // Enumerate all the Printers from the global array and pass their
 // names back (usually to script)
-NS_IMETHODIMP 
+NS_IMETHODIMP
 nsPrinterEnumeratorWin::GetPrinterNameList(nsIStringEnumerator **aPrinterNameList)
 {
   NS_ENSURE_ARG_POINTER(aPrinterNameList);
@@ -478,22 +486,13 @@ nsPrinterEnumeratorWin::GetPrinterNameList(nsIStringEnumerator **aPrinterNameLis
   if (!printers)
     return NS_ERROR_OUT_OF_MEMORY;
 
-  uint32_t printerInx = 0;
   nsString* names = printers->AppendElements(numPrinters);
-  while( printerInx < numPrinters ) {
-    LPWSTR name = GlobalPrinters::GetInstance()->GetItemFromList(printerInx++);
+  for (uint32_t printerInx = 0; printerInx < numPrinters; ++printerInx) {
+    LPWSTR name = GlobalPrinters::GetInstance()->GetItemFromList(printerInx);
     names[printerInx].Assign(name);
   }
 
   return NS_NewAdoptingStringEnumerator(aPrinterNameList, printers);
-}
-
-//----------------------------------------------------------------------------------
-// Display the AdvancedDocumentProperties for the selected Printer
-NS_IMETHODIMP nsPrinterEnumeratorWin::DisplayPropertiesDlg(const char16_t *aPrinterName, nsIPrintSettings* aPrintSettings)
-{
-  // Implementation removed because it is unused
-  return NS_OK;
 }
 
 //----------------------------------------------------------------------------------
@@ -502,7 +501,7 @@ NS_IMETHODIMP nsPrinterEnumeratorWin::DisplayPropertiesDlg(const char16_t *aPrin
 
 //----------------------------------------------------------------------------------
 // THe array hold the name and port for each printer
-void 
+void
 GlobalPrinters::ReallocatePrinters()
 {
   if (PrintersAreAllocated()) {
@@ -513,7 +512,7 @@ GlobalPrinters::ReallocatePrinters()
 }
 
 //----------------------------------------------------------------------------------
-void 
+void
 GlobalPrinters::FreeGlobalPrinters()
 {
   if (mPrinters != nullptr) {
@@ -526,14 +525,14 @@ GlobalPrinters::FreeGlobalPrinters()
 }
 
 //----------------------------------------------------------------------------------
-nsresult 
+nsresult
 GlobalPrinters::EnumerateNativePrinters()
 {
   nsresult rv = NS_ERROR_GFX_PRINTER_NO_PRINTER_AVAILABLE;
   PR_PL(("-----------------------\n"));
   PR_PL(("EnumerateNativePrinters\n"));
 
-  WCHAR szDefaultPrinterName[1024];    
+  WCHAR szDefaultPrinterName[1024];
   DWORD status = GetProfileStringW(L"devices", 0, L",",
                                    szDefaultPrinterName,
                                    ArrayLength(szDefaultPrinterName));
@@ -560,18 +559,18 @@ GlobalPrinters::EnumerateNativePrinters()
 
 //------------------------------------------------------------------
 // Uses the GetProfileString to get the default printer from the registry
-void 
+void
 GlobalPrinters::GetDefaultPrinterName(nsString& aDefaultPrinterName)
 {
   aDefaultPrinterName.Truncate();
-  WCHAR szDefaultPrinterName[1024];    
+  WCHAR szDefaultPrinterName[1024];
   DWORD status = GetProfileStringW(L"windows", L"device", 0,
                                    szDefaultPrinterName,
                                    ArrayLength(szDefaultPrinterName));
   if (status > 0) {
     WCHAR comma = ',';
     LPWSTR sPtr = szDefaultPrinterName;
-    while (*sPtr != comma && *sPtr != 0) 
+    while (*sPtr != comma && *sPtr != 0)
       sPtr++;
     if (*sPtr == comma) {
       *sPtr = 0;
@@ -587,7 +586,7 @@ GlobalPrinters::GetDefaultPrinterName(nsString& aDefaultPrinterName)
 //----------------------------------------------------------------------------------
 // This goes and gets the list of available printers and puts
 // the default printer at the beginning of the list
-nsresult 
+nsresult
 GlobalPrinters::EnumeratePrinterList()
 {
   // reallocate and get a new list each time it is asked for

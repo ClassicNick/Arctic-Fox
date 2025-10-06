@@ -24,7 +24,6 @@ namespace mozilla {
 class InputEvent;
 
 namespace layers {
-class APZCTreeManager;
 class AsyncDragMetrics;
 class TargetConfig;
 struct TextureFactoryIdentifier;
@@ -56,11 +55,11 @@ public:
    * chosen, then RenderFrameParent will watch input events and use
    * them to asynchronously pan and zoom.
    */
-  RenderFrameParent(nsFrameLoader* aFrameLoader,
-                    TextureFactoryIdentifier* aTextureFactoryIdentifier,
-                    uint64_t* aId, bool* aSuccess);
+  RenderFrameParent(nsFrameLoader* aFrameLoader, bool* aSuccess);
   virtual ~RenderFrameParent();
 
+  bool Init(nsFrameLoader* aFrameLoader);
+  bool IsInitted();
   void Destroy();
 
   void BuildDisplayList(nsDisplayListBuilder* aBuilder,
@@ -127,6 +126,7 @@ private:
   nsRegion mTouchRegion;
 
   bool mAsyncPanZoomEnabled;
+  bool mInitted;
 };
 
 } // namespace layout

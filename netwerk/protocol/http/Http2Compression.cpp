@@ -31,14 +31,16 @@ public:
 
   HpackStaticTableReporter() {}
 
-  NS_IMETHODIMP
+  NS_IMETHOD
   CollectReports(nsIHandleReportCallback* aHandleReport, nsISupports* aData,
                  bool aAnonymize) override
   {
-    return MOZ_COLLECT_REPORT(
+    MOZ_COLLECT_REPORT(
       "explicit/network/hpack/static-table", KIND_HEAP, UNITS_BYTES,
       gStaticHeaders->SizeOfIncludingThis(MallocSizeOf),
       "Memory usage of HPACK static table.");
+
+    return NS_OK;
   }
 
 private:
@@ -58,18 +60,17 @@ public:
     : mCompressor(aCompressor)
   {}
 
-  NS_IMETHODIMP
+  NS_IMETHOD
   CollectReports(nsIHandleReportCallback* aHandleReport, nsISupports* aData,
                  bool aAnonymize) override
   {
-    if (!mCompressor) {
-      return NS_OK;
+    if (mCompressor) {
+      MOZ_COLLECT_REPORT(
+        "explicit/network/hpack/dynamic-tables", KIND_HEAP, UNITS_BYTES,
+        mCompressor->SizeOfExcludingThis(MallocSizeOf),
+        "Aggregate memory usage of HPACK dynamic tables.");
     }
-
-    return MOZ_COLLECT_REPORT(
-      "explicit/network/hpack/dynamic-tables", KIND_HEAP, UNITS_BYTES,
-      mCompressor->SizeOfExcludingThis(MallocSizeOf),
-      "Aggregate memory usage of HPACK dynamic tables.");
+    return NS_OK;
   }
 
 private:
@@ -603,7 +604,7 @@ Http2Decompressor::CopyStringFromInput(uint32_t bytes, nsACString &val)
 }
 
 nsresult
-Http2Decompressor::DecodeFinalHuffmanCharacter(HuffmanIncomingTable *table,
+Http2Decompressor::DecodeFinalHuffmanCharacter(const HuffmanIncomingTable *table,
                                                uint8_t &c, uint8_t &bitsLeft)
 {
   MOZ_ASSERT(mOffset <= mDataLen);
@@ -618,13 +619,13 @@ Http2Decompressor::DecodeFinalHuffmanCharacter(HuffmanIncomingTable *table,
   // number of bits used by our encoding later on. We'll update when we are sure
   // how many bits we've actually used.
 
-  HuffmanIncomingEntry *entry = &(table->mEntries[idx]);
-
-  if (entry->mPtr) {
+  if (table->IndexHasANextTable(idx)) {
     // Can't chain to another table when we're all out of bits in the encoding
     LOG(("DecodeFinalHuffmanCharacter trying to chain when we're out of bits"));
     return NS_ERROR_FAILURE;
   }
+
+  const HuffmanIncomingEntry *entry = table->Entry(idx);
 
   if (bitsLeft < entry->mPrefixLen) {
     // We don't have enough bits to actually make a match, this is some sort of
@@ -671,14 +672,13 @@ Http2Decompressor::ExtractByte(uint8_t bitsLeft, uint32_t &bytesConsumed)
 }
 
 nsresult
-Http2Decompressor::DecodeHuffmanCharacter(HuffmanIncomingTable *table,
+Http2Decompressor::DecodeHuffmanCharacter(const HuffmanIncomingTable *table,
                                           uint8_t &c, uint32_t &bytesConsumed,
                                           uint8_t &bitsLeft)
 {
   uint8_t idx = ExtractByte(bitsLeft, bytesConsumed);
-  HuffmanIncomingEntry *entry = &(table->mEntries[idx]);
 
-  if (entry->mPtr) {
+  if (table->IndexHasANextTable(idx)) {
     if (mOffset >= mDataLen) {
       if (!bitsLeft || (mOffset > mDataLen)) {
         // TODO - does this get me into trouble in the new world?
@@ -688,13 +688,14 @@ Http2Decompressor::DecodeHuffmanCharacter(HuffmanIncomingTable *table,
       }
 
       // We might get lucky here!
-      return DecodeFinalHuffmanCharacter(entry->mPtr, c, bitsLeft);
+      return DecodeFinalHuffmanCharacter(table->NextTable(idx), c, bitsLeft);
     }
 
     // We're sorry, Mario, but your princess is in another castle
-    return DecodeHuffmanCharacter(entry->mPtr, c, bytesConsumed, bitsLeft);
+    return DecodeHuffmanCharacter(table->NextTable(idx), c, bytesConsumed, bitsLeft);
   }
 
+  const HuffmanIncomingEntry *entry = table->Entry(idx);
   if (entry->mValue == 256) {
     LOG(("DecodeHuffmanCharacter found an actual EOS"));
     return NS_ERROR_FAILURE;
@@ -883,6 +884,9 @@ Http2Decompressor::DoLiteralInternal(nsACString &name, nsACString &value,
            value.BeginReading()));
       return NS_ERROR_ILLEGAL_VALUE;
     }
+    // Increment this to avoid always finding the same newline and looping
+    // forever
+    ++newline;
   }
 
   LOG(("Http2Decompressor::DoLiteralInternal value %s", value.BeginReading()));
@@ -1298,8 +1302,8 @@ Http2Compressor::ProcessHeader(const nvPair inputPair, bool noLocalIndex,
 {
   uint32_t newSize = inputPair.Size();
   uint32_t headerTableSize = mHeaderTable.Length();
-  uint32_t matchedIndex;
-  uint32_t nameReference = 0;
+  uint32_t matchedIndex = 0u;
+  uint32_t nameReference = 0u;
   bool match = false;
 
   LOG(("Http2Compressor::ProcessHeader %s %s", inputPair.mName.get(),

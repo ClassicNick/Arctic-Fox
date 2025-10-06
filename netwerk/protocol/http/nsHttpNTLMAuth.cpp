@@ -28,6 +28,8 @@
 #endif
 #include "mozilla/Attributes.h"
 #include "mozilla/CheckedInt.h"
+#include "nsNetUtil.h"
+#include "nsIChannel.h"
 
 namespace mozilla {
 namespace net {
@@ -187,8 +189,26 @@ CanUseDefaultCredentials(nsIHttpAuthenticableChannel *channel,
                          bool isProxyAuth)
 {
     nsCOMPtr<nsIPrefBranch> prefs = do_GetService(NS_PREFSERVICE_CONTRACTID);
-    if (!prefs)
+
+    // Prevent using default credentials for authentication when we are in the
+    // private browsing mode.  It would cause a privacy data leak.
+    nsCOMPtr<nsIChannel> bareChannel = do_QueryInterface(channel);
+    MOZ_ASSERT(bareChannel);
+
+    if (NS_UsePrivateBrowsing(bareChannel)) {
+        // But allow when in the "Never remember history" mode.
+        bool dontRememberHistory;
+        if (prefs &&
+            NS_SUCCEEDED(prefs->GetBoolPref("browser.privatebrowsing.autostart",
+                                            &dontRememberHistory)) &&
+            !dontRememberHistory) {
+            return false;
+        }
+    }
+
+    if (!prefs) {
         return false;
+    }
 
     if (isProxyAuth) {
         bool val;
@@ -321,6 +341,21 @@ nsHttpNTLMAuth::ChallengeReceived(nsIHttpAuthenticableChannel *channel,
         module.swap(*continuationState);
     }
     return NS_OK;
+}
+
+NS_IMETHODIMP
+nsHttpNTLMAuth::GenerateCredentialsAsync(nsIHttpAuthenticableChannel *authChannel,
+                                         nsIHttpAuthenticatorCallback* aCallback,
+                                         const char *challenge,
+                                         bool isProxyAuth,
+                                         const char16_t *domain,
+                                         const char16_t *username,
+                                         const char16_t *password,
+                                         nsISupports *sessionState,
+                                         nsISupports *continuationState,
+                                         nsICancelable **aCancellable)
+{
+  return NS_ERROR_NOT_IMPLEMENTED;
 }
 
 NS_IMETHODIMP

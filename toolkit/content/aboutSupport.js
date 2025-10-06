@@ -10,6 +10,7 @@ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/Troubleshoot.jsm");
 Cu.import("resource://gre/modules/ResetProfile.jsm");
+Cu.import("resource://gre/modules/AppConstants.jsm");
 
 XPCOMUtils.defineLazyModuleGetter(this, "PluralForm",
                                   "resource://gre/modules/PluralForm.jsm");
@@ -40,7 +41,7 @@ var snapshotFormatters = {
     $("useragent-box").textContent = data.userAgent;
     $("os-box").textContent = data.osVersion;
     $("supportLink").href = data.supportURL;
-    let version = data.version;
+    let version = AppConstants.MOZ_APP_VERSION_DISPLAY;
     if (data.vendor)
       version += " (" + data.vendor + ")";
     $("version-box").textContent = version;
@@ -48,7 +49,7 @@ var snapshotFormatters = {
     if (data.updateChannel)
       $("updatechannel-box").textContent = data.updateChannel;
 
-    let statusStrName = ".unknown";
+    let statusText = stringBundle().GetStringFromName("multiProcessStatus.unknown");
 
     // Whitelist of known values with string descriptions:
     switch (data.autoStartStatus) {
@@ -56,17 +57,88 @@ var snapshotFormatters = {
       case 1:
       case 2:
       case 4:
-      case 5:
       case 6:
       case 7:
-        statusStrName = "." + data.autoStartStatus;
+      case 8:
+      case 9:
+        statusText = stringBundle().GetStringFromName("multiProcessStatus." + data.autoStartStatus);
+        break;
+
+      case 10:
+        statusText = "Windows XP";
+        break;
     }
 
-    let statusText = stringBundle().GetStringFromName("multiProcessStatus" + statusStrName);
     $("multiprocess-box").textContent = stringBundle().formatStringFromName("multiProcessWindows",
       [data.numRemoteWindows, data.numTotalWindows, statusText], 3);
 
     $("safemode-box").textContent = data.safeMode;
+  },
+
+  crashes: function crashes(data) {
+    if (!AppConstants.MOZ_CRASHREPORTER)
+      return;
+
+    let strings = stringBundle();
+    let daysRange = Troubleshoot.kMaxCrashAge / (24 * 60 * 60 * 1000);
+    $("crashes-title").textContent =
+      PluralForm.get(daysRange, strings.GetStringFromName("crashesTitle"))
+                .replace("#1", daysRange);
+    let reportURL;
+    try {
+      reportURL = Services.prefs.getCharPref("breakpad.reportURL");
+      // Ignore any non http/https urls
+      if (!/^https?:/i.test(reportURL))
+        reportURL = null;
+    }
+    catch (e) { }
+    if (!reportURL) {
+      $("crashes-noConfig").style.display = "block";
+      $("crashes-noConfig").classList.remove("no-copy");
+      return;
+    }
+    $("crashes-allReports").style.display = "block";
+    $("crashes-allReports").classList.remove("no-copy");
+
+    if (data.pending > 0) {
+      $("crashes-allReportsWithPending").textContent =
+        PluralForm.get(data.pending, strings.GetStringFromName("pendingReports"))
+                  .replace("#1", data.pending);
+    }
+
+    let dateNow = new Date();
+    $.append($("crashes-tbody"), data.submitted.map(function (crash) {
+      let date = new Date(crash.date);
+      let timePassed = dateNow - date;
+      let formattedDate;
+      if (timePassed >= 24 * 60 * 60 * 1000)
+      {
+        let daysPassed = Math.round(timePassed / (24 * 60 * 60 * 1000));
+        let daysPassedString = strings.GetStringFromName("crashesTimeDays");
+        formattedDate = PluralForm.get(daysPassed, daysPassedString)
+                                  .replace("#1", daysPassed);
+      }
+      else if (timePassed >= 60 * 60 * 1000)
+      {
+        let hoursPassed = Math.round(timePassed / (60 * 60 * 1000));
+        let hoursPassedString = strings.GetStringFromName("crashesTimeHours");
+        formattedDate = PluralForm.get(hoursPassed, hoursPassedString)
+                                  .replace("#1", hoursPassed);
+      }
+      else
+      {
+        let minutesPassed = Math.max(Math.round(timePassed / (60 * 1000)), 1);
+        let minutesPassedString = strings.GetStringFromName("crashesTimeMinutes");
+        formattedDate = PluralForm.get(minutesPassed, minutesPassedString)
+                                  .replace("#1", minutesPassed);
+      }
+      return $.new("tr", [
+        $.new("td", [
+          $.new("a", crash.id, null, {href : reportURL + crash.id})
+        ]),
+        $.new("td", formattedDate)
+      ]);
+    }));
   },
 
   extensions: function extensions(data) {
@@ -91,6 +163,7 @@ var snapshotFormatters = {
         $.new("td", [
           $.new("a", experiment.detailURL, null, {href : experiment.detailURL,})
         ]),
+        $.new("td", experiment.branch),
       ]);
     }));
   },
@@ -155,28 +228,55 @@ var snapshotFormatters = {
       let out = [];
       for (let type of ['Wheel', 'Touch', 'Drag']) {
         let key = 'Apz' + type + 'Input';
-        let warningKey = key + 'Warning';
 
         if (!(key in info))
           continue;
 
-        let badPref = info[warningKey];
         delete info[key];
-        delete info[warningKey];
 
-        let message;
-        if (badPref)
-          message = localizedMsg([type.toLowerCase() + 'Warning', badPref]);
-        else
-          message = localizedMsg([type.toLowerCase() + 'Enabled']);
-        dump(message + ', ' + (type.toLowerCase() + 'Warning') + ', ' + badPref + '\n');
+        let message = localizedMsg([type.toLowerCase() + 'Enabled']);
         out.push(message);
       }
 
       return out;
     };
 
-    // graphics-info-properties tbody
+    // Create a <tr> element with key and value columns.
+    //
+    // @key      Text in the key column. Localized automatically, unless starts with "#".
+    // @value    Text in the value column. Not localized.
+    function buildRow(key, value) {
+      let title;
+      if (key[0] == "#") {
+        title = key.substr(1);
+      } else {
+        try {
+          title = strings.GetStringFromName(key);
+        } catch (e) {
+          title = key;
+        }
+      }
+      return $.new("tr", [
+        $.new("th", title, "column"),
+        $.new("td", value),
+      ]);
+    }
+
+    // @where    The name in "graphics-<name>-tbody", of the element to append to.
+    // @trs      Array of row elements.
+    function addRows(where, trs) {
+      $.append($("graphics-" + where + "-tbody"), trs);
+    }
+
+    // Build and append a row.
+    //
+    // @where    The name in "graphics-<name>-tbody", of the element to append to.
+    function addRow(where, key, value) {
+      addRows(where, [buildRow(key, value)]);
+    }
+    if (data.clearTypeParameters !== undefined) {
+      addRow("diagnostics", "clearTypeParameters", data.clearTypeParameters);
+    }
     if ("info" in data) {
       apzInfo = formatApzInfo(data.info);
 
@@ -186,7 +286,8 @@ var snapshotFormatters = {
           $.new("td", String(val)),
         ]);
       });
-      $.append($("graphics-info-properties"), trs);
+      addRows("diagnostics", trs);
+
       delete data.info;
     }
 
@@ -217,76 +318,204 @@ var snapshotFormatters = {
                           return $.new("p", val);
                        }))])]);
       }
-
-      delete data.failures;
+    } else {
+      $("graphics-failures-tbody").style.display = "none";
     }
 
-    // graphics-tbody tbody
+    // Add a new row to the table, and take the key (or keys) out of data.
+    //
+    // @where        Table section to add to.
+    // @key          Data key to use.
+    // @colKey       The localization key to use, if different from key.
+    function addRowFromKey(where, key, colKey) {
+      if (!(key in data))
+        return;
+      colKey = colKey || key;
 
-    let out = Object.create(data);
+      let value;
+      let messageKey = key + "Message";
+      if (messageKey in data) {
+        value = localizedMsg(data[messageKey]);
+        delete data[messageKey];
+      } else {
+        value = data[key];
+      }
+      delete data[key];
 
-    if (apzInfo.length == 0)
-      out.asyncPanZoom = localizedMsg(["apzNone"]);
-    else
-      out.asyncPanZoom = apzInfo.join("; ");
+      if (value) {
+        addRow(where, colKey, value);
+      }
+    }
 
-    out.acceleratedWindows =
-      data.numAcceleratedWindows + "/" + data.numTotalWindows;
-    if (data.windowLayerManagerType)
-      out.acceleratedWindows += " " + data.windowLayerManagerType;
-    if (data.windowLayerManagerRemote)
-      out.acceleratedWindows += " (OMTC)";
-    if (data.numAcceleratedWindowsMessage)
-      out.acceleratedWindows +=
-        " " + localizedMsg(data.numAcceleratedWindowsMessage);
-    delete data.numAcceleratedWindows;
-    delete data.numTotalWindows;
+    // graphics-features-tbody
+
+    let compositor = data.windowLayerManagerRemote
+                     ? data.windowLayerManagerType
+                     : "BasicLayers (" + strings.GetStringFromName("mainThreadNoOMTC") + ")";
+    addRow("features", "compositing", compositor);
+    delete data.windowLayerManagerRemote;
     delete data.windowLayerManagerType;
+    delete data.numTotalWindows;
+    delete data.numAcceleratedWindows;
     delete data.numAcceleratedWindowsMessage;
 
-    if ("direct2DEnabledMessage" in data) {
-      out.direct2DEnabled = localizedMsg(data.direct2DEnabledMessage);
-      delete data.direct2DEnabledMessage;
-      delete data.direct2DEnabled;
-    }
+    addRow("features", "asyncPanZoom",
+           apzInfo.length
+           ? apzInfo.join("; ")
+           : localizedMsg(["apzNone"]));
+    addRowFromKey("features", "webglRenderer");
+    addRowFromKey("features", "webgl2Renderer");
+    addRowFromKey("features", "supportsHardwareH264", "hardwareH264");
+    addRowFromKey("features", "currentAudioBackend", "audioBackend");
+    addRowFromKey("features", "direct2DEnabled", "#Direct2D");
 
     if ("directWriteEnabled" in data) {
-      out.directWriteEnabled = data.directWriteEnabled;
+      let message = data.directWriteEnabled;
       if ("directWriteVersion" in data)
-        out.directWriteEnabled += " (" + data.directWriteVersion + ")";
+        message += " (" + data.directWriteVersion + ")";
+      addRow("features", "#DirectWrite", message);
       delete data.directWriteEnabled;
       delete data.directWriteVersion;
     }
 
-    if ("webglRendererMessage" in data) {
-      out.webglRenderer = localizedMsg(data.webglRendererMessage);
-      delete data.webglRendererMessage;
-      delete data.webglRenderer;
+    // Adapter tbodies.
+    let adapterKeys = [
+      ["adapterDescription", "gpuDescription"],
+      ["adapterVendorID", "gpuVendorID"],
+      ["adapterDeviceID", "gpuDeviceID"],
+      ["driverVersion", "gpuDriverVersion"],
+      ["driverDate", "gpuDriverDate"],
+      ["adapterDrivers", "gpuDrivers"],
+      ["adapterSubsysID", "gpuSubsysID"],
+      ["adapterRAM", "gpuRAM"],
+    ];
+
+    function showGpu(id, suffix) {
+      function get(prop) {
+        return data[prop + suffix];
+      }
+
+      let trs = [];
+      for (let [prop, key] of adapterKeys) {
+        let value = get(prop);
+        if (value === undefined || value === "")
+          continue;
+        trs.push(buildRow(key, value));
+      }
+
+      if (trs.length == 0) {
+        $("graphics-" + id + "-tbody").style.display = "none";
+        return;
+      }
+
+      let active = "yes";
+      if ("isGPU2Active" in data && ((suffix == "2") != data.isGPU2Active)) {
+        active = "no";
+      }
+      addRow(id, "gpuActive", strings.GetStringFromName(active));
+      addRows(id, trs);
+    }
+    showGpu("gpu-1", "");
+    showGpu("gpu-2", "2");
+
+    // Remove adapter keys.
+    for (let [prop, key] of adapterKeys) {
+      delete data[prop];
+      delete data[prop + "2"];
+    }
+    delete data.isGPU2Active;
+
+    let featureLog = data.featureLog;
+    delete data.featureLog;
+
+    let features = [];
+    for (let feature of featureLog.features) {
+      // Only add interesting decisions - ones that were not automatic based on
+      // all.js/gfxPrefs defaults.
+      if (feature.log.length > 1 || feature.log[0].status != "available") {
+        features.push(feature);
+      }
     }
 
-    let localizedOut = {};
-    for (let prop in out) {
-      let val = out[prop];
-      if (typeof(val) == "string" && !val)
-        // Ignore properties that are empty strings.
-        continue;
-      try {
-        var localizedName = strings.GetStringFromName(prop);
+    if (features.length) {
+      for (let feature of features) {
+        let trs = [];
+        for (let entry of feature.log) {
+          if (entry.type == "default" && entry.status == "available")
+            continue;
+
+          let contents;
+          if (entry.message.length > 0 && entry.message[0] == "#") {
+            // This is a failure ID. See nsIGfxInfo.idl.
+            let m;
+            if (m = /#BLOCKLIST_FEATURE_FAILURE_BUG_(\d+)/.exec(entry.message)) {
+              let bugSpan = $.new("span");
+              bugSpan.textContent = strings.GetStringFromName("blocklistedBug") + "; ";
+
+              let bugHref = $.new("a");
+              bugHref.href = "https://bugzilla.mozilla.org/show_bug.cgi?id=" + m[1];
+              bugHref.textContent = strings.formatStringFromName("bugLink", [m[1]], 1);
+
+              contents = [bugSpan, bugHref];
+            } else {
+              contents = strings.formatStringFromName(
+                "unknownFailure", [entry.message.substr(1)], 1);
+            }
+          } else {
+            contents = entry.status + " by " + entry.type + ": " + entry.message;
+          }
+
+          trs.push($.new("tr", [
+            $.new("td", contents),
+          ]));
+        }
+        addRow("decisions", feature.name, [$.new("table", trs)]);
       }
-      catch (err) {
-        // This shouldn't happen, but if there's a reported graphics property
-        // that isn't in the string bundle, don't let it break the page.
-        localizedName = prop;
-      }
-      localizedOut[localizedName] = val;
+    } else {
+      $("graphics-decisions-tbody").style.display = "none";
     }
-    let trs = sortedArrayFromObject(localizedOut).map(function ([prop, val]) {
-      return $.new("tr", [
-        $.new("th", prop, "column"),
-        $.new("td", val),
-      ]);
-    });
-    $.append($("graphics-tbody"), trs);
+
+    if (featureLog.fallbacks.length) {
+      for (let fallback of featureLog.fallbacks) {
+        addRow("workarounds", fallback.name, fallback.message);
+      }
+    } else {
+      $("graphics-workarounds-tbody").style.display = "none";
+    }
+
+    let crashGuards = data.crashGuards;
+    delete data.crashGuards;
+
+    if (crashGuards.length) {
+      for (let guard of crashGuards) {
+        let resetButton = $.new("button");
+        let onClickReset = (function (guard) {
+          // Note - need this wrapper until bug 449811 fixes |guard| scoping.
+          return function () {
+            Services.prefs.setIntPref(guard.prefName, 0);
+            resetButton.removeEventListener("click", onClickReset);
+            resetButton.disabled = true;
+          };
+        })(guard);
+
+        resetButton.textContent = strings.GetStringFromName("resetOnNextRestart");
+        resetButton.addEventListener("click", onClickReset);
+
+        addRow("crashguards", guard.type + "CrashGuard", [resetButton]);
+      }
+    } else {
+      $("graphics-crashguards-tbody").style.display = "none";
+    }
+
+    // Now that we're done, grab any remaining keys in data and drop them into
+    // the diagnostics section.
+    for (let key in data) {
+      let value = data[key];
+      if (Array.isArray(value)) {
+        value = localizedMsg(value);
+      }
+      addRow("diagnostics", key, value);
+    }
   },
 
   javaScript: function javaScript(data) {
@@ -330,8 +559,10 @@ var snapshotFormatters = {
     $("prefs-user-js-section").className = "";
   },
 
-#if defined(XP_LINUX) && defined(MOZ_SANDBOX)
   sandbox: function sandbox(data) {
+    if (AppConstants.platform != "linux" || !AppConstants.MOZ_SANDBOX)
+      return;
+
     let strings = stringBundle();
     let tbody = $("sandbox-tbody");
     for (let key in data) {
@@ -346,7 +577,6 @@ var snapshotFormatters = {
       ]));
     }
   },
-#endif
 };
 
 var $ = document.getElementById.bind(document);
@@ -427,15 +657,15 @@ function copyRawDataToClipboard(button) {
       Cc["@mozilla.org/widget/clipboard;1"].
         getService(Ci.nsIClipboard).
         setData(transferable, null, Ci.nsIClipboard.kGlobalClipboard);
-#ifdef ANDROID
-      // Present a toast notification.
-      let message = {
-        type: "Toast:Show",
-        message: stringBundle().GetStringFromName("rawDataCopied"),
-        duration: "short"
-      };
-      Services.androidBridge.handleGeckoMessage(message);
-#endif
+      if (AppConstants.platform == "android") {
+        // Present a toast notification.
+        let message = {
+          type: "Toast:Show",
+          message: stringBundle().GetStringFromName("rawDataCopied"),
+          duration: "short"
+        };
+        Services.androidBridge.handleGeckoMessage(message);
+      }
     });
   }
   catch (err) {
@@ -481,15 +711,15 @@ function copyContentsToClipboard() {
                     .getService(Ci.nsIClipboard);
   clipboard.setData(transferable, null, clipboard.kGlobalClipboard);
 
-#ifdef ANDROID
-  // Present a toast notification.
-  let message = {
-    type: "Toast:Show",
-    message: stringBundle().GetStringFromName("textCopied"),
-    duration: "short"
-  };
-  Services.androidBridge.handleGeckoMessage(message);
-#endif
+  if (AppConstants.platform == "android") {
+    // Present a toast notification.
+    let message = {
+      type: "Toast:Show",
+      message: stringBundle().GetStringFromName("textCopied"),
+      duration: "short"
+    };
+    Services.androidBridge.handleGeckoMessage(message);
+  }
 }
 
 // Return the plain text representation of an element.  Do a little bit
@@ -499,9 +729,9 @@ function createTextForElement(elem) {
   let text = serializer.serialize(elem);
 
   // Actual CR/LF pairs are needed for some Windows text editors.
-#ifdef XP_WIN
-  text = text.replace(/\n/g, "\r\n");
-#endif
+  if (AppConstants.platform == "win") {
+    text = text.replace(/\n/g, "\r\n");
+  }
 
   return text;
 }
@@ -589,6 +819,10 @@ Serializer.prototype = {
     this._currentLine += text;
   },
 
+  _isHiddenSubHeading: function (th) {
+    return th.parentNode.parentNode.style.display == "none";
+  },
+
   _serializeTable: function (table) {
     // Collect the table's column headings if in fact there are any.  First
     // check thead.  If there's no thead, check the first tr.
@@ -601,12 +835,10 @@ Serializer.prototype = {
       // If there's a contiguous run of th's in the children starting from the
       // rightmost child, then consider them to be column headings.
       for (let i = tableHeadingCols.length - 1; i >= 0; i--) {
-        if (tableHeadingCols[i].localName != "th")
+        let col = tableHeadingCols[i];
+        if (col.localName != "th" || col.classList.contains("title-column"))
           break;
-        colHeadings[i] = this._nodeText(
-            tableHeadingCols[i],
-            (tableHeadingCols[i].classList &&
-             tableHeadingCols[i].classList.contains("endline"))).trim();
+        colHeadings[i] = this._nodeText(col).trim();
       }
     }
     let hasColHeadings = Object.keys(colHeadings).length > 0;
@@ -633,10 +865,7 @@ Serializer.prototype = {
           let text = "";
           if (colHeadings[j])
             text += colHeadings[j] + ": ";
-          text += this._nodeText(
-              children[j],
-              (children[j].classList &&
-               children[j].classList.contains("endline"))).trim();
+          text += this._nodeText(children[j]).trim();
           this._appendText(text);
           this._startNewLine();
         }
@@ -652,14 +881,23 @@ Serializer.prototype = {
       if (this._ignoreElement(trs[i]))
         continue;
       let children = trs[i].querySelectorAll("th,td");
-      let rowHeading = this._nodeText(
-          children[0],
-          (children[0].classList &&
-           children[0].classList.contains("endline"))).trim();
-      this._appendText(rowHeading + ": " + this._nodeText(
-          children[1],
-          (children[1].classList &&
-           children[1].classList.contains("endline"))).trim());
+      let rowHeading = this._nodeText(children[0]).trim();
+      if (children[0].classList.contains("title-column")) {
+        if (!this._isHiddenSubHeading(children[0]))
+          this._appendText(rowHeading);
+      } else if (children.length == 1) {
+        // This is a single-cell row.
+        this._appendText(rowHeading);
+      } else {
+        let childTables = trs[i].querySelectorAll("table");
+        if (childTables.length) {
+          // If we have child tables, don't use nodeText - its trs are already
+          // queued up from querySelectorAll earlier.
+          this._appendText(rowHeading + ": ");
+        } else {
+          this._appendText(rowHeading + ": " + this._nodeText(children[1]).trim());
+        }
+      }
       this._startNewLine();
     }
     this._startNewLine();
@@ -717,27 +955,24 @@ function safeModeRestart() {
     Services.startup.restartInSafeMode(Ci.nsIAppStartup.eAttemptQuit);
   }
 }
-
 /**
  * Set up event listeners for buttons.
  */
-function setupEventListeners(){
-#ifdef MOZ_UPDATER
+function setupEventListeners() {
   $("show-update-history-button").addEventListener("click", function (event) {
     var prompter = Cc["@mozilla.org/updates/update-prompt;1"].createInstance(Ci.nsIUpdatePrompt);
       prompter.showUpdateHistory(window);
   });
-#endif
-  $("reset-box-button").addEventListener("click", function (event){
+  $("reset-box-button").addEventListener("click", function (event) {
     ResetProfile.openConfirmationDialog(window);
   });
-  $("copy-raw-data-to-clipboard").addEventListener("click", function (event){
+  $("copy-raw-data-to-clipboard").addEventListener("click", function (event) {
     copyRawDataToClipboard(this);
   });
-  $("copy-to-clipboard").addEventListener("click", function (event){
+  $("copy-to-clipboard").addEventListener("click", function (event) {
     copyContentsToClipboard();
   });
-  $("profile-dir-button").addEventListener("click", function (event){
+  $("profile-dir-button").addEventListener("click", function (event) {
     openProfileDirectory();
   });
   $("restart-in-safe-mode-button").addEventListener("click", function (event) {
@@ -748,7 +983,7 @@ function setupEventListeners(){
       safeModeRestart();
     }
   });
-  $("verify-place-integrity-button").addEventListener("click", function(event) {
+  $("verify-place-integrity-button").addEventListener("click", function (event) {
     PlacesDBUtils.checkAndFixDatabase(function(aLog) {
       let msg = aLog.join("\n");
       $("verify-place-result").style.display = "block";

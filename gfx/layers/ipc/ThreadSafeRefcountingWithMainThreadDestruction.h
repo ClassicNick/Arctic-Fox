@@ -39,11 +39,11 @@ struct HelperForMainThreadDestruction
 };
 
 template<typename T>
-struct DeleteOnMainThreadTask: public nsRunnable
+struct DeleteOnMainThreadTask : public Runnable
 {
   T* mToDelete;
   explicit DeleteOnMainThreadTask(T* aToDelete) : mToDelete(aToDelete) {}
-  NS_IMETHOD Run() {
+  NS_IMETHOD Run() override {
     MOZ_ASSERT(NS_IsMainThread());
     mToDelete->DeleteToBeCalledOnMainThread();
     return NS_OK;

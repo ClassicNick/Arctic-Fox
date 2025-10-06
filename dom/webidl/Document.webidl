@@ -3,7 +3,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/.
  *
- * http://mxr.mozilla.org/mozilla-central/source/dom/interfaces/core/nsIDOMDocument.idl
+ * http://dxr.mozilla.org/mozilla-central/source/dom/interfaces/core/nsIDOMDocument.idl
  */
 
 interface WindowProxy;
@@ -12,7 +12,12 @@ interface URI;
 interface nsIDocShell;
 interface nsILoadGroup;
 
-enum VisibilityState { "hidden", "visible" };
+enum VisibilityState { "hidden", "visible", "prerender" };
+
+/* https://dom.spec.whatwg.org/#dictdef-elementcreationoptions */
+dictionary ElementCreationOptions {
+  DOMString is;
+};
 
 /* http://dom.spec.whatwg.org/#interface-document */
 [Constructor]
@@ -48,9 +53,9 @@ interface Document : Node {
   Element? getElementById(DOMString elementId);
 
   [NewObject, Throws]
-  Element createElement(DOMString localName);
+  Element createElement(DOMString localName, optional ElementCreationOptions options);
   [NewObject, Throws]
-  Element createElementNS(DOMString? namespace, DOMString qualifiedName);
+  Element createElementNS(DOMString? namespace, DOMString qualifiedName, optional ElementCreationOptions options);
   [NewObject]
   DocumentFragment createDocumentFragment();
   [NewObject]
@@ -116,7 +121,6 @@ partial interface Document {
   //(HTML only)readonly attribute HTMLCollection forms;
   //(HTML only)readonly attribute HTMLCollection scripts;
   //(HTML only)NodeList getElementsByName(DOMString elementName);
-  //(HTML only)NodeList getItems(optional DOMString typeNames); // microdata
   //(Not implemented)readonly attribute DOMElementMap cssElementMap;
 
   // dynamic markup insertion
@@ -156,6 +160,7 @@ partial interface Document {
 
                 [Pref="dom.select_events.enabled"]
                 attribute EventHandler onselectionchange;
+
   /**
    * True if this document is synthetic : stand alone image, video, audio file,
    * etc.
@@ -222,41 +227,52 @@ partial interface Document {
 // https://fullscreen.spec.whatwg.org/#api
 partial interface Document {
   // Note: Per spec the 'S' in these two is lowercase, but the "Moz"
-  // versions hve it uppercase.
+  // versions have it uppercase.
+  [LenientSetter, Func="nsDocument::IsUnprefixedFullscreenEnabled"]
+  readonly attribute boolean fullscreen;
+  [BinaryName="fullscreen"]
+  readonly attribute boolean mozFullScreen;
+  [LenientSetter, Func="nsDocument::IsUnprefixedFullscreenEnabled"]
   readonly attribute boolean fullscreenEnabled;
-  [BinaryName="fullscreenEnabled", Deprecated="PrefixedFullscreenAPI"]
+  [BinaryName="fullscreenEnabled"]
   readonly attribute boolean mozFullScreenEnabled;
+  [LenientSetter, Func="nsDocument::IsUnprefixedFullscreenEnabled"]
   readonly attribute Element? fullscreenElement;
-  [BinaryName="fullscreenElement", Deprecated="PrefixedFullscreenAPI"]
+  [BinaryName="fullscreenElement"]
   readonly attribute Element? mozFullScreenElement;
 
+  [Func="nsDocument::IsUnprefixedFullscreenEnabled"]
   void exitFullscreen();
-  [BinaryName="exitFullscreen", Deprecated="PrefixedFullscreenAPI"]
+  [BinaryName="exitFullscreen"]
   void mozCancelFullScreen();
 
-  // Gecko-specific fullscreen bits
-  [Deprecated="PrefixedFullscreenAPI"]
-  readonly attribute boolean mozFullScreen;
+  // Events handlers
+  [Func="nsDocument::IsUnprefixedFullscreenEnabled"]
+  attribute EventHandler onfullscreenchange;
+  [Func="nsDocument::IsUnprefixedFullscreenEnabled"]
+  attribute EventHandler onfullscreenerror;
 };
 
-// http://dvcs.w3.org/hg/pointerlock/raw-file/default/index.html#extensions-to-the-document-interface
+// https://w3c.github.io/pointerlock/#extensions-to-the-document-interface
+// https://w3c.github.io/pointerlock/#extensions-to-the-documentorshadowroot-mixin
 partial interface Document {
-    readonly attribute Element? mozPointerLockElement;
-    void mozExitPointerLock ();
+  readonly attribute Element? pointerLockElement;
+  [BinaryName="pointerLockElement", Pref="pointer-lock-api.prefixed.enabled"]
+  readonly attribute Element? mozPointerLockElement;
+  void exitPointerLock();
+  [BinaryName="exitPointerLock", Pref="pointer-lock-api.prefixed.enabled"]
+  void mozExitPointerLock();
+
+  // Event handlers
+  attribute EventHandler onpointerlockchange;
+  attribute EventHandler onpointerlockerror;
 };
 
 //http://dvcs.w3.org/hg/webcomponents/raw-file/tip/spec/custom/index.html#dfn-document-register
 partial interface Document {
-    [Throws, Func="nsDocument::IsWebComponentsEnabled"]
+    // this is deprecated from CustomElements v0
+    [Throws, Func="CustomElementsRegistry::IsCustomElementsEnabled"]
     object registerElement(DOMString name, optional ElementRegistrationOptions options);
-};
-
-//http://dvcs.w3.org/hg/webcomponents/raw-file/tip/spec/custom/index.html#dfn-document-register
-partial interface Document {
-    [NewObject, Throws]
-    Element createElement(DOMString localName, DOMString typeExtension);
-    [NewObject, Throws]
-    Element createElementNS(DOMString? namespace, DOMString qualifiedName, DOMString typeExtension);
 };
 
 // http://dvcs.w3.org/hg/webperf/raw-file/tip/specs/PageVisibility/Overview.html#sec-document-interface
@@ -384,6 +400,14 @@ partial interface Document {
   [ChromeOnly] readonly attribute boolean isSrcdocDocument;
 };
 
+
+// Extension to give chrome JS the ability to get the underlying
+// sandbox flag attribute
+partial interface Document {
+  [ChromeOnly] readonly attribute DOMString? sandboxFlagsAsString;
+};
+
+
 /**
  * Chrome document anonymous content management.
  * This is a Chrome-only API that allows inserting fixed positioned anonymous
@@ -412,6 +436,12 @@ partial interface Document {
 // the user has interacted with the document or not.
 partial interface Document {
   [ChromeOnly] readonly attribute boolean userHasInteracted;
+};
+
+// Extension to give chrome and XBL JS the ability to determine whether
+// the document is sandboxed without permission to run scripts.
+partial interface Document {
+  [Func="IsChromeOrXBL"] readonly attribute boolean hasScriptsBlockedBySandbox;
 };
 
 Document implements XPathEvaluator;

@@ -8,10 +8,12 @@ var Cc = Components.classes;
 var Ci = Components.interfaces;
 var Cu = Components.utils;
 
-Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+Cu.import("resource://gre/modules/AppConstants.jsm");
 Cu.import("resource://gre/modules/FileUtils.jsm");
+Cu.import("resource://gre/modules/osfile.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/Task.jsm");
+Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource:///modules/MigrationUtils.jsm");
 
 XPCOMUtils.defineLazyModuleGetter(this, "Downloads",
@@ -103,7 +105,7 @@ Bookmarks.prototype = {
         // In Safari, it is possible (though quite cumbersome) to move
         // bookmarks to the bookmarks root, which is the parent folder of
         // all bookmarks "collections".  That is somewhat in parallel with
-        // both the places root and the unfiled-bookmarks root. 
+        // both the places root and the unfiled-bookmarks root.
         // Because the former is only an implementation detail in our UI,
         // the unfiled root seems to be the best choice.
         folderGuid = PlacesUtils.bookmarks.unfiledGuid;
@@ -169,7 +171,7 @@ Bookmarks.prototype = {
           yield PlacesUtils.bookmarks.insert({
             parentGuid, url: entry.get("URLString"), title
           });
-        } catch(ex) {
+        } catch (ex) {
           Cu.reportError("Invalid Safari bookmark: " + ex);
         }
       }
@@ -220,7 +222,7 @@ History.prototype = {
                             visits: [{ transitionType: transType,
                                        visitDate: visitDate }] });
             }
-            catch(ex) {
+            catch (ex) {
               // Safari's History file may contain malformed URIs which
               // will be ignored.
               Cu.reportError(ex)
@@ -244,7 +246,7 @@ History.prototype = {
           aCallback(false);
         }
       }
-      catch(ex) {
+      catch (ex) {
         Cu.reportError(ex);
         aCallback(false);
       }
@@ -283,7 +285,7 @@ MainPreferencesPropertyList.prototype = {
           try {
             callback(aDict);
           }
-          catch(ex) {
+          catch (ex) {
             Cu.reportError(ex);
           }
         }
@@ -297,7 +299,7 @@ MainPreferencesPropertyList.prototype = {
   _readSync: function MPPL__readSync() {
     if ("_dict" in this)
       return this._dict;
-  
+
     let inputStream = Cc["@mozilla.org/network/file-input-stream;1"].
                       createInstance(Ci.nsIFileInputStream);
     inputStream.init(this._file, -1, -1, 0);
@@ -344,17 +346,17 @@ Preferences.prototype = {
         this._set("WebKitDisplayImagesKey", "permissions.default.image",
                   webkitVal => webkitVal ? 1 : 2);
 
-#ifdef XP_WIN
-        // Cookie-accept policy.
-        // For the OS X version, see WebFoundationCookieBehavior.
-        // Setting                    Safari          Firefox
-        // Always Accept              0               0
-        // Accept from Originating    2               1
-        // Never Accept               1               2
-        this._set("WebKitCookieStorageAcceptPolicy",
-          "network.cookie.cookieBehavior",
-          webkitVal => webkitVal == 0 ? 0 : webkitVal == 1 ? 2 : 1);
-#endif
+        if (AppConstants.platform == "win") {
+          // Cookie-accept policy.
+          // For the OS X version, see WebFoundationCookieBehavior.
+          // Setting                    Safari          Firefox
+          // Always Accept              0               0
+          // Accept from Originating    2               1
+          // Never Accept               1               2
+          this._set("WebKitCookieStorageAcceptPolicy",
+            "network.cookie.cookieBehavior",
+            webkitVal => webkitVal == 0 ? 0 : webkitVal == 1 ? 2 : 1);
+        }
 
         this._migrateFontSettings();
         yield this._migrateDownloadsFolder();
@@ -474,13 +476,13 @@ Preferences.prototype = {
     try {
       localeLangGroup = bundle.GetStringFromName(locale);
     }
-    catch(ex) {
+    catch (ex) {
       let hyphenAt = locale.indexOf("-");
       if (hyphenAt != -1) {
         try {
           localeLangGroup = bundle.GetStringFromName(locale.substr(0, hyphenAt));
         }
-        catch(ex2) { }
+        catch (ex2) { }
       }
     }
     return localeLangGroup;
@@ -544,7 +546,6 @@ SearchStrings.prototype = {
   }
 };
 
-#ifdef XP_MACOSX
 // On OS X, the cookie-accept policy preference is stored in a separate
 // property list.
 // For the Windows version, check Preferences.migrate.
@@ -574,7 +575,6 @@ WebFoundationCookieBehavior.prototype = {
       }.bind(this), aCallback));
   }
 };
-#endif
 
 function SafariProfileMigrator() {
 }
@@ -582,12 +582,12 @@ function SafariProfileMigrator() {
 SafariProfileMigrator.prototype = Object.create(MigratorPrototype);
 
 SafariProfileMigrator.prototype.getResources = function SM_getResources() {
-  let profileDir =
-#ifdef XP_MACOSX
-    FileUtils.getDir("ULibDir", ["Safari"], false);
-#else
-    FileUtils.getDir("AppData", ["Apple Computer", "Safari"], false);
-#endif
+  let profileDir;
+  if (AppConstants.platform == "macosx") {
+    profileDir = FileUtils.getDir("ULibDir", ["Safari"], false);
+  } else {
+    profileDir = FileUtils.getDir("AppData", ["Apple Computer", "Safari"], false);
+  }
   if (!profileDir.exists())
     return null;
 
@@ -601,20 +601,20 @@ SafariProfileMigrator.prototype.getResources = function SM_getResources() {
 
   pushProfileFileResource("History.plist", History);
   pushProfileFileResource("Bookmarks.plist", Bookmarks);
-  
+
   // The Reading List feature was introduced at the same time in Windows and
   // Mac versions of Safari.  Not surprisingly, they are stored in the same
   // format in both versions.  Surpsingly, only on Windows there is a
-  // separate property list for it.  This isn't #ifdefed out on mac, because
+  // separate property list for it.  This code is used on mac too, because
   // Apple may fix this at some point.
   pushProfileFileResource("ReadingList.plist", Bookmarks);
 
-  let prefsDir = 
-#ifdef XP_MACOSX
-    FileUtils.getDir("UsrPrfs", [], false);
-#else
-    FileUtils.getDir("AppData", ["Apple Computer", "Preferences"], false);
-#endif
+  let prefsDir;
+  if (AppConstants.platform == "macosx") {
+    prefsDir = FileUtils.getDir("UsrPrfs", [], false);
+  } else {
+    prefsDir = FileUtils.getDir("AppData", ["Apple Computer", "Preferences"], false);
+  }
 
   let prefs = this.mainPreferencesPropertyList;
   if (prefs) {
@@ -622,26 +622,44 @@ SafariProfileMigrator.prototype.getResources = function SM_getResources() {
     resources.push(new SearchStrings(prefs));
   }
 
-#ifdef XP_MACOSX
-  // On OS X, the cookie-accept policy preference is stored in a separate
-  // property list.
-  let wfFile = FileUtils.getFile("UsrPrfs", ["com.apple.WebFoundation.plist"]);
-  if (wfFile.exists())
-    resources.push(new WebFoundationCookieBehavior(wfFile));
-#endif
+  if (AppConstants.platform == "macosx") {
+    // On OS X, the cookie-accept policy preference is stored in a separate
+    // property list.
+    let wfFile = FileUtils.getFile("UsrPrfs", ["com.apple.WebFoundation.plist"]);
+    if (wfFile.exists())
+      resources.push(new WebFoundationCookieBehavior(wfFile));
+  }
 
   return resources;
+};
+
+SafariProfileMigrator.prototype.getLastUsedDate = function SM_getLastUsedDate() {
+  let profileDir;
+  if (AppConstants.platform == "macosx") {
+    profileDir = FileUtils.getDir("ULibDir", ["Safari"], false);
+  } else {
+    profileDir = FileUtils.getDir("AppData", ["Apple Computer", "Safari"], false);
+  }
+  let datePromises = ["Bookmarks.plist", "History.plist"].map(file => {
+    let path = OS.Path.join(profileDir.path, file);
+    return OS.File.stat(path).catch(_ => null).then(info => {
+      return info ? info.lastModificationDate : 0;
+    });
+  });
+  return Promise.all(datePromises).then(dates => {
+    return new Date(Math.max.apply(Math, dates));
+  });
 };
 
 Object.defineProperty(SafariProfileMigrator.prototype, "mainPreferencesPropertyList", {
   get: function get_mainPreferencesPropertyList() {
     if (this._mainPreferencesPropertyList === undefined) {
-      let file = 
-#ifdef XP_MACOSX
-        FileUtils.getDir("UsrPrfs", [], false);
-#else
-        FileUtils.getDir("AppData", ["Apple Computer", "Preferences"], false);
-#endif
+      let file;
+      if (AppConstants.platform == "macosx") {
+        file = FileUtils.getDir("UsrPrfs", [], false);
+      } else {
+        file = FileUtils.getDir("AppData", ["Apple Computer", "Preferences"], false);
+      }
       if (file.exists()) {
         file.append("com.apple.Safari.plist");
         if (file.exists()) {

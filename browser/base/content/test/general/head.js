@@ -428,30 +428,61 @@ function promiseClearHistory() {
  *
  * @param aExpectedURL
  *        The URL of the document that is expected to load.
+ * @param aStopFromProgressListener
+ *        Whether to cancel the load directly from the progress listener. Defaults to true.
+ *        If you're using this method to avoid hitting the network, you want the default (true).
+ *        However, the browser UI will behave differently for loads stopped directly from
+ *        the progress listener (effectively in the middle of a call to loadURI) and so there
+ *        are cases where you may want to avoid stopping the load directly from within the
+ *        progress listener callback.
  * @return promise
  */
-function waitForDocLoadAndStopIt(aExpectedURL, aBrowser=gBrowser.selectedBrowser) {
-  function content_script() {
+function waitForDocLoadAndStopIt(aExpectedURL, aBrowser=gBrowser.selectedBrowser, aStopFromProgressListener=true) {
+  function content_script(aStopFromProgressListener) {
     let { interfaces: Ci, utils: Cu } = Components;
     Components.utils.import("resource://gre/modules/XPCOMUtils.jsm");
     let wp = docShell.QueryInterface(Ci.nsIWebProgress);
 
+    function stopContent(now, uri) {
+      if (now) {
+        /* Hammer time. */
+        content.stop();
+
+        /* Let the parent know we're done. */
+        sendAsyncMessage("Test:WaitForDocLoadAndStopIt", { uri });
+      } else {
+        setTimeout(stopContent.bind(null, true, uri), 0);
+      }
+    }
+
     let progressListener = {
       onStateChange: function (webProgress, req, flags, status) {
         dump("waitForDocLoadAndStopIt: onStateChange " + flags.toString(16) + ": " + req.name + "\n");
-        let docStart = Ci.nsIWebProgressListener.STATE_IS_DOCUMENT |
-                       Ci.nsIWebProgressListener.STATE_START;
-        if (((flags & docStart) == docStart) && webProgress.isTopLevel) {
-          dump("waitForDocLoadAndStopIt: Document start: " +
-               req.QueryInterface(Ci.nsIChannel).URI.spec + "\n");
-          req.cancel(Components.results.NS_ERROR_FAILURE);
+
+        if (webProgress.isTopLevel &&
+            flags & Ci.nsIWebProgressListener.STATE_START) {
           wp.removeProgressListener(progressListener);
-          sendAsyncMessage("Test:WaitForDocLoadAndStopIt", { uri: req.originalURI.spec });
+
+          let chan = req.QueryInterface(Ci.nsIChannel);
+          dump(`waitForDocLoadAndStopIt: Document start: ${chan.URI.spec}\n`);
+
+          stopContent(aStopFromProgressListener, chan.originalURI.spec);
         }
       },
       QueryInterface: XPCOMUtils.generateQI(["nsISupportsWeakReference"])
     };
-    wp.addProgressListener(progressListener, wp.NOTIFY_ALL);
+    wp.addProgressListener(progressListener, wp.NOTIFY_STATE_WINDOW);
+
+    /**
+     * As |this| is undefined and we can't extend |docShell|, adding an unload
+     * event handler is the easiest way to ensure the weakly referenced
+     * progress listener is kept alive as long as necessary.
+     */
+    addEventListener("unload", function () {
+      try {
+        wp.removeProgressListener(progressListener);
+      } catch (e) { /* Will most likely fail. */ }
+    });
   }
 
   return new Promise((resolve, reject) => {
@@ -462,7 +493,7 @@ function waitForDocLoadAndStopIt(aExpectedURL, aBrowser=gBrowser.selectedBrowser
     }
 
     let mm = aBrowser.messageManager;
-    mm.loadFrameScript("data:,(" + content_script.toString() + ")();", true);
+    mm.loadFrameScript("data:,(" + content_script.toString() + ")(" + aStopFromProgressListener + ");", true);
     mm.addMessageListener("Test:WaitForDocLoadAndStopIt", complete);
     info("waitForDocLoadAndStopIt: Waiting for URL: " + aExpectedURL);
   });
@@ -607,8 +638,6 @@ let FullZoomHelper = {
  *        The tab to load into.
  * @param [optional] url
  *        The url to load, or the current url.
- * @param [optional] event
- *        The load event type to wait for.  Defaults to "load".
  * @return {Promise} resolved when the event is handled.
  * @resolves to the received event
  * @rejects if a valid load event is not received within a meaningful interval
@@ -702,12 +731,16 @@ function assertWebRTCIndicatorStatus(expected) {
 }
 
 function makeActionURI(action, params) {
-  let url = "moz-action:" + action + "," + JSON.stringify(params);
+  let encodedParams = {};
+  for (let key in params) {
+    encodedParams[key] = encodeURIComponent(params[key]);
+  }
+  let url = "moz-action:" + action + "," + JSON.stringify(encodedParams);
   return NetUtil.newURI(url);
 }
 
 function is_hidden(element) {
-  var style = element.ownerDocument.defaultView.getComputedStyle(element, "");
+  var style = element.ownerGlobal.getComputedStyle(element);
   if (style.display == "none")
     return true;
   if (style.visibility != "visible")
@@ -723,7 +756,7 @@ function is_hidden(element) {
 }
 
 function is_visible(element) {
-  var style = element.ownerDocument.defaultView.getComputedStyle(element, "");
+  var style = element.ownerGlobal.getComputedStyle(element);
   if (style.display == "none")
     return false;
   if (style.visibility != "visible")
@@ -798,6 +831,25 @@ function promiseSearchComplete() {
   });
 }
 
+function promiseNewSearchEngine(basename) {
+  return new Promise((resolve, reject) => {
+    info("Waiting for engine to be added: " + basename);
+    let url = getRootDirectory(gTestPath) + basename;
+    Services.search.addEngine(url, Ci.nsISearchEngine.TYPE_MOZSEARCH, "",
+                              false, {
+      onSuccess: function (engine) {
+        info("Search engine added: " + basename);
+        registerCleanupFunction(() => Services.search.removeEngine(engine));
+        resolve(engine);
+      },
+      onError: function (errCode) {
+        Assert.ok(false, "addEngine failed with error code " + errCode);
+        reject();
+      },
+    });
+  });
+}
+
 /**
  * Resolves when a bookmark with the given uri is added.
  */
@@ -828,3 +880,165 @@ function promiseOnBookmarkItemAdded(aExpectedURI) {
     PlacesUtils.bookmarks.addObserver(bookmarksObserver, false);
   });
 }
+
+/**
+ * For an nsIPropertyBag, returns the value for a given
+ * key.
+ *
+ * @param bag
+ *        The nsIPropertyBag to retrieve the value from
+ * @param key
+ *        The key that we want to get the value for from the
+ *        bag
+ * @returns The value corresponding to the key from the bag,
+ *          or null if the value could not be retrieved (for
+ *          example, if no value is set at that key).
+*/
+function getPropertyBagValue(bag, key) {
+  try {
+    let val = bag.getProperty(key);
+    return val;
+  } catch(e if e.result == Cr.NS_ERROR_FAILURE) {}
+
+  return null;
+}
+
+/**
+ * Returns a Promise that resolves once a crash report has
+ * been submitted. This function will also test the crash
+ * reports extra data to see if it matches expectedExtra.
+ *
+ * @param expectedExtra (object)
+ *        An Object whose key-value pairs will be compared
+ *        against the key-value pairs in the extra data of the
+ *        crash report. A test failure will occur if there is
+ *        a mismatch.
+ *
+ *        If the value of the key-value pair is "null", this will
+ *        be interpreted as "this key should not be included in the
+ *        extra data", and will cause a test failure if it is detected
+ *        in the crash report.
+ *
+ *        Note that this will ignore any keys that are not included
+ *        in expectedExtra. It's possible that the crash report
+ *        will contain other extra information that is not
+ *        compared against.
+ * @returns Promise
+ */
+function promiseCrashReport(expectedExtra={}) {
+  return Task.spawn(function*() {
+    info("Starting wait on crash-report-status");
+    let [subject, data] =
+      yield TestUtils.topicObserved("crash-report-status", (subject, data) => {
+        return data == "success";
+      });
+    info("Topic observed!");
+
+    if (!(subject instanceof Ci.nsIPropertyBag2)) {
+      throw new Error("Subject was not a Ci.nsIPropertyBag2");
+    }
+
+    let remoteID = getPropertyBagValue(subject, "serverCrashID");
+    if (!remoteID) {
+      throw new Error("Report should have a server ID");
+    }
+
+    let file = Cc["@mozilla.org/file/local;1"]
+                 .createInstance(Ci.nsILocalFile);
+    file.initWithPath(Services.crashmanager._submittedDumpsDir);
+    file.append(remoteID + ".txt");
+    if (!file.exists()) {
+      throw new Error("Report should have been received by the server");
+    }
+
+    file.remove(false);
+
+    let extra = getPropertyBagValue(subject, "extra");
+    if (!(extra instanceof Ci.nsIPropertyBag2)) {
+      throw new Error("extra was not a Ci.nsIPropertyBag2");
+    }
+
+    info("Iterating crash report extra keys");
+    let enumerator = extra.enumerator;
+    while (enumerator.hasMoreElements()) {
+      let key = enumerator.getNext().QueryInterface(Ci.nsIProperty).name;
+      let value = extra.getPropertyAsAString(key);
+      if (key in expectedExtra) {
+        if (expectedExtra[key] == null) {
+          ok(false, `Got unexpected key ${key} with value ${value}`);
+        } else {
+          is(value, expectedExtra[key],
+             `Crash report had the right extra value for ${key}`);
+        }
+      }
+    }
+  });
+}
+
+function promiseErrorPageLoaded(browser) {
+  return new Promise(resolve => {
+    browser.addEventListener("DOMContentLoaded", function onLoad() {
+      browser.removeEventListener("DOMContentLoaded", onLoad, false, true);
+      resolve();
+    }, false, true);
+  });
+}
+
+function* loadBadCertPage(url) {
+  const EXCEPTION_DIALOG_URI = "chrome://pippki/content/exceptionDialog.xul";
+  let exceptionDialogResolved = new Promise(function(resolve) {
+    // When the certificate exception dialog has opened, click the button to add
+    // an exception.
+    let certExceptionDialogObserver = {
+      observe: function(aSubject, aTopic, aData) {
+        if (aTopic == "cert-exception-ui-ready") {
+          Services.obs.removeObserver(this, "cert-exception-ui-ready");
+          let certExceptionDialog = getCertExceptionDialog(EXCEPTION_DIALOG_URI);
+          ok(certExceptionDialog, "found exception dialog");
+          executeSoon(function() {
+            certExceptionDialog.documentElement.getButton("extra1").click();
+            resolve();
+          });
+        }
+      }
+    };
+
+    Services.obs.addObserver(certExceptionDialogObserver,
+                             "cert-exception-ui-ready", false);
+  });
+
+  yield BrowserTestUtils.loadURI(gBrowser.selectedBrowser, url);
+  yield promiseErrorPageLoaded(gBrowser.selectedBrowser);
+  yield ContentTask.spawn(gBrowser.selectedBrowser, null, function*() {
+    content.document.getElementById("exceptionDialogButton").click();
+  });
+  yield exceptionDialogResolved;
+  yield BrowserTestUtils.browserLoaded(gBrowser.selectedBrowser);
+}
+
+// Utility function to get a handle on the certificate exception dialog.
+// Modified from toolkit/components/passwordmgr/test/prompt_common.js
+function getCertExceptionDialog(aLocation) {
+  let enumerator = Services.wm.getXULWindowEnumerator(null);
+
+  while (enumerator.hasMoreElements()) {
+    let win = enumerator.getNext();
+    let windowDocShell = win.QueryInterface(Ci.nsIXULWindow).docShell;
+
+    let containedDocShells = windowDocShell.getDocShellEnumerator(
+                                      Ci.nsIDocShellTreeItem.typeChrome,
+                                      Ci.nsIDocShell.ENUMERATE_FORWARDS);
+    while (containedDocShells.hasMoreElements()) {
+      // Get the corresponding document for this docshell
+      let childDocShell = containedDocShells.getNext();
+      let childDoc = childDocShell.QueryInterface(Ci.nsIDocShell)
+                                  .contentViewer
+                                  .DOMDocument;
+
+      if (childDoc.location.href == aLocation) {
+        return childDoc;
+      }
+    }
+  }
+}
+

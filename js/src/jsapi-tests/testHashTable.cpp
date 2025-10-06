@@ -302,11 +302,11 @@ struct MoveOnlyType {
 
     explicit MoveOnlyType(uint32_t val) : val(val) { }
 
-    MoveOnlyType(MoveOnlyType &&rhs) {
+    MoveOnlyType(MoveOnlyType&& rhs) {
         val = rhs.val;
     }
 
-    MoveOnlyType &operator=(MoveOnlyType &&rhs) {
+    MoveOnlyType& operator=(MoveOnlyType&& rhs) {
         MOZ_ASSERT(&rhs != this);
         this->~MoveOnlyType();
         new(this) MoveOnlyType(mozilla::Move(rhs));
@@ -316,18 +316,18 @@ struct MoveOnlyType {
     struct HashPolicy {
         typedef MoveOnlyType Lookup;
 
-        static js::HashNumber hash(const Lookup &lookup) {
+        static js::HashNumber hash(const Lookup& lookup) {
             return lookup.val;
         }
 
-        static bool match(const MoveOnlyType &existing, const Lookup &lookup) {
+        static bool match(const MoveOnlyType& existing, const Lookup& lookup) {
             return existing.val == lookup.val;
         }
     };
 
   private:
-    MoveOnlyType(const MoveOnlyType &) = delete;
-    MoveOnlyType& operator=(const MoveOnlyType &) = delete;
+    MoveOnlyType(const MoveOnlyType&) = delete;
+    MoveOnlyType& operator=(const MoveOnlyType&) = delete;
 };
 
 BEGIN_TEST(testHashSetOfMoveOnlyType)
@@ -376,17 +376,13 @@ LookupWithDefaultUntilResize() {
 
 BEGIN_TEST(testHashMapLookupWithDefaultOOM)
 {
-    js::oom::targetThread = js::oom::THREAD_TYPE_MAIN;
     uint32_t timeToFail;
     for (timeToFail = 1; timeToFail < 1000; timeToFail++) {
-        OOM_maxAllocations = OOM_counter + timeToFail;
-        OOM_failAlways = false;
-
+        js::oom::SimulateOOMAfter(timeToFail, js::oom::THREAD_TYPE_MAIN, false);
         LookupWithDefaultUntilResize();
     }
 
-    js::oom::targetThread = js::oom::THREAD_TYPE_NONE;
-
+    js::oom::ResetSimulatedOOM();
     return true;
 }
 

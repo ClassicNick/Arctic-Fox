@@ -30,10 +30,6 @@ endif
 -include $(DEPTH)/.mozconfig.mk
 
 ifndef EXTERNALLY_MANAGED_MAKE_FILE
-# Using $(firstword) may not be perfect. But it should be good enough for most
-# scenarios.
-_current_makefile = $(CURDIR)/$(firstword $(MAKEFILE_LIST))
-
 # Import the automatically generated backend file. If this file doesn't exist,
 # the backend hasn't been properly configured. We want this to be a fatal
 # error, hence not using "-include".
@@ -123,24 +119,6 @@ endif
 CONFIG_TOOLS	= $(MOZ_BUILD_ROOT)/config
 AUTOCONF_TOOLS	= $(MOZILLA_DIR)/build/autoconf
 
-#
-# Strip off the excessively long version numbers on these platforms,
-# but save the version to allow multiple versions of the same base
-# platform to be built in the same tree.
-#
-ifneq (,$(filter FreeBSD HP-UX Linux NetBSD OpenBSD SunOS,$(OS_ARCH)))
-OS_RELEASE	:= $(basename $(OS_RELEASE))
-
-# Allow the user to ignore the OS_VERSION, which is usually irrelevant.
-ifdef WANT_MOZILLA_CONFIG_OS_VERSION
-OS_VERS		:= $(suffix $(OS_RELEASE))
-OS_VERSION	:= $(shell echo $(OS_VERS) | sed 's/-.*//')
-endif
-
-endif
-
-OS_CONFIG	:= $(OS_ARCH)$(OS_RELEASE)
-
 ifdef _MSC_VER
 CC_WRAPPER ?= $(call py_action,cl)
 CXX_WRAPPER ?= $(call py_action,cl)
@@ -158,9 +136,10 @@ PYTHON_PATH = $(PYTHON) $(topsrcdir)/config/pythonpath.py
 _DEBUG_ASFLAGS :=
 _DEBUG_CFLAGS :=
 _DEBUG_LDFLAGS :=
+_DEBUG_RUSTFLAGS :=
 
 ifneq (,$(MOZ_DEBUG)$(MOZ_DEBUG_SYMBOLS))
-  ifeq ($(AS),yasm)
+  ifeq ($(AS),$(YASM))
     ifeq ($(OS_ARCH)_$(GNU_CC),WINNT_)
       _DEBUG_ASFLAGS += -g cv8
     else
@@ -173,19 +152,14 @@ ifneq (,$(MOZ_DEBUG)$(MOZ_DEBUG_SYMBOLS))
   endif
   _DEBUG_CFLAGS += $(MOZ_DEBUG_FLAGS)
   _DEBUG_LDFLAGS += $(MOZ_DEBUG_LDFLAGS)
+  _DEBUG_RUSTFLAGS += -g
 endif
 
-ifeq ($(YASM),$(AS))
-# yasm doesn't like the GNU as flags we may already have in ASFLAGS, so reset.
-ASFLAGS := $(_DEBUG_ASFLAGS)
-# yasm doesn't like -c
-AS_DASH_C_FLAG=
-else
 ASFLAGS += $(_DEBUG_ASFLAGS)
-endif
 OS_CFLAGS += $(_DEBUG_CFLAGS)
 OS_CXXFLAGS += $(_DEBUG_CFLAGS)
 OS_LDFLAGS += $(_DEBUG_LDFLAGS)
+RUSTFLAGS += $(_DEBUG_RUSTFLAGS)
 
 # XXX: What does this? Bug 482434 filed for better explanation.
 ifeq ($(OS_ARCH)_$(GNU_CC),WINNT_)
@@ -256,7 +230,7 @@ endif # NO_PROFILE_GUIDED_OPTIMIZE
 
 MAKE_JARS_FLAGS = \
 	-t $(topsrcdir) \
-	-f $(MOZ_CHROME_FILE_FORMAT) \
+	-f $(MOZ_JAR_MAKER_FILE_FORMAT) \
 	$(NULL)
 
 ifdef USE_EXTENSION_MANIFEST
@@ -275,11 +249,6 @@ MY_RULES	:= $(DEPTH)/config/myrules.mk
 # Default command macros; can be overridden in <arch>.mk.
 #
 CCC = $(CXX)
-
-# Java macros
-JAVA_GEN_DIR  = _javagen
-JAVA_DIST_DIR = $(DEPTH)/$(JAVA_GEN_DIR)
-JAVA_IFACES_PKG_NAME = org/mozilla/interfaces
 
 INCLUDES = \
   -I$(srcdir) \
@@ -381,10 +350,6 @@ HOST_CXXFLAGS += $(HOST_DEFINES) $(MOZBUILD_HOST_CXXFLAGS)
 #
 # Override defaults
 
-# Default location of include files
-IDL_PARSER_DIR = $(topsrcdir)/xpcom/idl-parser
-IDL_PARSER_CACHE_DIR = $(DEPTH)/xpcom/idl-parser
-
 SDK_LIB_DIR = $(DIST)/sdk/lib
 SDK_BIN_DIR = $(DIST)/sdk/bin
 
@@ -393,6 +358,18 @@ DEPENDENCIES	= .md
 ifdef MACOSX_DEPLOYMENT_TARGET
 export MACOSX_DEPLOYMENT_TARGET
 endif # MACOSX_DEPLOYMENT_TARGET
+
+# Export to propagate to cl and submake for third-party code.
+# Eventually, we'll want to just use -I.
+ifdef INCLUDE
+export INCLUDE
+endif
+
+# Export to propagate to link.exe and submake for third-party code.
+# Eventually, we'll want to just use -LIBPATH.
+ifdef LIB
+export LIB
+endif
 
 ifdef MOZ_USING_CCACHE
 ifdef CLANG_CXX
@@ -439,21 +416,11 @@ PWD := $(CURDIR)
 endif
 
 NSINSTALL_PY := $(PYTHON) $(abspath $(MOZILLA_DIR)/config/nsinstall.py)
-# For Pymake, wherever we use nsinstall.py we're also going to try to make it
-# a native command where possible. Since native commands can't be used outside
-# of single-line commands, we continue to provide INSTALL for general use.
-# Single-line commands should be switched over to install_cmd.
-NSINSTALL_NATIVECMD := %nsinstall nsinstall
-
-ifdef NSINSTALL_BIN
-NSINSTALL = $(NSINSTALL_BIN)
-else
-ifeq ($(HOST_OS_ARCH),WINNT)
+ifneq (,$(or $(filter WINNT,$(HOST_OS_ARCH)),$(if $(COMPILE_ENVIRONMENT),,1)))
 NSINSTALL = $(NSINSTALL_PY)
 else
 NSINSTALL = $(DEPTH)/config/nsinstall$(HOST_BIN_SUFFIX)
 endif # WINNT
-endif # NSINSTALL_BIN
 
 
 ifeq (,$(CROSS_COMPILE)$(filter-out WINNT, $(OS_ARCH)))

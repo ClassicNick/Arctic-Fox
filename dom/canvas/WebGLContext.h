@@ -19,7 +19,6 @@
 #include "mozilla/gfx/2D.h"
 #include "mozilla/LinkedList.h"
 #include "mozilla/UniquePtr.h"
-#include "mozilla/WeakPtr.h"
 #include "nsCycleCollectionNoteChild.h"
 #include "nsICanvasRenderingContextInternal.h"
 #include "nsLayoutUtils.h"
@@ -34,6 +33,7 @@
 #endif
 
 // Local
+#include "WebGLContextLossHandler.h"
 #include "WebGLContextUnchecked.h"
 #include "WebGLFormats.h"
 #include "WebGLObjectModel.h"
@@ -90,7 +90,6 @@ class ScopedCopyTexImageSource;
 class ScopedResolveTexturesForDraw;
 class ScopedUnpackReset;
 class WebGLActiveInfo;
-class WebGLContextLossHandler;
 class WebGLBuffer;
 class WebGLExtensionBase;
 class WebGLFramebuffer;
@@ -100,7 +99,9 @@ class WebGLRenderbuffer;
 class WebGLSampler;
 class WebGLShader;
 class WebGLShaderPrecisionFormat;
+class WebGLSync;
 class WebGLTexture;
+class WebGLTimerQuery;
 class WebGLTransformFeedback;
 class WebGLUniformLocation;
 class WebGLVertexArray;
@@ -115,12 +116,14 @@ template<typename> struct Nullable;
 
 namespace gfx {
 class SourceSurface;
+class VRLayerChild;
 } // namespace gfx
 
 namespace webgl {
 struct LinkedProgramInfo;
 class ShaderValidator;
 class TexUnpackBlob;
+struct UniformInfo;
 } // namespace webgl
 
 WebGLTexelFormat GetWebGLTexelFormat(TexInternalFormat format);
@@ -185,7 +188,6 @@ class WebGLContext
     , public WebGLContextUnchecked
     , public WebGLRectangleObject
     , public nsWrapperCache
-    , public SupportsWeakPtr<WebGLContext>
 {
     friend class WebGL2Context;
     friend class WebGLContextUserData;
@@ -221,8 +223,6 @@ protected:
     virtual ~WebGLContext();
 
 public:
-    MOZ_DECLARE_WEAKREFERENCE_TYPENAME(WebGLContext)
-
     NS_DECL_CYCLE_COLLECTING_ISUPPORTS
 
     NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS_AMBIGUOUS(WebGLContext,
@@ -240,8 +240,8 @@ public:
     virtual int32_t GetHeight() const override;
 
     NS_IMETHOD SetDimensions(int32_t width, int32_t height) override;
-    NS_IMETHOD InitializeWithSurface(nsIDocShell*, gfxASurface*, int32_t,
-                                     int32_t) override
+    NS_IMETHOD InitializeWithDrawTarget(nsIDocShell*,
+                                        NotNull<gfx::DrawTarget*>) override
     {
         return NS_ERROR_NOT_IMPLEMENTED;
     }
@@ -291,6 +291,7 @@ public:
     void ErrorInvalidEnumInfo(const char* info, const char* funcName,
                               GLenum enumValue);
     void ErrorOutOfMemory(const char* fmt = 0, ...);
+    void ErrorImplementationBug(const char* fmt = 0, ...);
 
     const char* ErrorName(GLenum error);
 
@@ -317,7 +318,7 @@ public:
         case LOCAL_GL_TEXTURE_2D_ARRAY:
             return mBound2DArrayTextures[mActiveTexture];
         default:
-            MOZ_CRASH("bad target");
+            MOZ_CRASH("GFX: bad target");
         }
     }
 
@@ -332,9 +333,12 @@ public:
         return ActiveBoundTextureForTarget(texTarget);
     }
 
+    void InvalidateResolveCacheForTextureWithTexUnit(const GLuint);
+
     already_AddRefed<Layer>
     GetCanvasLayer(nsDisplayListBuilder* builder, Layer* oldLayer,
-                   LayerManager* manager) override;
+                   LayerManager* manager,
+                   bool aMirror = false) override;
 
     // Note that 'clean' here refers to its invalidation state, not the
     // contents of the buffer.
@@ -351,6 +355,11 @@ public:
     bool IsPreservingDrawingBuffer() const { return mOptions.preserveDrawingBuffer; }
 
     bool PresentScreenBuffer();
+
+    // Prepare the context for capture before compositing
+    void BeginComposition();
+    // Clean up the context after captured for compositing
+    void EndComposition();
 
     // a number that increments every time we have an event that causes
     // all context resources to be lost.
@@ -375,7 +384,7 @@ public:
     bool TryToRestoreContext();
 
     void AssertCachedBindings();
-    void AssertCachedState();
+    void AssertCachedGlobalState();
 
     dom::HTMLCanvasElement* GetCanvas() const { return mCanvasElement; }
 
@@ -537,15 +546,32 @@ public:
     void LinkProgram(WebGLProgram* prog);
     void PixelStorei(GLenum pname, GLint param);
     void PolygonOffset(GLfloat factor, GLfloat units);
+
+    already_AddRefed<layers::SharedSurfaceTextureClient> GetVRFrame();
+    bool StartVRPresentation();
 protected:
-    bool DoReadPixelsAndConvert(GLint x, GLint y, GLsizei width, GLsizei height,
-                                GLenum destFormat, GLenum destType, void* destBytes,
-                                GLenum auxReadFormat, GLenum auxReadType);
+    bool ReadPixels_SharedPrecheck(ErrorResult* const out_error);
+    void ReadPixelsImpl(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format,
+                        GLenum type, void* data, uint32_t dataLen);
+    bool DoReadPixelsAndConvert(const webgl::FormatInfo* srcFormat, GLint x, GLint y,
+                                GLsizei width, GLsizei height, GLenum format,
+                                GLenum destType, void* dest, uint32_t dataLen,
+                                uint32_t rowStride);
 public:
-    void ReadPixels(GLint x, GLint y, GLsizei width, GLsizei height,
-                    GLenum format, GLenum type,
-                    const dom::Nullable<dom::ArrayBufferView>& pixels,
-                    ErrorResult& rv);
+    void ReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format,
+                    GLenum type, const dom::Nullable<dom::ArrayBufferView>& maybeView,
+                    ErrorResult& rv)
+    {
+        const char funcName[] = "readPixels";
+        if (maybeView.IsNull()) {
+            ErrorInvalidValue("%s: `pixels` must not be null.", funcName);
+            return;
+        }
+        ReadPixels(x, y, width, height, format, type, maybeView.Value(), rv);
+    }
+
+    void ReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format,
+                    GLenum type, const dom::ArrayBufferView& pixels, ErrorResult& rv);
     void RenderbufferStorage(GLenum target, GLenum internalFormat,
                              GLsizei width, GLsizei height);
 protected:
@@ -564,160 +590,108 @@ public:
     void StencilOpSeparate(GLenum face, GLenum sfail, GLenum dpfail,
                            GLenum dppass);
 
+    //////
+
     void Uniform1i(WebGLUniformLocation* loc, GLint x);
     void Uniform2i(WebGLUniformLocation* loc, GLint x, GLint y);
     void Uniform3i(WebGLUniformLocation* loc, GLint x, GLint y, GLint z);
-    void Uniform4i(WebGLUniformLocation* loc, GLint x, GLint y, GLint z,
-                   GLint w);
+    void Uniform4i(WebGLUniformLocation* loc, GLint x, GLint y, GLint z, GLint w);
 
     void Uniform1f(WebGLUniformLocation* loc, GLfloat x);
     void Uniform2f(WebGLUniformLocation* loc, GLfloat x, GLfloat y);
     void Uniform3f(WebGLUniformLocation* loc, GLfloat x, GLfloat y, GLfloat z);
-    void Uniform4f(WebGLUniformLocation* loc, GLfloat x, GLfloat y, GLfloat z,
-                   GLfloat w);
+    void Uniform4f(WebGLUniformLocation* loc, GLfloat x, GLfloat y, GLfloat z, GLfloat w);
 
-    // Int array
-    void Uniform1iv(WebGLUniformLocation* loc, const dom::Int32Array& arr) {
-        arr.ComputeLengthAndData();
-        Uniform1iv_base(loc, arr.Length(), arr.Data());
-    }
-    void Uniform1iv(WebGLUniformLocation* loc,
-                    const dom::Sequence<GLint>& arr)
-    {
-        Uniform1iv_base(loc, arr.Length(), arr.Elements());
-    }
-    void Uniform1iv_base(WebGLUniformLocation* loc, size_t arrayLength,
-                         const GLint* data);
+    //////////////////////////
 
-    void Uniform2iv(WebGLUniformLocation* loc, const dom::Int32Array& arr) {
-        arr.ComputeLengthAndData();
-        Uniform2iv_base(loc, arr.Length(), arr.Data());
-    }
-    void Uniform2iv(WebGLUniformLocation* loc,
-                    const dom::Sequence<GLint>& arr)
-    {
-        Uniform2iv_base(loc, arr.Length(), arr.Elements());
-    }
-    void Uniform2iv_base(WebGLUniformLocation* loc, size_t arrayLength,
-                         const GLint* data);
+protected:
+    template<typename elemT, typename arrT>
+    struct Arr {
+        size_t dataCount;
+        const elemT* data;
 
-    void Uniform3iv(WebGLUniformLocation* loc, const dom::Int32Array& arr) {
-        arr.ComputeLengthAndData();
-        Uniform3iv_base(loc, arr.Length(), arr.Data());
-    }
-    void Uniform3iv(WebGLUniformLocation* loc,
-                    const dom::Sequence<GLint>& arr)
-    {
-        Uniform3iv_base(loc, arr.Length(), arr.Elements());
-    }
-    void Uniform3iv_base(WebGLUniformLocation* loc, size_t arrayLength,
-                         const GLint* data);
+        explicit Arr(const arrT& arr) {
+            arr.ComputeLengthAndData();
+            dataCount = arr.LengthAllowShared();
+            data = arr.DataAllowShared();
+        }
 
-    void Uniform4iv(WebGLUniformLocation* loc, const dom::Int32Array& arr) {
-        arr.ComputeLengthAndData();
-        Uniform4iv_base(loc, arr.Length(), arr.Data());
-    }
-    void Uniform4iv(WebGLUniformLocation* loc,
-                    const dom::Sequence<GLint>& arr)
-    {
-        Uniform4iv_base(loc, arr.Length(), arr.Elements());
-    }
-    void Uniform4iv_base(WebGLUniformLocation* loc, size_t arrayLength,
-                         const GLint* data);
+        explicit Arr(const dom::Sequence<elemT>& arr) {
+            dataCount = arr.Length();
+            data = arr.Elements();
+        }
+    };
 
-    // Float array
-    void Uniform1fv(WebGLUniformLocation* loc, const dom::Float32Array& arr) {
-        arr.ComputeLengthAndData();
-        Uniform1fv_base(loc, arr.Length(), arr.Data());
-    }
-    void Uniform1fv(WebGLUniformLocation* loc,
-                    const dom::Sequence<GLfloat>& arr)
-    {
-        Uniform1fv_base(loc, arr.Length(), arr.Elements());
-    }
-    void Uniform1fv_base(WebGLUniformLocation* loc, size_t arrayLength,
-                         const GLfloat* data);
+    typedef Arr<GLint, dom::Int32Array> IntArr;
+    typedef Arr<GLfloat, dom::Float32Array> FloatArr;
 
-    void Uniform2fv(WebGLUniformLocation* loc, const dom::Float32Array& arr) {
-        arr.ComputeLengthAndData();
-        Uniform2fv_base(loc, arr.Length(), arr.Data());
-    }
-    void Uniform2fv(WebGLUniformLocation* loc,
-                    const dom::Sequence<GLfloat>& arr)
-    {
-        Uniform2fv_base(loc, arr.Length(), arr.Elements());
-    }
-    void Uniform2fv_base(WebGLUniformLocation* loc, size_t arrayLength,
-                         const GLfloat* data);
+    ////////////////
 
-    void Uniform3fv(WebGLUniformLocation* loc, const dom::Float32Array& arr) {
-        arr.ComputeLengthAndData();
-        Uniform3fv_base(loc, arr.Length(), arr.Data());
-    }
-    void Uniform3fv(WebGLUniformLocation* loc,
-                    const dom::Sequence<GLfloat>& arr)
-    {
-        Uniform3fv_base(loc, arr.Length(), arr.Elements());
-    }
-    void Uniform3fv_base(WebGLUniformLocation* loc, size_t arrayLength,
-                         const GLfloat* data);
+    void UniformNiv(const char* funcName, uint8_t N, WebGLUniformLocation* loc,
+                    const IntArr& arr);
 
-    void Uniform4fv(WebGLUniformLocation* loc, const dom::Float32Array& arr) {
-        arr.ComputeLengthAndData();
-        Uniform4fv_base(loc, arr.Length(), arr.Data());
-    }
-    void Uniform4fv(WebGLUniformLocation* loc,
-                    const dom::Sequence<GLfloat>& arr)
-    {
-        Uniform4fv_base(loc, arr.Length(), arr.Elements());
-    }
-    void Uniform4fv_base(WebGLUniformLocation* loc, size_t arrayLength,
-                         const GLfloat* data);
+    void UniformNfv(const char* funcName, uint8_t N, WebGLUniformLocation* loc,
+                    const FloatArr& arr);
 
-    // Matrix
-    void UniformMatrix2fv(WebGLUniformLocation* loc, WebGLboolean transpose,
-                          const dom::Float32Array& value)
-    {
-        value.ComputeLengthAndData();
-        UniformMatrix2fv_base(loc, transpose, value.Length(), value.Data());
-    }
-    void UniformMatrix2fv(WebGLUniformLocation* loc, WebGLboolean transpose,
-                          const dom::Sequence<float>& value)
-    {
-        UniformMatrix2fv_base(loc, transpose, value.Length(),
-                              value.Elements());
-    }
-    void UniformMatrix2fv_base(WebGLUniformLocation* loc, bool transpose,
-                               size_t arrayLength, const float* data);
+    void UniformMatrixAxBfv(const char* funcName, uint8_t A, uint8_t B,
+                            WebGLUniformLocation* loc, bool transpose,
+                            const FloatArr& arr);
 
-    void UniformMatrix3fv(WebGLUniformLocation* loc, WebGLboolean transpose,
-                          const dom::Float32Array& value)
-    {
-        value.ComputeLengthAndData();
-        UniformMatrix3fv_base(loc, transpose, value.Length(), value.Data());
-    }
-    void UniformMatrix3fv(WebGLUniformLocation* loc, WebGLboolean transpose,
-                          const dom::Sequence<float>& value)
-    {
-        UniformMatrix3fv_base(loc, transpose, value.Length(), value.Elements());
-    }
-    void UniformMatrix3fv_base(WebGLUniformLocation* loc, bool transpose,
-                               size_t arrayLength, const float* data);
+    ////////////////
 
-    void UniformMatrix4fv(WebGLUniformLocation* loc, WebGLboolean transpose,
-                          const dom::Float32Array& value)
-    {
-        value.ComputeLengthAndData();
-        UniformMatrix4fv_base(loc, transpose, value.Length(), value.Data());
+public:
+    template<typename T>
+    void Uniform1iv(WebGLUniformLocation* loc, const T& arr) {
+        UniformNiv("uniform1iv", 1, loc, IntArr(arr));
     }
-    void UniformMatrix4fv(WebGLUniformLocation* loc, bool transpose,
-                          const dom::Sequence<float>& value)
-    {
-        UniformMatrix4fv_base(loc, transpose, value.Length(),
-                              value.Elements());
+    template<typename T>
+    void Uniform2iv(WebGLUniformLocation* loc, const T& arr) {
+        UniformNiv("uniform2iv", 2, loc, IntArr(arr));
     }
-    void UniformMatrix4fv_base(WebGLUniformLocation* loc, bool transpose,
-                               size_t arrayLength, const float* data);
+    template<typename T>
+    void Uniform3iv(WebGLUniformLocation* loc, const T& arr) {
+        UniformNiv("uniform3iv", 3, loc, IntArr(arr));
+    }
+    template<typename T>
+    void Uniform4iv(WebGLUniformLocation* loc, const T& arr) {
+        UniformNiv("uniform4iv", 4, loc, IntArr(arr));
+    }
+
+    //////
+
+    template<typename T>
+    void Uniform1fv(WebGLUniformLocation* loc, const T& arr) {
+        UniformNfv("uniform1fv", 1, loc, FloatArr(arr));
+    }
+    template<typename T>
+    void Uniform2fv(WebGLUniformLocation* loc, const T& arr) {
+        UniformNfv("uniform2fv", 2, loc, FloatArr(arr));
+    }
+    template<typename T>
+    void Uniform3fv(WebGLUniformLocation* loc, const T& arr) {
+        UniformNfv("uniform3fv", 3, loc, FloatArr(arr));
+    }
+    template<typename T>
+    void Uniform4fv(WebGLUniformLocation* loc, const T& arr) {
+        UniformNfv("uniform4fv", 4, loc, FloatArr(arr));
+    }
+
+    //////
+
+    template<typename T>
+    void UniformMatrix2fv(WebGLUniformLocation* loc, bool transpose, const T& arr) {
+        UniformMatrixAxBfv("uniformMatrix2fv", 2, 2, loc, transpose, FloatArr(arr));
+    }
+    template<typename T>
+    void UniformMatrix3fv(WebGLUniformLocation* loc, bool transpose, const T& arr) {
+        UniformMatrixAxBfv("uniformMatrix3fv", 3, 3, loc, transpose, FloatArr(arr));
+    }
+    template<typename T>
+    void UniformMatrix4fv(WebGLUniformLocation* loc, bool transpose, const T& arr) {
+        UniformMatrixAxBfv("uniformMatrix4fv", 4, 4, loc, transpose, FloatArr(arr));
+    }
+
+    ////////////////////////////////////
 
     void UseProgram(WebGLProgram* prog);
 
@@ -725,22 +699,19 @@ public:
                                    uint32_t arrayLength);
     bool ValidateUniformLocation(WebGLUniformLocation* loc, const char* funcName);
     bool ValidateUniformSetter(WebGLUniformLocation* loc, uint8_t setterSize,
-                               GLenum setterType, const char* info,
-                               GLuint* out_rawLoc);
+                               GLenum setterType, const char* funcName);
     bool ValidateUniformArraySetter(WebGLUniformLocation* loc,
                                     uint8_t setterElemSize, GLenum setterType,
-                                    size_t setterArraySize, const char* info,
-                                    GLuint* out_rawLoc,
-                                    GLsizei* out_numElementsToUpload);
+                                    uint32_t setterArraySize, const char* funcName,
+                                    uint32_t* out_numElementsToUpload);
     bool ValidateUniformMatrixArraySetter(WebGLUniformLocation* loc,
                                           uint8_t setterCols,
                                           uint8_t setterRows,
                                           GLenum setterType,
-                                          size_t setterArraySize,
+                                          uint32_t setterArraySize,
                                           bool setterTranspose,
-                                          const char* info,
-                                          GLuint* out_rawLoc,
-                                          GLsizei* out_numElementsToUpload);
+                                          const char* funcName,
+                                          uint32_t* out_numElementsToUpload);
     void ValidateProgram(WebGLProgram* prog);
     bool ValidateUniformLocation(const char* info, WebGLUniformLocation* loc);
     bool ValidateSamplerUniformSetter(const char* info,
@@ -825,7 +796,8 @@ protected:
 public:
     void Disable(GLenum cap);
     void Enable(GLenum cap);
-    bool GetStencilBits(GLint* out_stencilBits);
+    bool GetStencilBits(GLint* const out_stencilBits);
+    bool GetChannelBits(const char* funcName, GLenum pname, GLint* const out_val);
     virtual JS::Value GetParameter(JSContext* cx, GLenum pname, ErrorResult& rv);
 
     void GetParameter(JSContext* cx, GLenum pname,
@@ -896,51 +868,86 @@ public:
                            GLint yOffset, GLint x, GLint y, GLsizei width,
                            GLsizei height);
 
+    ////
+
     void TexImage2D(GLenum texImageTarget, GLint level, GLenum internalFormat,
                     GLsizei width, GLsizei height, GLint border, GLenum unpackFormat,
                     GLenum unpackType,
                     const dom::Nullable<dom::ArrayBufferView>& maybeView,
                     ErrorResult&);
+protected:
     void TexImage2D(GLenum texImageTarget, GLint level, GLenum internalFormat,
-                    GLenum unpackFormat, GLenum unpackType, dom::ImageData* imageData,
-                    ErrorResult&);
+                    GLenum unpackFormat, GLenum unpackType,
+                    const dom::ImageData& imageData, ErrorResult& out_error);
+public:
     void TexImage2D(GLenum texImageTarget, GLint level, GLenum internalFormat,
-                    GLenum unpackFormat, GLenum unpackType, dom::Element* elem,
-                    ErrorResult* const out_error);
+                    GLenum unpackFormat, GLenum unpackType, const dom::Element& elem,
+                    ErrorResult& out_error);
+
+    ////
+
+protected:
+    void TexSubImage2D(GLenum texImageTarget, GLint level, GLint xOffset, GLint yOffset,
+                       GLsizei width, GLsizei height, GLenum unpackFormat,
+                       GLenum unpackType, const dom::ArrayBufferView& view);
+    void TexSubImage2D(GLenum texImageTarget, GLint level, GLint xOffset, GLint yOffset,
+                       GLenum unpackFormat, GLenum unpackType,
+                       const dom::ImageData& imageData, ErrorResult& out_error);
+public:
+    void TexSubImage2D(GLenum texImageTarget, GLint level, GLint xOffset, GLint yOffset,
+                       GLenum unpackFormat, GLenum unpackType, const dom::Element& elem,
+                       ErrorResult& out_error);
+
+    ////////////////
+    // Pseudo-nullable WebGL1 entrypoints
+
+    void TexImage2D(GLenum texImageTarget, GLint level, GLenum internalFormat,
+                    GLenum unpackFormat, GLenum unpackType,
+                    const dom::ImageData* imageData, ErrorResult& out_error)
+    {
+        const char funcName[] = "texImage2D";
+        if (!imageData) {
+            ErrorInvalidValue("%s: `data` must not be null.", funcName);
+            return;
+        }
+        TexImage2D(texImageTarget, level, internalFormat, unpackFormat, unpackType,
+                   *imageData, out_error);
+    }
 
     void TexSubImage2D(GLenum texImageTarget, GLint level, GLint xOffset, GLint yOffset,
                        GLsizei width, GLsizei height, GLenum unpackFormat,
                        GLenum unpackType,
-                       const dom::Nullable<dom::ArrayBufferView>& maybeView,
-                       ErrorResult&);
-    void TexSubImage2D(GLenum texImageTarget, GLint level, GLint xOffset, GLint yOffset,
-                       GLenum unpackFormat, GLenum unpackType, dom::ImageData* imageData,
-                       ErrorResult&);
-    void TexSubImage2D(GLenum texImageTarget, GLint level, GLint xOffset, GLint yOffset,
-                       GLenum unpackFormat, GLenum unpackType, dom::Element* elem,
-                       ErrorResult* const out_error);
-
-    // Allow whatever element unpackTypes the bindings are willing to pass
-    // us in Tex(Sub)Image2D
-    template<typename T>
-    inline void
-    TexImage2D(GLenum texImageTarget, GLint level, GLenum internalFormat,
-               GLenum unpackFormat, GLenum unpackType, T& elem, ErrorResult& out_error)
+                       const dom::Nullable<dom::ArrayBufferView>& maybeView, ErrorResult&)
     {
-        TexImage2D(texImageTarget, level, internalFormat, unpackFormat, unpackType, &elem,
-                   &out_error);
+        const char funcName[] = "texSubImage2D";
+        if (maybeView.IsNull()) {
+            ErrorInvalidValue("%s: `data` must not be null.", funcName);
+            return;
+        }
+        TexSubImage2D(texImageTarget, level, xOffset, yOffset, width, height,
+                      unpackFormat, unpackType, maybeView.Value());
     }
 
-    template<typename T>
-    inline void
-    TexSubImage2D(GLenum texImageTarget, GLint level, GLint xOffset, GLint yOffset,
-                  GLenum unpackFormat, GLenum unpackType, T& elem, ErrorResult& out_error)
+    void TexSubImage2D(GLenum texImageTarget, GLint level, GLint xOffset, GLint yOffset,
+                       GLenum unpackFormat, GLenum unpackType,
+                       const dom::ImageData* imageData, ErrorResult& out_error)
     {
+        const char funcName[] = "texSubImage2D";
+        if (!imageData) {
+            ErrorInvalidValue("%s: `data` must not be null.", funcName);
+            return;
+        }
         TexSubImage2D(texImageTarget, level, xOffset, yOffset, unpackFormat, unpackType,
-                      &elem, &out_error);
+                      *imageData, out_error);
     }
 
+    //////
     // WebGLTextureUpload.cpp
+public:
+    bool ValidateUnpackPixels(const char* funcName, uint32_t fullRows,
+                              uint32_t tailPixels, webgl::TexUnpackBlob* blob);
+
+protected:
     bool ValidateTexImageSpecification(const char* funcName, uint8_t funcDims,
                                        GLenum texImageTarget, GLint level,
                                        GLsizei width, GLsizei height, GLsizei depth,
@@ -956,8 +963,13 @@ public:
                                    WebGLTexture** const out_texture,
                                    WebGLTexture::ImageInfo** const out_imageInfo);
 
+    bool ValidateUnpackInfo(const char* funcName, bool usePBOs, GLenum format,
+                            GLenum type, webgl::PackingInfo* const out);
+
 // -----------------------------------------------------------------------------
 // Vertices Feature (WebGLContextVertices.cpp)
+    GLenum mPrimRestartTypeBytes;
+
 public:
     void DrawArrays(GLenum mode, GLint first, GLsizei count);
     void DrawArraysInstanced(GLenum mode, GLint first, GLsizei count,
@@ -989,7 +1001,7 @@ public:
 
     void VertexAttrib1fv(GLuint idx, const dom::Float32Array& arr) {
         arr.ComputeLengthAndData();
-        VertexAttrib1fv_base(idx, arr.Length(), arr.Data());
+        VertexAttrib1fv_base(idx, arr.LengthAllowShared(), arr.DataAllowShared());
     }
     void VertexAttrib1fv(GLuint idx, const dom::Sequence<GLfloat>& arr) {
         VertexAttrib1fv_base(idx, arr.Length(), arr.Elements());
@@ -997,7 +1009,7 @@ public:
 
     void VertexAttrib2fv(GLuint idx, const dom::Float32Array& arr) {
         arr.ComputeLengthAndData();
-        VertexAttrib2fv_base(idx, arr.Length(), arr.Data());
+        VertexAttrib2fv_base(idx, arr.LengthAllowShared(), arr.DataAllowShared());
     }
     void VertexAttrib2fv(GLuint idx, const dom::Sequence<GLfloat>& arr) {
         VertexAttrib2fv_base(idx, arr.Length(), arr.Elements());
@@ -1005,7 +1017,7 @@ public:
 
     void VertexAttrib3fv(GLuint idx, const dom::Float32Array& arr) {
         arr.ComputeLengthAndData();
-        VertexAttrib3fv_base(idx, arr.Length(), arr.Data());
+        VertexAttrib3fv_base(idx, arr.LengthAllowShared(), arr.DataAllowShared());
     }
     void VertexAttrib3fv(GLuint idx, const dom::Sequence<GLfloat>& arr) {
         VertexAttrib3fv_base(idx, arr.Length(), arr.Elements());
@@ -1013,7 +1025,7 @@ public:
 
     void VertexAttrib4fv(GLuint idx, const dom::Float32Array& arr) {
         arr.ComputeLengthAndData();
-        VertexAttrib4fv_base(idx, arr.Length(), arr.Data());
+        VertexAttrib4fv_base(idx, arr.LengthAllowShared(), arr.DataAllowShared());
     }
     void VertexAttrib4fv(GLuint idx, const dom::Sequence<GLfloat>& arr) {
         VertexAttrib4fv_base(idx, arr.Length(), arr.Elements());
@@ -1031,6 +1043,7 @@ private:
     bool mBufferFetchingHasPerVertex;
     uint32_t mMaxFetchedVertices;
     uint32_t mMaxFetchedInstances;
+    bool mBufferFetch_IsAttrib0Active;
 
     bool DrawArrays_check(GLint first, GLsizei count, GLsizei primcount,
                           const char* info);
@@ -1111,7 +1124,6 @@ protected:
     int32_t mGLMaxVertexUniformVectors;
     uint32_t  mGLMaxTransformFeedbackSeparateAttribs;
     GLuint  mGLMaxUniformBufferBindings;
-    GLsizei mGLMaxSamples;
 
     // What is supported:
     uint32_t mGLMaxColorAttachments;
@@ -1199,22 +1211,41 @@ protected:
 public:
     virtual bool IsWebGL2() const = 0;
 
-protected:
-    bool InitWebGL2();
+    struct FailureReason {
+        nsCString key; // For reporting.
+        nsCString info;
 
-    bool CreateAndInitGL(bool forceEnabled);
+        FailureReason() { }
+
+        template<typename A, typename B>
+        FailureReason(const A& _key, const B& _info)
+            : key(nsCString(_key))
+            , info(nsCString(_info))
+        { }
+    };
+protected:
+    bool InitWebGL2(FailureReason* const out_failReason);
+
+    bool CreateAndInitGL(bool forceEnabled,
+                         std::vector<FailureReason>* const out_failReasons);
+
     bool ResizeBackbuffer(uint32_t width, uint32_t height);
 
     typedef already_AddRefed<gl::GLContext> FnCreateGL_T(const gl::SurfaceCaps& caps,
                                                          gl::CreateContextFlags flags,
-                                                         WebGLContext* webgl);
+                                                         WebGLContext* webgl,
+                                                         std::vector<FailureReason>* const out_failReasons);
 
     bool CreateAndInitGLWith(FnCreateGL_T fnCreateGL, const gl::SurfaceCaps& baseCaps,
-                             gl::CreateContextFlags flags);
+                             gl::CreateContextFlags flags,
+                             std::vector<FailureReason>* const out_failReasons);
+
+    void ThrowEvent_WebGLContextCreationError(const nsACString& text);
 
     // -------------------------------------------------------------------------
     // Validation functions (implemented in WebGLContextValidate.cpp)
-    bool InitAndValidateGL();
+    bool InitAndValidateGL(FailureReason* const out_failReason);
+
     bool ValidateBlendEquationEnum(GLenum cap, const char* info);
     bool ValidateBlendFuncDstEnum(GLenum mode, const char* info);
     bool ValidateBlendFuncSrcEnum(GLenum mode, const char* info);
@@ -1300,24 +1331,8 @@ protected:
                       WebGLTexelFormat dstFormat, bool dstPremultiplied,
                       size_t dstTexelSize);
 
-public:
-    nsLayoutUtils::SurfaceFromElementResult
-    SurfaceFromElement(dom::Element* elem)
-    {
-        uint32_t flags = nsLayoutUtils::SFE_WANT_IMAGE_SURFACE |
-                         nsLayoutUtils::SFE_USE_ELEMENT_SIZE_IF_VECTOR;
+    //////
 
-        if (mPixelStore_ColorspaceConversion == LOCAL_GL_NONE)
-            flags |= nsLayoutUtils::SFE_NO_COLORSPACE_CONVERSION;
-
-        if (!mPixelStore_PremultiplyAlpha)
-            flags |= nsLayoutUtils::SFE_PREFER_NO_PREMULTIPLY_ALPHA;
-
-        RefPtr<gfx::DrawTarget> idealDrawTarget = nullptr; // Don't care for now.
-        return nsLayoutUtils::SurfaceFromElement(elem, flags, idealDrawTarget);
-    }
-
-protected:
     // Returns false if `object` is null or not valid.
     template<class ObjectType>
     bool ValidateObject(const char* info, ObjectType* object);
@@ -1347,7 +1362,7 @@ private:
     // Context customization points
     virtual WebGLVertexArray* CreateVertexArrayImpl();
 
-    virtual bool ValidateAttribPointerType(bool integerMode, GLenum type, GLsizei* alignment, const char* info) = 0;
+    virtual bool ValidateAttribPointerType(bool integerMode, GLenum type, uint32_t* alignment, const char* info) = 0;
     virtual bool ValidateBufferTarget(GLenum target, const char* info) = 0;
     virtual bool ValidateBufferIndexedTarget(GLenum target, const char* info) = 0;
     virtual bool ValidateBufferForTarget(GLenum target, WebGLBuffer* buffer, const char* info);
@@ -1387,18 +1402,18 @@ protected:
     WebGLRefPtr<WebGLTransformFeedback> mBoundTransformFeedback;
     WebGLRefPtr<WebGLVertexArray> mBoundVertexArray;
 
-    LinkedList<WebGLTexture> mTextures;
     LinkedList<WebGLBuffer> mBuffers;
+    LinkedList<WebGLFramebuffer> mFramebuffers;
     LinkedList<WebGLProgram> mPrograms;
     LinkedList<WebGLQuery> mQueries;
-    LinkedList<WebGLShader> mShaders;
     LinkedList<WebGLRenderbuffer> mRenderbuffers;
-    LinkedList<WebGLFramebuffer> mFramebuffers;
-    LinkedList<WebGLVertexArray> mVertexArrays;
-
-    // TODO(djg): Does this need a rethink? Should it be WebGL2Context?
     LinkedList<WebGLSampler> mSamplers;
+    LinkedList<WebGLShader> mShaders;
+    LinkedList<WebGLSync> mSyncs;
+    LinkedList<WebGLTexture> mTextures;
+    LinkedList<WebGLTimerQuery> mTimerQueries;
     LinkedList<WebGLTransformFeedback> mTransformFeedbacks;
+    LinkedList<WebGLVertexArray> mVertexArrays;
 
     WebGLRefPtr<WebGLTransformFeedback> mDefaultTransformFeedback;
     WebGLRefPtr<WebGLVertexArray> mDefaultVertexArray;
@@ -1418,9 +1433,9 @@ protected:
     CheckedUint32 GetUnpackSize(bool isFunc3D, uint32_t width, uint32_t height,
                                 uint32_t depth, uint8_t bytesPerPixel);
 
-    CheckedUint32 GetPackSize(uint32_t width, uint32_t height, uint8_t bytesPerPixel,
-                              CheckedUint32* const out_startOffset,
-                              CheckedUint32* const out_rowStride);
+    bool ValidatePackSize(const char* funcName, uint32_t width, uint32_t height,
+                          uint8_t bytesPerPixel, uint32_t* const out_rowStride,
+                          uint32_t* const out_endOffset);
 
     GLenum mPixelStore_ColorspaceConversion;
     bool mPixelStore_FlipY;
@@ -1429,11 +1444,15 @@ protected:
     ////////////////////////////////////
     class FakeBlackTexture {
     public:
+        static UniquePtr<FakeBlackTexture> Create(gl::GLContext* gl,
+                                                  TexTarget target,
+                                                  FakeBlackType type);
         gl::GLContext* const mGL;
         const GLuint mGLName;
 
-        FakeBlackTexture(gl::GLContext* gl, TexTarget target, FakeBlackType type);
         ~FakeBlackTexture();
+    protected:
+        explicit FakeBlackTexture(gl::GLContext* gl);
     };
 
     UniquePtr<FakeBlackTexture> mFakeBlack_2D_0000;
@@ -1445,7 +1464,7 @@ protected:
     UniquePtr<FakeBlackTexture> mFakeBlack_2D_Array_0000;
     UniquePtr<FakeBlackTexture> mFakeBlack_2D_Array_0001;
 
-    void BindFakeBlack(uint32_t texUnit, TexTarget target, FakeBlackType fakeBlack);
+    bool BindFakeBlack(uint32_t texUnit, TexTarget target, FakeBlackType fakeBlack);
 
     ////////////////////////////////////
 
@@ -1482,7 +1501,7 @@ protected:
     GLsizei mViewportHeight;
     bool mAlreadyWarnedAboutViewportLargerThanDest;
 
-    RefPtr<WebGLContextLossHandler> mContextLossHandler;
+    WebGLContextLossHandler mContextLossHandler;
     bool mAllowContextRestore;
     bool mLastLossWasSimulated;
     ContextStatus mContextStatus;
@@ -1503,6 +1522,9 @@ protected:
     bool mNeedsFakeNoAlpha;
     bool mNeedsFakeNoDepth;
     bool mNeedsFakeNoStencil;
+    bool mNeedsEmulatedLoneDepthStencil;
+
+    bool HasTimestampBits() const;
 
     struct ScopedMaskWorkaround {
         WebGLContext& mWebGL;
@@ -1525,11 +1547,32 @@ protected:
                    webgl.mDepthTestEnabled;
         }
 
+        static bool HasDepthButNoStencil(const WebGLFramebuffer* fb);
+
         static bool ShouldFakeNoStencil(WebGLContext& webgl) {
-            // We should only be doing this if we're about to draw to the backbuffer.
-            return !webgl.mBoundDrawFramebuffer &&
-                   webgl.mNeedsFakeNoStencil &&
-                   webgl.mStencilTestEnabled;
+            if (!webgl.mStencilTestEnabled)
+                return false;
+
+            if (!webgl.mBoundDrawFramebuffer) {
+                if (webgl.mNeedsFakeNoStencil)
+                    return true;
+
+                if (webgl.mNeedsEmulatedLoneDepthStencil &&
+                    webgl.mOptions.depth && !webgl.mOptions.stencil)
+                {
+                    return true;
+                }
+
+                return false;
+            }
+
+            if (webgl.mNeedsEmulatedLoneDepthStencil &&
+                HasDepthButNoStencil(webgl.mBoundDrawFramebuffer))
+            {
+                return true;
+            }
+
+            return false;
         }
 
         explicit ScopedMaskWorkaround(WebGLContext& webgl);
@@ -1567,13 +1610,18 @@ public:
     virtual UniquePtr<webgl::FormatUsageAuthority>
     CreateFormatUsage(gl::GLContext* gl) const = 0;
 
+
+    const decltype(mBound2DTextures)* TexListForElemType(GLenum elemType) const;
+
     // Friend list
     friend class ScopedCopyTexImageSource;
     friend class ScopedResolveTexturesForDraw;
     friend class ScopedUnpackReset;
     friend class webgl::TexUnpackBlob;
     friend class webgl::TexUnpackBytes;
+    friend class webgl::TexUnpackImage;
     friend class webgl::TexUnpackSurface;
+    friend struct webgl::UniformInfo;
     friend class WebGLTexture;
     friend class WebGLFBAttachPoint;
     friend class WebGLFramebuffer;
@@ -1757,7 +1805,7 @@ Intersect(uint32_t srcSize, int32_t dstStartInSrc, uint32_t dstSize,
           uint32_t* const out_intSize);
 
 bool
-ZeroTextureData(WebGLContext* webgl, const char* funcName, bool respecifyTexture,
+ZeroTextureData(WebGLContext* webgl, const char* funcName, GLuint tex,
                 TexImageTarget target, uint32_t level,
                 const webgl::FormatUsageInfo* usage, uint32_t xOffset, uint32_t yOffset,
                 uint32_t zOffset, uint32_t width, uint32_t height, uint32_t depth);

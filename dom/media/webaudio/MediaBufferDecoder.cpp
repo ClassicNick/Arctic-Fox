@@ -16,7 +16,6 @@
 #include "DecoderTraits.h"
 #include "AudioContext.h"
 #include "AudioBuffer.h"
-#include "nsAutoPtr.h"
 #include "nsContentUtils.h"
 #include "nsIScriptObjectPrincipal.h"
 #include "nsIScriptError.h"
@@ -26,6 +25,7 @@
 #include "mozilla/dom/Promise.h"
 #include "mozilla/Telemetry.h"
 #include "nsPrintfCString.h"
+#include "GMPService.h"
 
 namespace mozilla {
 
@@ -55,7 +55,7 @@ NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(WebAudioDecodeJob, Release)
 
 using namespace dom;
 
-class ReportResultTask final : public nsRunnable
+class ReportResultTask final : public Runnable
 {
 public:
   ReportResultTask(WebAudioDecodeJob& aDecodeJob,
@@ -68,7 +68,7 @@ public:
     MOZ_ASSERT(aFunction);
   }
 
-  NS_IMETHOD Run()
+  NS_IMETHOD Run() override
   {
     MOZ_ASSERT(NS_IsMainThread());
 
@@ -94,7 +94,7 @@ enum class PhaseEnum : int
   Done
 };
 
-class MediaDecodeTask final : public nsRunnable
+class MediaDecodeTask final : public Runnable
 {
 public:
   MediaDecodeTask(const char* aContentType, uint8_t* aBuffer,
@@ -122,7 +122,7 @@ private:
       mDecodeJob.OnFailure(aErrorCode);
     } else {
       // Take extra care to cleanup on the main thread
-      NS_DispatchToMainThread(NS_NewRunnableMethod(this, &MediaDecodeTask::Cleanup));
+      NS_DispatchToMainThread(NewRunnableMethod(this, &MediaDecodeTask::Cleanup));
 
       nsCOMPtr<nsIRunnable> event =
         new ReportResultTask(mDecodeJob, &WebAudioDecodeJob::OnFailure, aErrorCode);
@@ -145,7 +145,6 @@ private:
     MOZ_ASSERT(NS_IsMainThread());
     // MediaDecoderReader expects that BufferDecoder is alive.
     // Destruct MediaDecoderReader first.
-    mDecoderReader->BreakCycles();
     mDecoderReader = nullptr;
     mBufferDecoder = nullptr;
     JS_free(nullptr, mBuffer);
@@ -183,6 +182,24 @@ MediaDecodeTask::Run()
   return NS_OK;
 }
 
+class BufferDecoderGMPCrashHelper : public GMPCrashHelper
+{
+public:
+  explicit BufferDecoderGMPCrashHelper(nsPIDOMWindowInner* aParent)
+    : mParent(do_GetWeakReference(aParent))
+  {
+    MOZ_ASSERT(NS_IsMainThread());
+  }
+  already_AddRefed<nsPIDOMWindowInner> GetPluginCrashedEventTarget() override
+  {
+    MOZ_ASSERT(NS_IsMainThread());
+    nsCOMPtr<nsPIDOMWindowInner> window = do_QueryReferent(mParent);
+    return window.forget();
+  }
+private:
+  nsWeakPtr mParent;
+};
+
 bool
 MediaDecodeTask::CreateReader()
 {
@@ -200,7 +217,8 @@ MediaDecodeTask::CreateReader()
                             mLength, principal, mContentType);
 
   MOZ_ASSERT(!mBufferDecoder);
-  mBufferDecoder = new BufferDecoder(resource);
+  mBufferDecoder = new BufferDecoder(resource,
+    new BufferDecoderGMPCrashHelper(mDecodeJob.mContext->GetParentObject()));
 
   // If you change this list to add support for new decoders, please consider
   // updating HTMLMediaElement::CreateDecoder as well.
@@ -470,18 +488,12 @@ WebAudioDecodeJob::AllocateBuffer()
   MOZ_ASSERT(!mOutput);
   MOZ_ASSERT(NS_IsMainThread());
 
-  AutoJSAPI jsapi;
-  if (NS_WARN_IF(!jsapi.Init(mContext->GetOwner()))) {
-    return false;
-  }
-  JSContext* cx = jsapi.cx();
-
   // Now create the AudioBuffer
   ErrorResult rv;
   uint32_t channelCount = mBuffer->GetChannels();
   mOutput = AudioBuffer::Create(mContext, channelCount,
                                 mWriteIndex, mContext->SampleRate(),
-                                mBuffer.forget(), cx, rv);
+                                mBuffer.forget(), rv);
   return !rv.Failed();
 }
 

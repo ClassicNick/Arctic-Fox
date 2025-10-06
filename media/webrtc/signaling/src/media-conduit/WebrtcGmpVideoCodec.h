@@ -76,7 +76,7 @@ class WebrtcGmpPCHandleSetter
     static std::string sCurrentHandle;
 };
 
-class GmpInitDoneRunnable : public nsRunnable
+class GmpInitDoneRunnable : public Runnable
 {
   public:
     explicit GmpInitDoneRunnable(const std::string& aPCHandle) :
@@ -85,7 +85,7 @@ class GmpInitDoneRunnable : public nsRunnable
     {
     }
 
-    NS_IMETHOD Run()
+    NS_IMETHOD Run() override
     {
       if (mResult == WEBRTC_VIDEO_CODEC_OK) {
         // Might be useful to notify the PeerConnection about successful init
@@ -275,6 +275,7 @@ private:
   GMPVideoHost* mHost;
   GMPVideoCodec mCodecParams;
   uint32_t mMaxPayloadSize;
+  webrtc::CodecSpecificInfo mCodecSpecificInfo;
   // Protects mCallback
   Mutex mCallbackMutex;
   webrtc::EncodedImageCallback* mCallback;

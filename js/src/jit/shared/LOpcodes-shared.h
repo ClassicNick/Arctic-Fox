@@ -20,9 +20,11 @@
     _(Float32)                      \
     _(SimdBox)                      \
     _(SimdUnbox)                    \
+    _(SimdSplatX16)                 \
+    _(SimdSplatX8)                  \
     _(SimdSplatX4)                  \
-    _(Int32x4)                      \
-    _(Float32x4)                    \
+    _(Simd128Int)                   \
+    _(Simd128Float)                 \
     _(SimdAllTrue)                  \
     _(SimdAnyTrue)                  \
     _(SimdReinterpretCast)          \
@@ -37,13 +39,21 @@
     _(SimdSwizzleI)                 \
     _(SimdSwizzleF)                 \
     _(SimdShuffle)                  \
+    _(SimdShuffleX4)                \
+    _(SimdUnaryArithIx16)           \
+    _(SimdUnaryArithIx8)            \
     _(SimdUnaryArithIx4)            \
     _(SimdUnaryArithFx4)            \
+    _(SimdBinaryCompIx16)           \
+    _(SimdBinaryCompIx8)            \
     _(SimdBinaryCompIx4)            \
     _(SimdBinaryCompFx4)            \
+    _(SimdBinaryArithIx16)          \
+    _(SimdBinaryArithIx8)           \
     _(SimdBinaryArithIx4)           \
     _(SimdBinaryArithFx4)           \
-    _(SimdBinaryBitwiseX4)          \
+    _(SimdBinarySaturating)         \
+    _(SimdBinaryBitwise)            \
     _(SimdShift)                    \
     _(SimdSelect)                   \
     _(Value)                        \
@@ -57,10 +67,12 @@
     _(NewArray)                     \
     _(NewArrayCopyOnWrite)          \
     _(NewArrayDynamicLength)        \
+    _(NewTypedArray)                \
+    _(NewTypedArrayDynamicLength)   \
     _(ArraySplice)                  \
     _(NewObject)                    \
     _(NewTypedObject)               \
-    _(NewDeclEnvObject)             \
+    _(NewNamedLambdaObject)         \
     _(NewCallObject)                \
     _(NewSingletonCallObject)       \
     _(NewStringObject)              \
@@ -97,13 +109,17 @@
     _(BitNotI)                      \
     _(BitNotV)                      \
     _(BitOpI)                       \
+    _(BitOpI64)                     \
     _(BitOpV)                       \
     _(ShiftI)                       \
+    _(ShiftI64)                     \
+    _(SignExtend)                   \
     _(UrshD)                        \
     _(Return)                       \
     _(Throw)                        \
     _(Phi)                          \
     _(TestIAndBranch)               \
+    _(TestI64AndBranch)             \
     _(TestDAndBranch)               \
     _(TestFAndBranch)               \
     _(TestVAndBranch)               \
@@ -112,6 +128,8 @@
     _(ObjectGroupDispatch)          \
     _(Compare)                      \
     _(CompareAndBranch)             \
+    _(CompareI64)                   \
+    _(CompareI64AndBranch)          \
     _(CompareD)                     \
     _(CompareDAndBranch)            \
     _(CompareF)                     \
@@ -138,8 +156,15 @@
     _(AbsD)                         \
     _(AbsF)                         \
     _(ClzI)                         \
+    _(ClzI64)                       \
+    _(CtzI)                         \
+    _(CtzI64)                       \
+    _(PopcntI)                      \
+    _(PopcntI64)                    \
     _(SqrtD)                        \
     _(SqrtF)                        \
+    _(CopySignD)                    \
+    _(CopySignF)                    \
     _(Atan2D)                       \
     _(Hypot)                        \
     _(PowI)                         \
@@ -149,13 +174,17 @@
     _(MathFunctionD)                \
     _(MathFunctionF)                \
     _(NotI)                         \
+    _(NotI64)                       \
     _(NotD)                         \
     _(NotF)                         \
     _(NotO)                         \
     _(NotV)                         \
     _(AddI)                         \
+    _(AddI64)                       \
     _(SubI)                         \
+    _(SubI64)                       \
     _(MulI)                         \
+    _(MulI64)                       \
     _(MathD)                        \
     _(MathF)                        \
     _(DivI)                         \
@@ -180,6 +209,9 @@
     _(Float32ToInt32)               \
     _(TruncateDToInt32)             \
     _(TruncateFToInt32)             \
+    _(WasmTruncateToInt32)          \
+    _(WrapInt64ToInt32)             \
+    _(ExtendInt32ToInt64)           \
     _(BooleanToString)              \
     _(IntToString)                  \
     _(DoubleToString)               \
@@ -191,17 +223,21 @@
     _(Start)                        \
     _(OsrEntry)                     \
     _(OsrValue)                     \
-    _(OsrScopeChain)                \
+    _(OsrEnvironmentChain)          \
     _(OsrReturnValue)               \
     _(OsrArgumentsObject)           \
     _(RegExp)                       \
     _(RegExpMatcher)                \
+    _(RegExpSearcher)               \
     _(RegExpTester)                 \
-    _(RegExpReplace)                \
+    _(RegExpPrototypeOptimizable)   \
+    _(RegExpInstanceOptimizable)    \
+    _(GetFirstDollarIndex)          \
     _(StringReplace)                \
     _(Substr)                       \
     _(BinarySharedStub)             \
     _(UnarySharedStub)              \
+    _(NullarySharedStub)            \
     _(Lambda)                       \
     _(LambdaArrow)                  \
     _(LambdaForSingleton)           \
@@ -254,7 +290,6 @@
     _(ArrayPopShiftT)               \
     _(ArrayPushV)                   \
     _(ArrayPushT)                   \
-    _(ArrayConcat)                  \
     _(ArraySlice)                   \
     _(ArrayJoin)                    \
     _(StoreElementHoleV)            \
@@ -304,6 +339,7 @@
     _(IteratorEnd)                  \
     _(ArrayLength)                  \
     _(SetArrayLength)               \
+    _(GetNextMapEntryForIterator)   \
     _(TypedArrayLength)             \
     _(TypedArrayElements)           \
     _(SetDisjointTypedElements)     \
@@ -333,26 +369,44 @@
     _(CallInstanceOf)               \
     _(InterruptCheck)               \
     _(AsmJSInterruptCheck)          \
+    _(AsmThrowUnreachable)          \
+    _(AsmReinterpret)               \
+    _(AsmReinterpretToI64)          \
+    _(AsmReinterpretFromI64)        \
+    _(Rotate)                       \
+    _(RotateI64)                    \
     _(GetDOMProperty)               \
     _(GetDOMMemberV)                \
     _(GetDOMMemberT)                \
     _(SetDOMProperty)               \
     _(CallDOMNative)                \
     _(IsCallable)                   \
+    _(IsConstructor)                \
     _(IsObject)                     \
     _(IsObjectAndBranch)            \
     _(HasClass)                     \
+    _(AsmSelect)                    \
+    _(AsmSelectI64)                 \
+    _(WasmLoad)                     \
+    _(WasmLoadI64)                  \
+    _(WasmStore)                    \
+    _(WasmStoreI64)                 \
+    _(WasmBoundsCheck)              \
+    _(WasmLoadGlobalVar)            \
+    _(WasmLoadGlobalVarI64)         \
+    _(WasmStoreGlobalVar)           \
+    _(WasmStoreGlobalVarI64)        \
     _(AsmJSLoadHeap)                \
     _(AsmJSStoreHeap)               \
-    _(AsmJSLoadFuncPtr)             \
-    _(AsmJSLoadGlobalVar)           \
-    _(AsmJSStoreGlobalVar)          \
-    _(AsmJSLoadFFIFunc)             \
     _(AsmJSParameter)               \
+    _(AsmJSParameterI64)            \
     _(AsmJSReturn)                  \
+    _(AsmJSReturnI64)               \
     _(AsmJSVoidReturn)              \
     _(AsmJSPassStackArg)            \
-    _(AsmJSCall)                    \
+    _(AsmJSPassStackArgI64)         \
+    _(WasmCall)                     \
+    _(WasmCallI64)                  \
     _(AsmJSCompareExchangeHeap)     \
     _(AsmJSAtomicExchangeHeap)      \
     _(AsmJSAtomicBinopHeap)         \
@@ -374,6 +428,7 @@
     _(NewTarget)                    \
     _(ArrowNewTarget)               \
     _(CheckReturn)                  \
+    _(CheckIsObj)                   \
     _(CheckObjCoercible)            \
     _(DebugCheckSelfHosted)
 

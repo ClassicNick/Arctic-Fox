@@ -2,25 +2,21 @@
    http://creativecommons.org/publicdomain/zero/1.0/ */
 "use strict";
 
-const { classes: Cc, interfaces: Ci, utils: Cu, results: Cr } = Components;
+var { classes: Cc, interfaces: Ci, utils: Cu, results: Cr } = Components;
 
-var { Services } = Cu.import("resource://gre/modules/Services.jsm", {});
-
-// Enable logging for all the tests. Both the debugger server and frontend will
-// be affected by this pref.
-var gEnableLogging = Services.prefs.getBoolPref("devtools.debugger.log");
-Services.prefs.setBoolPref("devtools.debugger.log", false);
-
-var { Task } = Cu.import("resource://gre/modules/Task.jsm", {});
-var { gDevTools } = Cu.import("resource://devtools/client/framework/gDevTools.jsm", {});
 var { require } = Cu.import("resource://devtools/shared/Loader.jsm", {});
+var { Task } = require("devtools/shared/task");
+var Services = require("Services");
+var { gDevTools } = require("devtools/client/framework/devtools");
 var { TargetFactory } = require("devtools/client/framework/target");
 var { DebuggerServer } = require("devtools/server/main");
 var { generateUUID } = Cc["@mozilla.org/uuid-generator;1"].getService(Ci.nsIUUIDGenerator);
 
 var Promise = require("promise");
-var { WebAudioFront } = require("devtools/server/actors/webaudio");
+var Services = require("Services");
+var { WebAudioFront } = require("devtools/shared/fronts/webaudio");
 var DevToolsUtils = require("devtools/shared/DevToolsUtils");
+var flags = require("devtools/shared/flags");
 var audioNodes = require("devtools/server/actors/utils/audionodes.json");
 var mm = null;
 
@@ -37,15 +33,20 @@ const CONNECT_MULTI_PARAM_URL = EXAMPLE_URL + "doc_connect-multi-param.html";
 const IFRAME_CONTEXT_URL = EXAMPLE_URL + "doc_iframe-context.html";
 const AUTOMATION_URL = EXAMPLE_URL + "doc_automation.html";
 
+// Enable logging for all the tests. Both the debugger server and frontend will
+// be affected by this pref.
+var gEnableLogging = Services.prefs.getBoolPref("devtools.debugger.log");
+Services.prefs.setBoolPref("devtools.debugger.log", false);
+
 // All tests are asynchronous.
 waitForExplicitFinish();
 
 var gToolEnabled = Services.prefs.getBoolPref("devtools.webaudioeditor.enabled");
 
-DevToolsUtils.testing = true;
+flags.testing = true;
 
 registerCleanupFunction(() => {
-  DevToolsUtils.testing = false;
+  flags.testing = false;
   info("finish() was called, cleaning up...");
   Services.prefs.setBoolPref("devtools.debugger.log", gEnableLogging);
   Services.prefs.setBoolPref("devtools.webaudioeditor.enabled", gToolEnabled);
@@ -56,7 +57,7 @@ registerCleanupFunction(() => {
  * Call manually in tests that use frame script utils after initializing
  * the web audio editor. Call after init but before navigating to a different page.
  */
-function loadFrameScripts () {
+function loadFrameScripts() {
   mm = gBrowser.selectedBrowser.messageManager;
   mm.loadFrameScript(FRAME_SCRIPT_UTILS_URL, false);
 }
@@ -133,6 +134,15 @@ function navigate(aTarget, aUrl, aWaitForTargetEvent = "navigate") {
 }
 
 /**
+ * Call manually in tests that use frame script utils after initializing
+ * the shader editor. Call after init but before navigating to different pages.
+ */
+function loadFrameScripts() {
+  mm = gBrowser.selectedBrowser.messageManager;
+  mm.loadFrameScript(FRAME_SCRIPT_UTILS_URL, false);
+}
+
+/**
  * Adds a new tab, and instantiate a WebAudiFront object.
  * This requires calling removeTab before the test ends.
  */
@@ -144,7 +154,7 @@ function initBackend(aUrl) {
     DebuggerServer.addBrowserActors();
   }
 
-  return Task.spawn(function*() {
+  return Task.spawn(function* () {
     let tab = yield addTab(aUrl);
     let target = TargetFactory.forTab(tab);
 
@@ -163,7 +173,7 @@ function initBackend(aUrl) {
 function initWebAudioEditor(aUrl) {
   info("Initializing a web audio editor pane.");
 
-  return Task.spawn(function*() {
+  return Task.spawn(function* () {
     let tab = yield addTab(aUrl);
     let target = TargetFactory.forTab(tab);
 
@@ -196,14 +206,16 @@ function teardown(aTarget) {
 // Takes a `front` object that is an event emitter, the number of
 // programs that should be listened to and waited on, and an optional
 // `onAdd` function that calls with the entire actors array on program link
-function getN (front, eventName, count, spread) {
+function getN(front, eventName, count, spread) {
   let actors = [];
   let deferred = Promise.defer();
-  front.on(eventName, function onEvent (...args) {
+  info(`Waiting for ${count} ${eventName} events`);
+  front.on(eventName, function onEvent(...args) {
     let actor = args[0];
     if (actors.length !== count) {
       actors.push(spread ? args : actor);
     }
+    info(`Got ${actors.length} / ${count} ${eventName} events`);
     if (actors.length === count) {
       front.off(eventName, onEvent);
       deferred.resolve(actors);
@@ -212,24 +224,27 @@ function getN (front, eventName, count, spread) {
   return deferred.promise;
 }
 
-function get (front, eventName) { return getN(front, eventName, 1); }
-function get2 (front, eventName) { return getN(front, eventName, 2); }
-function get3 (front, eventName) { return getN(front, eventName, 3); }
-function getSpread (front, eventName) { return getN(front, eventName, 1, true); }
-function get2Spread (front, eventName) { return getN(front, eventName, 2, true); }
-function get3Spread (front, eventName) { return getN(front, eventName, 3, true); }
-function getNSpread (front, eventName, count) { return getN(front, eventName, count, true); }
+function get(front, eventName) { return getN(front, eventName, 1); }
+function get2(front, eventName) { return getN(front, eventName, 2); }
+function get3(front, eventName) { return getN(front, eventName, 3); }
+function getSpread(front, eventName) { return getN(front, eventName, 1, true); }
+function get2Spread(front, eventName) { return getN(front, eventName, 2, true); }
+function get3Spread(front, eventName) { return getN(front, eventName, 3, true); }
+function getNSpread(front, eventName, count) { return getN(front, eventName, count, true); }
 
 /**
  * Waits for the UI_GRAPH_RENDERED event to fire, but only
  * resolves when the graph was rendered with the correct count of
  * nodes and edges.
  */
-function waitForGraphRendered (front, nodeCount, edgeCount, paramEdgeCount) {
+function waitForGraphRendered(front, nodeCount, edgeCount, paramEdgeCount) {
   let deferred = Promise.defer();
   let eventName = front.EVENTS.UI_GRAPH_RENDERED;
-  front.on(eventName, function onGraphRendered (_, nodes, edges, pEdges) {
+  info(`Wait for graph rendered with ${nodeCount} nodes, ${edgeCount} edges`);
+  front.on(eventName, function onGraphRendered(_, nodes, edges, pEdges) {
     let paramEdgesDone = paramEdgeCount != null ? paramEdgeCount === pEdges : true;
+    info(`Got graph rendered with ${nodes} / ${nodeCount} nodes, ` +
+         `${edges} / ${edgeCount} edges`);
     if (nodes === nodeCount && edges === edgeCount && paramEdgesDone) {
       front.off(eventName, onGraphRendered);
       deferred.resolve();
@@ -238,7 +253,7 @@ function waitForGraphRendered (front, nodeCount, edgeCount, paramEdgeCount) {
   return deferred.promise;
 }
 
-function checkVariableView (view, index, hash, description = "") {
+function checkVariableView(view, index, hash, description = "") {
   info("Checking Variable View");
   let scope = view.getScopeAtIndex(index);
   let variables = Object.keys(hash);
@@ -276,7 +291,7 @@ function checkVariableView (view, index, hash, description = "") {
   });
 }
 
-function modifyVariableView (win, view, index, prop, value) {
+function modifyVariableView(win, view, index, prop, value) {
   let deferred = Promise.defer();
   let scope = view.getScopeAtIndex(index);
   let aVar = scope.get(prop);
@@ -300,7 +315,7 @@ function modifyVariableView (win, view, index, prop, value) {
     EventUtils.sendKey("RETURN", win);
   });
 
-  function handleSetting (eventName) {
+  function handleSetting(eventName) {
     win.off(win.EVENTS.UI_SET_PARAM, handleSetting);
     win.off(win.EVENTS.UI_SET_PARAM_ERROR, handleSetting);
     if (eventName === win.EVENTS.UI_SET_PARAM)
@@ -312,7 +327,7 @@ function modifyVariableView (win, view, index, prop, value) {
   return deferred.promise;
 }
 
-function findGraphEdge (win, source, target, param) {
+function findGraphEdge(win, source, target, param) {
   let selector = ".edgePaths .edgePath[data-source='" + source + "'][data-target='" + target + "']";
   if (param) {
     selector += "[data-param='" + param + "']";
@@ -320,36 +335,36 @@ function findGraphEdge (win, source, target, param) {
   return win.document.querySelector(selector);
 }
 
-function findGraphNode (win, node) {
+function findGraphNode(win, node) {
   let selector = ".nodes > g[data-id='" + node + "']";
   return win.document.querySelector(selector);
 }
 
-function click (win, element) {
+function click(win, element) {
   EventUtils.sendMouseEvent({ type: "click" }, element, win);
 }
 
-function mouseOver (win, element) {
+function mouseOver(win, element) {
   EventUtils.sendMouseEvent({ type: "mouseover" }, element, win);
 }
 
-function command (button) {
+function command(button) {
   let ev = button.ownerDocument.createEvent("XULCommandEvent");
   ev.initCommandEvent("command", true, true, button.ownerDocument.defaultView, 0, false, false, false, false, null);
   button.dispatchEvent(ev);
 }
 
-function isVisible (element) {
+function isVisible(element) {
   return !element.getAttribute("hidden");
 }
 
 /**
  * Used in debugging, returns a promise that resolves in `n` milliseconds.
  */
-function wait (n) {
+function wait(n) {
   let { promise, resolve } = Promise.defer();
   setTimeout(resolve, n);
-  info("Waiting " + n/1000 + " seconds.");
+  info("Waiting " + n / 1000 + " seconds.");
   return promise;
 }
 
@@ -358,12 +373,12 @@ function wait (n) {
  * Returns a promise that resolves once UI_INSPECTOR_NODE_SET is fired and
  * the tabs have rendered, completing all RDP requests for the node.
  */
-function clickGraphNode (panelWin, el, waitForToggle = false) {
+function clickGraphNode(panelWin, el, waitForToggle = false) {
   let { promise, resolve } = Promise.defer();
   let promises = [
-   once(panelWin, panelWin.EVENTS.UI_INSPECTOR_NODE_SET),
-   once(panelWin, panelWin.EVENTS.UI_PROPERTIES_TAB_RENDERED),
-   once(panelWin, panelWin.EVENTS.UI_AUTOMATION_TAB_RENDERED)
+    once(panelWin, panelWin.EVENTS.UI_INSPECTOR_NODE_SET),
+    once(panelWin, panelWin.EVENTS.UI_PROPERTIES_TAB_RENDERED),
+    once(panelWin, panelWin.EVENTS.UI_AUTOMATION_TAB_RENDERED)
   ];
 
   if (waitForToggle) {
@@ -382,7 +397,7 @@ function clickGraphNode (panelWin, el, waitForToggle = false) {
  * Returns the primitive value of a grip's value, or the
  * original form that the string grip.type comes from.
  */
-function getGripValue (value) {
+function getGripValue(value) {
   if (~["boolean", "string", "number"].indexOf(typeof value)) {
     return value;
   }
@@ -401,20 +416,27 @@ function getGripValue (value) {
 /**
  * Counts how many nodes and edges are currently in the graph.
  */
-function countGraphObjects (win) {
+function countGraphObjects(win) {
   return {
     nodes: win.document.querySelectorAll(".nodes > .audionode").length,
     edges: win.document.querySelectorAll(".edgePaths > .edgePath").length
-  }
+  };
 }
 
 /**
 * Forces cycle collection and GC, used in AudioNode destruction tests.
 */
-function forceCC () {
-  SpecialPowers.DOMWindowUtils.cycleCollect();
-  SpecialPowers.DOMWindowUtils.garbageCollect();
-  SpecialPowers.DOMWindowUtils.garbageCollect();
+function forceNodeCollection() {
+  ContentTask.spawn(gBrowser.selectedBrowser, {}, function*() {
+    // Kill the reference keeping stuff alive.
+    content.wrappedJSObject.keepAlive = null;
+
+    // Collect the now-deceased nodes.
+    Cu.forceGC();
+    Cu.forceCC();
+    Cu.forceGC();
+    Cu.forceCC();
+  });
 }
 
 /**
@@ -422,7 +444,7 @@ function forceCC () {
  * looking for the value at `time` seconds, checking
  * to see if the value is close to `expected`.
  */
-function checkAutomationValue (values, time, expected) {
+function checkAutomationValue(values, time, expected) {
   // Remain flexible on values as we can approximate points
   let EPSILON = 0.01;
 
@@ -434,7 +456,7 @@ function checkAutomationValue (values, time, expected) {
    * on a time of interest, return the point in between the threshold. This should
    * get us a very close value.
    */
-  function getValueAt (values, time) {
+  function getValueAt(values, time) {
     for (let i = 0; i < values.length; i++) {
       if (values[i].delta === time) {
         return values[i].value;
@@ -450,7 +472,7 @@ function checkAutomationValue (values, time, expected) {
 /**
  * Wait for all inspector tabs to complete rendering.
  */
-function waitForInspectorRender (panelWin, EVENTS) {
+function waitForInspectorRender(panelWin, EVENTS) {
   return Promise.all([
     once(panelWin, EVENTS.UI_PROPERTIES_TAB_RENDERED),
     once(panelWin, EVENTS.UI_AUTOMATION_TAB_RENDERED)
@@ -461,7 +483,7 @@ function waitForInspectorRender (panelWin, EVENTS) {
  * Takes a string `script` and evaluates it directly in the content
  * in potentially a different process.
  */
-function evalInDebuggee (script) {
+function evalInDebuggee(script) {
   let deferred = Promise.defer();
 
   if (!mm) {
@@ -472,7 +494,7 @@ function evalInDebuggee (script) {
   mm.sendAsyncMessage("devtools:test:eval", { script: script, id: id });
   mm.addMessageListener("devtools:test:eval:response", handler);
 
-  function handler ({ data }) {
+  function handler({ data }) {
     if (id !== data.id) {
       return;
     }
@@ -485,80 +507,51 @@ function evalInDebuggee (script) {
 }
 
 /**
- * List of audio node properties to test against expectations of the AudioNode actor
+ * Takes an AudioNode type and returns it's properties (from audionode.json)
+ * as keys and their default values as keys
  */
+function nodeDefaultValues(nodeName) {
+  let fn = NODE_CONSTRUCTORS[nodeName];
 
-const NODE_DEFAULT_VALUES = {
-  "AudioDestinationNode": {},
-  "MediaElementAudioSourceNode": {},
-  "MediaStreamAudioSourceNode": {},
-  "MediaStreamAudioDestinationNode": {
-    "stream": "MediaStream"
-  },
-  "AudioBufferSourceNode": {
-    "playbackRate": 1,
-    "loop": false,
-    "loopStart": 0,
-    "loopEnd": 0,
-    "buffer": null
-  },
-  "ScriptProcessorNode": {
-    "bufferSize": 4096
-  },
-  "AnalyserNode": {
-    "fftSize": 2048,
-    "minDecibels": -100,
-    "maxDecibels": -30,
-    "smoothingTimeConstant": 0.8,
-    "frequencyBinCount": 1024
-  },
-  "GainNode": {
-    "gain": 1
-  },
-  "DelayNode": {
-    "delayTime": 0
-  },
-  "BiquadFilterNode": {
-    "type": "lowpass",
-    "frequency": 350,
-    "Q": 1,
-    "detune": 0,
-    "gain": 0
-  },
-  "WaveShaperNode": {
-    "curve": null,
-    "oversample": "none"
-  },
-  "PannerNode": {
-    "panningModel": "equalpower",
-    "distanceModel": "inverse",
-    "refDistance": 1,
-    "maxDistance": 10000,
-    "rolloffFactor": 1,
-    "coneInnerAngle": 360,
-    "coneOuterAngle": 360,
-    "coneOuterGain": 0
-  },
-  "ConvolverNode": {
-    "buffer": null,
-    "normalize": true
-  },
-  "ChannelSplitterNode": {},
-  "ChannelMergerNode": {},
-  "DynamicsCompressorNode": {
-    "threshold": -24,
-    "knee": 30,
-    "ratio": 12,
-    "reduction": 0,
-    "attack": 0.003000000026077032,
-    "release": 0.25
-  },
-  "OscillatorNode": {
-    "type": "sine",
-    "frequency": 440,
-    "detune": 0
-  },
-  "StereoPannerNode": {
-    "pan": 0
-  }
+  if (typeof fn === "undefined") return {};
+
+  let init = nodeName === "AudioDestinationNode" ? "destination" : `create${fn}()`;
+
+  let definition = JSON.stringify(audioNodes[nodeName].properties);
+
+  let evalNode = evalInDebuggee(`
+    let ins = (new AudioContext()).${init};
+    let props = ${definition};
+    let answer = {};
+
+    for(let k in props) {
+      if (props[k].param) {
+        answer[k] = ins[k].defaultValue;
+      } else if (typeof ins[k] === "object" && ins[k] !== null) {
+        answer[k] = ins[k].toString().slice(8, -1);
+      } else {
+        answer[k] = ins[k];
+      }
+    }
+    answer;`);
+
+  return evalNode;
+}
+
+const NODE_CONSTRUCTORS = {
+  "MediaStreamAudioDestinationNode": "MediaStreamDestination",
+  "AudioBufferSourceNode": "BufferSource",
+  "ScriptProcessorNode": "ScriptProcessor",
+  "AnalyserNode": "Analyser",
+  "GainNode": "Gain",
+  "DelayNode": "Delay",
+  "BiquadFilterNode": "BiquadFilter",
+  "WaveShaperNode": "WaveShaper",
+  "PannerNode": "Panner",
+  "ConvolverNode": "Convolver",
+  "ChannelSplitterNode": "ChannelSplitter",
+  "ChannelMergerNode": "ChannelMerger",
+  "DynamicsCompressorNode": "DynamicsCompressor",
+  "OscillatorNode": "Oscillator",
+  "StereoPannerNode": "StereoPanner"
 };

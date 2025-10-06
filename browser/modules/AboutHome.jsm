@@ -15,10 +15,12 @@ Components.utils.import("resource://gre/modules/Services.jsm");
 
 XPCOMUtils.defineLazyModuleGetter(this, "AppConstants",
   "resource://gre/modules/AppConstants.jsm");
-XPCOMUtils.defineLazyModuleGetter(this, "PrivateBrowsingUtils",
-  "resource://gre/modules/PrivateBrowsingUtils.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "AutoMigrate",
+  "resource:///modules/AutoMigrate.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "fxAccounts",
   "resource://gre/modules/FxAccounts.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "PrivateBrowsingUtils",
+  "resource://gre/modules/PrivateBrowsingUtils.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "Promise",
   "resource://gre/modules/Promise.jsm");
 
@@ -95,11 +97,11 @@ var AboutHome = {
     "AboutHome:Downloads",
     "AboutHome:Bookmarks",
     "AboutHome:History",
-    "AboutHome:Apps",
     "AboutHome:Addons",
     "AboutHome:Sync",
     "AboutHome:Settings",
     "AboutHome:RequestUpdate",
+    "AboutHome:MaybeShowAutoMigrationUndoNotification",
   ],
 
   init: function() {
@@ -111,7 +113,7 @@ var AboutHome = {
   },
 
   receiveMessage: function(aMessage) {
-    let window = aMessage.target.ownerDocument.defaultView;
+    let window = aMessage.target.ownerGlobal;
 
     switch (aMessage.name) {
       case "AboutHome:RestorePreviousSession":
@@ -127,15 +129,11 @@ var AboutHome = {
         break;
 
       case "AboutHome:Bookmarks":
-        window.PlacesCommandHook.showPlacesOrganizer("AllBookmarks");
+        window.PlacesCommandHook.showPlacesOrganizer("UnfiledBookmarks");
         break;
 
       case "AboutHome:History":
         window.PlacesCommandHook.showPlacesOrganizer("History");
-        break;
-
-      case "AboutHome:Apps":
-        window.BrowserOpenApps();
         break;
 
       case "AboutHome:Addons":
@@ -143,21 +141,7 @@ var AboutHome = {
         break;
 
       case "AboutHome:Sync":
-        let weave = Cc["@mozilla.org/weave/service;1"]
-                      .getService(Ci.nsISupports)
-                      .wrappedJSObject;
-
-        if (weave.fxAccountsEnabled) {
-          fxAccounts.getSignedInUser().then(userData => {
-            if (userData) {
-              window.openPreferences("paneSync");
-            } else {
-              window.loadURI("about:accounts?entrypoint=abouthome");
-            }
-          });
-        } else {
-          window.openPreferences("paneSync");
-        }
+        window.openPreferences("paneSync", { urlParams: { entrypoint: "abouthome" } });
         break;
 
       case "AboutHome:Settings":
@@ -166,6 +150,10 @@ var AboutHome = {
 
       case "AboutHome:RequestUpdate":
         this.sendAboutHomeData(aMessage.target);
+        break;
+
+      case "AboutHome:MaybeShowAutoMigrationUndoNotification":
+        AutoMigrate.maybeShowUndoNotification(aMessage.target);
         break;
     }
   },
@@ -181,7 +169,7 @@ var AboutHome = {
     ss.promiseInitialized.then(function() {
       let data = {
         showRestoreLastSession: ss.canRestoreLastSession,
-        snippetsURL: AboutHomeUtils.snippetsURL,
+//        snippetsURL: AboutHomeUtils.snippetsURL,
         showKnowYourRights: AboutHomeUtils.showKnowYourRights,
         snippetsVersion: AboutHomeUtils.snippetsVersion,
       };
@@ -201,5 +189,6 @@ var AboutHome = {
     }).then(null, function onError(x) {
       Cu.reportError("Error in AboutHome.sendAboutHomeData: " + x);
     });
-  }
+  },
+
 };

@@ -61,7 +61,7 @@ public:
 
   void SetWidth(uint32_t aValue, ErrorResult& aRv)
   {
-    SetHTMLIntAttr(nsGkAtoms::width, aValue, aRv);
+    SetUnsignedIntAttr(nsGkAtoms::width, aValue, 0, aRv);
   }
 
   uint32_t Height() const
@@ -71,7 +71,7 @@ public:
 
   void SetHeight(uint32_t aValue, ErrorResult& aRv)
   {
-    SetHTMLIntAttr(nsGkAtoms::height, aValue, aRv);
+    SetUnsignedIntAttr(nsGkAtoms::height, aValue, 0, aRv);
   }
 
   uint32_t VideoWidth() const
@@ -129,6 +129,9 @@ public:
   void SetMozUseScreenWakeLock(bool aValue);
 
   bool NotifyOwnerDocumentActivityChangedInternal() override;
+
+  // Gives access to the decoder's frame statistics, if present.
+  FrameStatistics* GetFrameStatistics();
 
   already_AddRefed<VideoPlaybackQuality> GetVideoPlaybackQuality();
 

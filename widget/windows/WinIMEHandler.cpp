@@ -8,6 +8,7 @@
 #include "IMMHandler.h"
 #include "mozilla/Preferences.h"
 #include "nsWindowDefs.h"
+#include "WinTextEventDispatcherListener.h"
 
 #ifdef NS_ENABLE_TSF
 #include "TSFTextStore.h"
@@ -89,6 +90,7 @@ IMEHandler::Terminate()
 #endif // #ifdef NS_ENABLE_TSF
 
   IMMHandler::Terminate();
+  WinTextEventDispatcherListener::Shutdown();
 }
 
 // static
@@ -237,7 +239,7 @@ IMEHandler::NotifyIME(nsWindow* aWindow,
         IMMHandler::OnSelectionChange(aWindow, aIMENotification, isIMMActive);
         return rv;
       }
-      case NOTIFY_IME_OF_COMPOSITION_UPDATE:
+      case NOTIFY_IME_OF_COMPOSITION_EVENT_HANDLED:
         // If IMM IME is active, we need to notify IMMHandler of updating
         // composition change.  It will adjust candidate window position or
         // composition window position.
@@ -300,7 +302,7 @@ IMEHandler::NotifyIME(nsWindow* aWindow,
       IMMHandler::CancelComposition(aWindow);
       return NS_OK;
     case NOTIFY_IME_OF_POSITION_CHANGE:
-    case NOTIFY_IME_OF_COMPOSITION_UPDATE:
+    case NOTIFY_IME_OF_COMPOSITION_EVENT_HANDLED:
       IMMHandler::OnUpdateComposition(aWindow);
       return NS_OK;
     case NOTIFY_IME_OF_SELECTION_CHANGE:
@@ -357,6 +359,13 @@ IMEHandler::GetUpdatePreference()
 #endif //NS_ENABLE_TSF
 
   return IMMHandler::GetIMEUpdatePreference();
+}
+
+// static
+TextEventDispatcherListener*
+IMEHandler::GetNativeTextEventDispatcherListener()
+{
+  return WinTextEventDispatcherListener::GetInstance();
 }
 
 // static

@@ -188,10 +188,6 @@ const kEventConstructors = {
                                                          return e;
                                                        },
                                              },
-  DataStoreChangeEvent:                      { create: function (aName, aProps) {
-                                                         return new DataStoreChangeEvent(aProps);
-                                                       },
-                                             },
   DeviceLightEvent:                          { create: function (aName, aProps) {
                                                          return new DeviceLightEvent(aName, aProps);
                                                        },
@@ -243,6 +239,10 @@ const kEventConstructors = {
                                                          return new ErrorEvent(aName, aProps);
                                                        },
   },
+  FlyWebFetchEvent:                          { create: null, // Cannot create untrusted event from JS.
+                                             },
+  FlyWebWebSocketEvent:                      { create: null, // Cannot create untrusted event from JS.
+                                             },
   FocusEvent:                                { create: function (aName, aProps) {
                                                          return new FocusEvent(aName, aProps);
                                                        },
@@ -303,9 +303,8 @@ const kEventConstructors = {
                                                          return new MediaStreamEvent(aName, aProps);
                                                        },
                                              },
-  MediaStreamTrackEvent:                     { create: function (aName, aProps) {
-                                                         return new MediaStreamTrackEvent(aName, aProps);
-                                                       },
+  MediaStreamTrackEvent:                     {
+                                               // Difficult to test required arguments.
                                              },
   MessageEvent:                              { create: function (aName, aProps) {
                                                          var e = new MessageEvent("messageevent", { bubbles: aProps.bubbles,
@@ -489,7 +488,14 @@ const kEventConstructors = {
                                                          return new SpeechRecognitionEvent(aName, aProps);
                                                        },
                                              },
+  SpeechSynthesisErrorEvent:                 { create: function (aName, aProps) {
+                                                         aProps.error = "synthesis-unavailable";
+                                                         aProps.utterance = new SpeechSynthesisUtterance("Hello World");
+                                                         return new SpeechSynthesisErrorEvent(aName, aProps);
+                                                       },
+                                             },
   SpeechSynthesisEvent:                      { create: function (aName, aProps) {
+                                                         aProps.utterance = new SpeechSynthesisUtterance("Hello World");
                                                          return new SpeechSynthesisEvent(aName, aProps);
                                                        },
                                              },
@@ -600,6 +606,10 @@ const kEventConstructors = {
                                              },
   WheelEvent:                                { create: function (aName, aProps) {
                                                          return new WheelEvent(aName, aProps);
+                                                       },
+                                             },
+  WebGLContextEvent:                         { create: function (aName, aProps) {
+                                                         return new WebGLContextEvent(aName, aProps);
                                                        },
                                              },
 };

@@ -18,7 +18,8 @@
 #include "mozilla/CondVar.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/ErrorNames.h"
-#include "mozilla/unused.h"
+#include "mozilla/Unused.h"
+#include "mozilla/dom/quota/QuotaObject.h"
 
 #include "mozIStorageAggregateFunction.h"
 #include "mozIStorageCompletionCallback.h"
@@ -49,7 +50,7 @@
 // Maximum size of the pages cache per connection.
 #define MAX_CACHE_SIZE_KIBIBYTES 2048 // 2 MiB
 
-PRLogModuleInfo* gStorageLog = nullptr;
+mozilla::LazyLogModule gStorageLog("mozStorage");
 
 // Checks that the protected code is running on the main-thread only if the
 // connection was also opened on it.
@@ -66,6 +67,8 @@ PRLogModuleInfo* gStorageLog = nullptr;
 
 namespace mozilla {
 namespace storage {
+
+using mozilla::dom::quota::QuotaObject;
 
 namespace {
 
@@ -341,7 +344,7 @@ WaitForUnlockNotify(sqlite3* aDatabase)
 
 namespace {
 
-class AsyncCloseConnection final: public nsRunnable
+class AsyncCloseConnection final: public Runnable
 {
 public:
   AsyncCloseConnection(Connection *aConnection,
@@ -355,7 +358,7 @@ public:
   {
   }
 
-  NS_METHOD Run()
+  NS_IMETHOD Run() override
   {
 #ifdef DEBUG
     // This code is executed on the background thread
@@ -364,7 +367,7 @@ public:
     MOZ_ASSERT(onAsyncThread);
 #endif // DEBUG
 
-    nsCOMPtr<nsIRunnable> event = NS_NewRunnableMethodWithArg<nsCOMPtr<nsIThread>>
+    nsCOMPtr<nsIRunnable> event = NewRunnableMethod<nsCOMPtr<nsIThread>>
       (mConnection, &Connection::shutdownAsyncThread, mAsyncExecutionThread);
     (void)NS_DispatchToMainThread(event);
 
@@ -397,7 +400,7 @@ private:
  *
  * Must be executed on the clone's async execution thread.
  */
-class AsyncInitializeClone final: public nsRunnable
+class AsyncInitializeClone final: public Runnable
 {
 public:
   /**
@@ -420,7 +423,7 @@ public:
     MOZ_ASSERT(NS_IsMainThread());
   }
 
-  NS_IMETHOD Run() {
+  NS_IMETHOD Run() override {
     MOZ_ASSERT (NS_GetCurrentThread() == mClone->getAsyncExecutionTarget());
 
     nsresult rv = mConnection->initializeClone(mClone, mReadOnly);
@@ -473,7 +476,9 @@ Connection::Connection(Service *aService,
 , threadOpenedOn(do_GetCurrentThread())
 , mDBConn(nullptr)
 , mAsyncExecutionThreadShuttingDown(false)
+#ifdef DEBUG
 , mAsyncExecutionThreadIsAlive(false)
+#endif
 , mConnectionClosed(false)
 , mTransactionInProgress(false)
 , mProgressHandler(nullptr)
@@ -559,7 +564,10 @@ Connection::getAsyncExecutionTarget()
                              mAsyncExecutionThread);
   }
 
+#ifdef DEBUG
   mAsyncExecutionThreadIsAlive = true;
+#endif
+
   return mAsyncExecutionThread;
 }
 
@@ -675,9 +683,6 @@ Connection::initializeInternal()
 
   // Properly wrap the database handle's mutex.
   sharedDBMutex.initWithMutex(sqlite3_db_mutex(mDBConn));
-
-  if (!gStorageLog)
-    gStorageLog = ::PR_NewLogModule("mozStorage");
 
   // SQLite tracing can slow down queries (especially long queries)
   // significantly. Don't trace unless the user is actively monitoring SQLite.
@@ -895,7 +900,9 @@ Connection::shutdownAsyncThread(nsIThread *aThread) {
 
   DebugOnly<nsresult> rv = aThread->Shutdown();
   MOZ_ASSERT(NS_SUCCEEDED(rv));
+#ifdef DEBUG
   mAsyncExecutionThreadIsAlive = false;
+#endif
 }
 
 nsresult
@@ -955,17 +962,19 @@ Connection::internalClose(sqlite3 *aNativeConnection)
                                 stmt);
       NS_WARNING(msg);
       ::PR_smprintf_free(msg);
+      msg = nullptr;
 #endif // DEBUG
 
       srv = ::sqlite3_finalize(stmt);
 
 #ifdef DEBUG
       if (srv != SQLITE_OK) {
-        char *msg = ::PR_smprintf("Could not finalize SQL statement '%s' (%x)",
-                                  ::sqlite3_sql(stmt),
-                                  stmt);
+        msg = ::PR_smprintf("Could not finalize SQL statement '%s' (%x)",
+                            ::sqlite3_sql(stmt),
+                            stmt);
         NS_WARNING(msg);
         ::PR_smprintf_free(msg);
+        msg = nullptr;
       }
 #endif // DEBUG
 
@@ -1323,6 +1332,29 @@ Connection::initializeClone(Connection* aClone, bool aReadOnly)
                          : aClone->initialize(mDatabaseFile);
   if (NS_FAILED(rv)) {
     return rv;
+  }
+
+  // Re-attach on-disk databases that were attached to the original connection.
+  {
+    nsCOMPtr<mozIStorageStatement> stmt;
+    rv = CreateStatement(NS_LITERAL_CSTRING("PRAGMA database_list"),
+                         getter_AddRefs(stmt));
+    MOZ_ASSERT(NS_SUCCEEDED(rv));
+    bool hasResult = false;
+    while (stmt && NS_SUCCEEDED(stmt->ExecuteStep(&hasResult)) && hasResult) {
+      nsAutoCString name;
+      rv = stmt->GetUTF8String(1, name);
+      if (NS_SUCCEEDED(rv) && !name.Equals(NS_LITERAL_CSTRING("main")) &&
+                              !name.Equals(NS_LITERAL_CSTRING("temp"))) {
+        nsCString path;
+        rv = stmt->GetUTF8String(2, path);
+        if (NS_SUCCEEDED(rv) && !path.IsEmpty()) {
+          rv = aClone->ExecuteSimpleSQL(NS_LITERAL_CSTRING("ATTACH DATABASE '") +
+            path + NS_LITERAL_CSTRING("' AS ") + name);
+          MOZ_ASSERT(NS_SUCCEEDED(rv), "couldn't re-attach database to cloned connection");
+        }
+      }
+    }
   }
 
   // Copy over pragmas from the original connection.
@@ -1909,6 +1941,47 @@ Connection::EnableModule(const nsACString& aModuleName)
   }
 
   return NS_ERROR_FAILURE;
+}
+
+// Implemented in TelemetryVFS.cpp
+already_AddRefed<QuotaObject>
+GetQuotaObjectForFile(sqlite3_file *pFile);
+
+NS_IMETHODIMP
+Connection::GetQuotaObjects(QuotaObject** aDatabaseQuotaObject,
+                            QuotaObject** aJournalQuotaObject)
+{
+  MOZ_ASSERT(aDatabaseQuotaObject);
+  MOZ_ASSERT(aJournalQuotaObject);
+
+  if (!mDBConn) {
+    return NS_ERROR_NOT_INITIALIZED;
+  }
+
+  sqlite3_file* file;
+  int srv = ::sqlite3_file_control(mDBConn,
+                                   nullptr,
+                                   SQLITE_FCNTL_FILE_POINTER,
+                                   &file);
+  if (srv != SQLITE_OK) {
+    return convertResultCode(srv);
+  }
+
+  RefPtr<QuotaObject> databaseQuotaObject = GetQuotaObjectForFile(file);
+
+  srv = ::sqlite3_file_control(mDBConn,
+                               nullptr,
+                               SQLITE_FCNTL_JOURNAL_POINTER,
+                               &file);
+  if (srv != SQLITE_OK) {
+    return convertResultCode(srv);
+  }
+
+  RefPtr<QuotaObject> journalQuotaObject = GetQuotaObjectForFile(file);
+
+  databaseQuotaObject.forget(aDatabaseQuotaObject);
+  journalQuotaObject.forget(aJournalQuotaObject);
+  return NS_OK;
 }
 
 } // namespace storage

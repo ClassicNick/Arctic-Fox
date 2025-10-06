@@ -56,7 +56,9 @@ const size_t ChunkMarkBitmapBits = 129024;
 const size_t ChunkRuntimeOffset = ChunkSize - sizeof(void*);
 const size_t ChunkTrailerSize = 2 * sizeof(uintptr_t) + sizeof(uint64_t);
 const size_t ChunkLocationOffset = ChunkSize - ChunkTrailerSize;
-const size_t ArenaZoneOffset = 0;
+const size_t ArenaZoneOffset = sizeof(size_t);
+const size_t ArenaHeaderSize = sizeof(size_t) + 2 * sizeof(uintptr_t) +
+                               sizeof(size_t) + sizeof(uintptr_t);
 
 /*
  * Live objects are marked black. How many other additional colors are available
@@ -67,19 +69,15 @@ static const uint32_t BLACK = 0;
 static const uint32_t GRAY = 1;
 
 /*
- * The "location" field in the Chunk trailer is a bit vector indicting various
- * roles of the chunk.
- *
- * The value 0 for the "location" field is invalid, at least one bit must be
- * set.
- *
- * Some bits preclude others, for example, any "nursery" bit precludes any
- * "tenured" or "middle generation" bit.
+ * The "location" field in the Chunk trailer is a enum indicating various roles
+ * of the chunk.
  */
-const uintptr_t ChunkLocationBitNursery = 1;       // Standard GGC nursery
-const uintptr_t ChunkLocationBitTenuredHeap = 2;   // Standard GGC tenured generation
-
-const uintptr_t ChunkLocationAnyNursery = ChunkLocationBitNursery;
+enum class ChunkLocation : uint32_t
+{
+    Invalid = 0,
+    Nursery = 1,
+    TenuredHeap = 2
+};
 
 #ifdef JS_DEBUG
 /* When downcasting, ensure we are actually the right type. */
@@ -113,13 +111,20 @@ struct Zone
     JSTracer* const barrierTracer_;     // A pointer to the JSRuntime's |gcMarker|.
 
   public:
+    // Stack GC roots for Rooted GC pointers.
+    js::RootedListHeads stackRoots_;
+    template <typename T> friend class JS::Rooted;
+
     bool needsIncrementalBarrier_;
 
     Zone(JSRuntime* runtime, JSTracer* barrierTracerArg)
       : runtime_(runtime),
         barrierTracer_(barrierTracerArg),
         needsIncrementalBarrier_(false)
-    {}
+    {
+        for (auto& stackRootPtr : stackRoots_)
+            stackRootPtr = nullptr;
+    }
 
     bool needsIncrementalBarrier() const {
         return needsIncrementalBarrier_;
@@ -142,7 +147,7 @@ struct Zone
         return runtime_;
     }
 
-    static JS::shadow::Zone* asShadowZone(JS::Zone* zone) {
+    static MOZ_ALWAYS_INLINE JS::shadow::Zone* asShadowZone(JS::Zone* zone) {
         return reinterpret_cast<JS::shadow::Zone*>(zone);
     }
 };
@@ -330,9 +335,9 @@ IsInsideNursery(const js::gc::Cell* cell)
     uintptr_t addr = uintptr_t(cell);
     addr &= ~js::gc::ChunkMask;
     addr |= js::gc::ChunkLocationOffset;
-    uint32_t location = *reinterpret_cast<uint32_t*>(addr);
-    MOZ_ASSERT(location != 0);
-    return location & ChunkLocationAnyNursery;
+    auto location = *reinterpret_cast<ChunkLocation*>(addr);
+    MOZ_ASSERT(location == ChunkLocation::Nursery || location == ChunkLocation::TenuredHeap);
+    return location == ChunkLocation::Nursery;
 }
 
 } /* namespace gc */
@@ -391,6 +396,9 @@ GCThingIsMarkedGray(GCCellPtr thing)
     return js::gc::detail::CellIsMarkedGray(thing.asCell());
 }
 
+extern JS_PUBLIC_API(JS::TraceKind)
+GCThingTraceKind(void* thing);
+
 } /* namespace JS */
 
 namespace js {
@@ -401,7 +409,7 @@ IsIncrementalBarrierNeededOnTenuredGCThing(JS::shadow::Runtime* rt, const JS::GC
 {
     MOZ_ASSERT(thing);
     MOZ_ASSERT(!js::gc::IsInsideNursery(thing.asCell()));
-    if (rt->isHeapBusy())
+    if (rt->isHeapCollecting())
         return false;
     JS::Zone* zone = JS::GetTenuredGCThingZone(thing);
     return JS::shadow::Zone::asShadowZone(zone)->needsIncrementalBarrier();

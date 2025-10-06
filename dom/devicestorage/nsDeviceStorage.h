@@ -9,12 +9,10 @@
 
 #include "mozilla/Atomics.h"
 #include "mozilla/Attributes.h"
-#include "mozilla/Logging.h"
 #include "mozilla/dom/devicestorage/DeviceStorageRequestChild.h"
 
 #include "DOMRequest.h"
 #include "DOMCursor.h"
-#include "nsAutoPtr.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsDOMClassInfoID.h"
 #include "nsIClassInfo.h"
@@ -100,7 +98,7 @@ public:
   ~DeviceStorageUsedSpaceCache();
 
 
-  class InvalidateRunnable final : public nsRunnable
+  class InvalidateRunnable final : public mozilla::Runnable
   {
     public:
       InvalidateRunnable(DeviceStorageUsedSpaceCache* aCache, 
@@ -304,7 +302,7 @@ private:
 };
 
 class DeviceStorageRequest
-  : public nsRunnable
+  : public mozilla::Runnable
 {
 protected:
   DeviceStorageRequest();

@@ -27,11 +27,10 @@ InitSharedArrayBufferClass(JSContext* cx, HandleObject obj);
 
 class Debugger;
 class TypedObjectModuleObject;
-class StaticBlockScope;
-class ClonedBlockObject;
+class LexicalEnvironmentObject;
 
 class SimdTypeDescr;
-enum class SimdType : uint8_t;
+enum class SimdType;
 
 /*
  * Global object slots are reserved as follows:
@@ -96,7 +95,8 @@ class GlobalObject : public NativeObject
         FROM_BUFFER_UINT8CLAMPED,
 
         /* One-off properties stored after slots for built-ins. */
-        LEXICAL_SCOPE,
+        LEXICAL_ENVIRONMENT,
+        EMPTY_GLOBAL_SCOPE,
         ITERATOR_PROTO,
         ARRAY_ITERATOR_PROTO,
         STRING_ITERATOR_PROTO,
@@ -135,9 +135,6 @@ class GlobalObject : public NativeObject
 
     enum WarnOnceFlag : int32_t {
         WARN_WATCH_DEPRECATED                   = 1 << 0,
-        WARN_PROTO_SETTING_SLOW                 = 1 << 1,
-        WARN_STRING_CONTAINS_DEPRECATED         = 1 << 2,
-        WARN_PROXY_CREATE_DEPRECATED            = 1 << 3,
     };
 
     // Emit the specified warning if the given slot in |obj|'s global isn't
@@ -149,7 +146,8 @@ class GlobalObject : public NativeObject
 
 
   public:
-    ClonedBlockObject& lexicalScope() const;
+    LexicalEnvironmentObject& lexicalEnvironment() const;
+    GlobalScope& emptyGlobalScope() const;
 
     void setThrowTypeError(JSFunction* fun) {
         MOZ_ASSERT(getSlotRef(THROWTYPEERROR).isUndefined());
@@ -275,7 +273,6 @@ class GlobalObject : public NativeObject
 
     Value createArrayFromBufferHelper(uint32_t slot) const {
         MOZ_ASSERT(FROM_BUFFER_UINT8 <= slot && slot <= FROM_BUFFER_UINT8CLAMPED);
-        MOZ_ASSERT(!getSlot(slot).isUndefined());
         return getSlot(slot);
     }
 
@@ -347,6 +344,10 @@ class GlobalObject : public NativeObject
         return &self->getPrototype(JSProto_Object).toObject().as<NativeObject>();
     }
 
+    static NativeObject* getOrCreateObjectPrototype(JSContext* cx, Handle<GlobalObject*> global) {
+        return global->getOrCreateObjectPrototype(cx);
+    }
+
     NativeObject* getOrCreateFunctionPrototype(JSContext* cx) {
         if (functionObjectClassesInitialized())
             return &getPrototype(JSProto_Function).toObject().as<NativeObject>();
@@ -354,6 +355,10 @@ class GlobalObject : public NativeObject
         if (!ensureConstructor(cx, self, JSProto_Object))
             return nullptr;
         return &self->getPrototype(JSProto_Function).toObject().as<NativeObject>();
+    }
+
+    static NativeObject* getOrCreateFunctionPrototype(JSContext* cx, Handle<GlobalObject*> global) {
+        return global->getOrCreateFunctionPrototype(cx);
     }
 
     static NativeObject* getOrCreateArrayPrototype(JSContext* cx, Handle<GlobalObject*> global) {
@@ -390,6 +395,12 @@ class GlobalObject : public NativeObject
         if (!ensureConstructor(cx, global, JSProto_Symbol))
             return nullptr;
         return &global->getPrototype(JSProto_Symbol).toObject().as<NativeObject>();
+    }
+
+    static NativeObject* getOrCreatePromisePrototype(JSContext* cx, Handle<GlobalObject*> global) {
+        if (!ensureConstructor(cx, global, JSProto_Promise))
+            return nullptr;
+        return &global->getPrototype(JSProto_Promise).toObject().as<NativeObject>();
     }
 
     static NativeObject* getOrCreateRegExpPrototype(JSContext* cx, Handle<GlobalObject*> global) {
@@ -458,15 +469,15 @@ class GlobalObject : public NativeObject
     }
 
     JSObject* getOrCreateCollatorPrototype(JSContext* cx) {
-        return getOrCreateObject(cx, COLLATOR_PROTO, initCollatorProto);
+        return getOrCreateObject(cx, COLLATOR_PROTO, initIntlObject);
     }
 
     JSObject* getOrCreateNumberFormatPrototype(JSContext* cx) {
-        return getOrCreateObject(cx, NUMBER_FORMAT_PROTO, initNumberFormatProto);
+        return getOrCreateObject(cx, NUMBER_FORMAT_PROTO, initIntlObject);
     }
 
     JSObject* getOrCreateDateTimeFormatPrototype(JSContext* cx) {
-        return getOrCreateObject(cx, DATE_TIME_FORMAT_PROTO, initDateTimeFormatProto);
+        return getOrCreateObject(cx, DATE_TIME_FORMAT_PROTO, initIntlObject);
     }
 
     static bool ensureModulePrototypesCreated(JSContext *cx, Handle<GlobalObject*> global);
@@ -592,6 +603,13 @@ class GlobalObject : public NativeObject
         return &self->getPrototype(JSProto_DataView).toObject();
     }
 
+    static JSFunction*
+    getOrCreatePromiseConstructor(JSContext* cx, Handle<GlobalObject*> global) {
+        if (!ensureConstructor(cx, global, JSProto_Promise))
+            return nullptr;
+        return &global->getConstructor(JSProto_Promise).toObject().as<JSFunction>();
+    }
+
     static NativeObject* getIntrinsicsHolder(JSContext* cx, Handle<GlobalObject*> global);
 
     bool maybeExistingIntrinsicValue(PropertyName* name, Value* vp) {
@@ -700,24 +718,6 @@ class GlobalObject : public NativeObject
         return true;
     }
 
-    // Warn about use of the given __proto__ setter to attempt to mutate an
-    // object's [[Prototype]], if no prior warning was given.
-    static bool warnOnceAboutPrototypeMutation(JSContext* cx, HandleObject protoSetter) {
-        return warnOnceAbout(cx, protoSetter, WARN_PROTO_SETTING_SLOW, JSMSG_PROTO_SETTING_SLOW);
-    }
-
-    // Warn about use of the deprecated String.prototype.contains method
-    static bool warnOnceAboutStringContains(JSContext* cx, HandleObject strContains) {
-        return warnOnceAbout(cx, strContains, WARN_STRING_CONTAINS_DEPRECATED,
-                             JSMSG_DEPRECATED_STRING_CONTAINS);
-    }
-
-    // Warn about uses of Proxy.create and Proxy.createFunction
-    static bool warnOnceAboutProxyCreate(JSContext* cx, HandleObject create) {
-        return warnOnceAbout(cx, create, WARN_PROXY_CREATE_DEPRECATED,
-                             JSMSG_DEPRECATED_PROXY_CREATE);
-    }
-
     static bool getOrCreateEval(JSContext* cx, Handle<GlobalObject*> global,
                                 MutableHandleObject eval);
 
@@ -739,9 +739,6 @@ class GlobalObject : public NativeObject
 
     // Implemented in Intl.cpp.
     static bool initIntlObject(JSContext* cx, Handle<GlobalObject*> global);
-    static bool initCollatorProto(JSContext* cx, Handle<GlobalObject*> global);
-    static bool initNumberFormatProto(JSContext* cx, Handle<GlobalObject*> global);
-    static bool initDateTimeFormatProto(JSContext* cx, Handle<GlobalObject*> global);
 
     // Implemented in builtin/ModuleObject.cpp
     static bool initModuleProto(JSContext* cx, Handle<GlobalObject*> global);
@@ -759,7 +756,7 @@ class GlobalObject : public NativeObject
     static bool initSelfHostingBuiltins(JSContext* cx, Handle<GlobalObject*> global,
                                         const JSFunctionSpec* builtins);
 
-    typedef js::Vector<js::Debugger*, 0, js::SystemAllocPolicy> DebuggerVector;
+    typedef js::Vector<js::ReadBarriered<js::Debugger*>, 0, js::SystemAllocPolicy> DebuggerVector;
 
     /*
      * The collection of Debugger objects debugging this global. If this global

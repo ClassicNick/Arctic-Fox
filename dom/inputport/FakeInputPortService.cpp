@@ -16,7 +16,7 @@ namespace mozilla {
 namespace dom {
 
 namespace {
-class InputPortServiceNotifyRunnable final : public nsRunnable
+class InputPortServiceNotifyRunnable final : public Runnable
 {
 public:
   InputPortServiceNotifyRunnable(
@@ -77,7 +77,7 @@ private:
   bool mIsConnected;
 };
 
-} // namespace anonymous
+} // namespace
 
 NS_IMPL_ISUPPORTS(PortConnectionChangedCallback, nsITimerCallback)
 
@@ -138,7 +138,7 @@ FakeInputPortService::Shutdown()
   }
 }
 
-/* virtual */ NS_IMETHODIMP
+NS_IMETHODIMP
 FakeInputPortService::GetInputPortListener(nsIInputPortListener** aInputPortListener)
 {
   if (!mInputPortListener) {
@@ -151,14 +151,14 @@ FakeInputPortService::GetInputPortListener(nsIInputPortListener** aInputPortList
   return NS_OK;
 }
 
-/* virtual */ NS_IMETHODIMP
+NS_IMETHODIMP
 FakeInputPortService::SetInputPortListener(nsIInputPortListener* aInputPortListener)
 {
   mInputPortListener = aInputPortListener;
   return NS_OK;
 }
 
-/* virtual */ NS_IMETHODIMP
+NS_IMETHODIMP
 FakeInputPortService::GetInputPorts(nsIInputPortServiceCallback* aCallback)
 {
   if (!aCallback) {

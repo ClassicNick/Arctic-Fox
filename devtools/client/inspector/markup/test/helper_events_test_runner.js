@@ -1,17 +1,20 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+/* eslint no-unused-vars: [2, {"vars": "local"}] */
+/* import-globals-from head.js */
+"use strict";
 
 /**
  * Generator function that runs checkEventsForNode() for each object in the
  * TEST_DATA array.
  */
-function* runEventPopupTests() {
-  let {inspector, testActor} = yield addTab(TEST_URL).then(openInspector);
+function* runEventPopupTests(url, tests) {
+  let {inspector, testActor} = yield openInspectorForURL(url);
 
   yield inspector.markup.expandAll();
 
-  for (let test of TEST_DATA) {
+  for (let test of tests) {
     yield checkEventsForNode(test, inspector, testActor);
   }
 
@@ -55,19 +58,19 @@ function* checkEventsForNode(test, inspector, testActor) {
     return;
   }
 
-  let tooltip = inspector.markup.tooltip;
+  let tooltip = inspector.markup.eventDetailsTooltip;
 
   yield selectNode(selector, inspector);
 
   // Click button to show tooltip
   info("Clicking evHolder");
-  EventUtils.synthesizeMouseAtCenter(evHolder, {}, inspector.markup.doc.defaultView);
+  EventUtils.synthesizeMouseAtCenter(evHolder, {},
+    inspector.markup.doc.defaultView);
   yield tooltip.once("shown");
   info("tooltip shown");
 
   // Check values
-  let content = tooltip.content;
-  let headers = content.querySelectorAll(".event-header");
+  let headers = tooltip.panel.querySelectorAll(".event-header");
   let nodeFront = container.node;
   let cssSelector = nodeFront.nodeName + "#" + nodeFront.id;
 
@@ -80,23 +83,26 @@ function* checkEventsForNode(test, inspector, testActor) {
     let attributes = header.querySelectorAll(".event-tooltip-attributes");
     let contentBox = header.nextElementSibling;
 
-    is(type.getAttribute("value"), expected[i].type,
+    is(type.textContent, expected[i].type,
        "type matches for " + cssSelector);
-    is(filename.getAttribute("value"), expected[i].filename,
+    is(filename.textContent, expected[i].filename,
        "filename matches for " + cssSelector);
 
     is(attributes.length, expected[i].attributes.length,
        "we have the correct number of attributes");
 
     for (let j = 0; j < expected[i].attributes.length; j++) {
-      is(attributes[j].getAttribute("value"), expected[i].attributes[j],
+      is(attributes[j].textContent, expected[i].attributes[j],
          "attribute[" + j + "] matches for " + cssSelector);
     }
+
+    // Make sure the header is not hidden by scrollbars before clicking.
+    header.scrollIntoView();
 
     EventUtils.synthesizeMouseAtCenter(header, {}, type.ownerGlobal);
     yield tooltip.once("event-tooltip-ready");
 
-    let editor = tooltip.eventEditors.get(contentBox).editor;
+    let editor = tooltip.eventTooltip._eventEditors.get(contentBox).editor;
     is(editor.getText(), expected[i].handler,
        "handler matches for " + cssSelector);
   }

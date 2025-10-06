@@ -12,7 +12,7 @@ const PREF = "devtools.styleeditor.source-maps-enabled";
 const SCSS_LOC = "doc_sourcemaps.scss:4";
 const CSS_LOC = "doc_sourcemaps.css:1";
 
-add_task(function*() {
+add_task(function* () {
   info("Setting the " + PREF + " pref to true");
   Services.prefs.setBoolPref(PREF, true);
 
@@ -50,7 +50,7 @@ function* testClickingLink(toolbox, view) {
 }
 
 function checkDisplayedStylesheet(toolbox) {
-  let def = promise.defer();
+  let def = defer();
 
   let panel = toolbox.getCurrentPanel();
   panel.UI.on("editor-selected", (event, editor) => {
@@ -78,8 +78,7 @@ function editorSelected(editor) {
 function verifyLinkText(text, view) {
   info("Verifying that the rule-view stylesheet link is " + text);
   let label = getRuleViewLinkByIndex(view, 1).querySelector("label");
-  return waitForSuccess(
-    () => label.getAttribute("value") == text,
-    "Link text changed to display correct location: " + text
-  );
+  return waitForSuccess(function* () {
+    return label.getAttribute("value") == text;
+  }, "Link text changed to display correct location: " + text);
 }

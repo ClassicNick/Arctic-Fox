@@ -10,7 +10,6 @@
 #include "nsString.h"
 #include "nsTArray.h"
 #include "nsWrapperCache.h"
-#include "nsAutoPtr.h"
 #include "nsPIDOMWindow.h"
 
 class nsMimeType;
@@ -35,9 +34,8 @@ public:
   nsMimeType* NamedItem(const nsAString& name);
   nsMimeType* IndexedGetter(uint32_t index, bool &found);
   nsMimeType* NamedGetter(const nsAString& name, bool &found);
-  bool NameIsEnumerable(const nsAString& name);
   uint32_t Length();
-  void GetSupportedNames(unsigned, nsTArray< nsString >& retval);
+  void GetSupportedNames(nsTArray<nsString>& retval);
 
 protected:
   virtual ~nsMimeTypeArray();
@@ -50,6 +48,7 @@ protected:
   // mMimeTypes contains MIME types handled by plugins or by an OS
   // PreferredApplicationHandler.
   nsTArray<RefPtr<nsMimeType> > mMimeTypes;
+  nsTArray<RefPtr<nsMimeType> > mCTPMimeTypes;
 };
 
 class nsMimeType final : public nsWrapperCache
@@ -63,7 +62,6 @@ public:
              const nsAString& aType,
              const nsAString& aDescription,
              const nsAString& aExtension);
-  nsMimeType(nsPIDOMWindowInner* aWindow, const nsAString& aMimeType);
   nsPIDOMWindowInner* GetParentObject() const;
   virtual JSObject* WrapObject(JSContext* aCx, JS::Handle<JSObject*> aGivenProto) override;
 
@@ -83,10 +81,9 @@ protected:
 
   nsCOMPtr<nsPIDOMWindowInner> mWindow;
 
-  // Strong reference to the active plugin, if any. Note that this
-  // creates an explicit reference cycle through the plugin element's
-  // mimetype array. We rely on the cycle collector to break this
-  // cycle.
+  // Strong reference to the active plugin. Note that this creates an explicit
+  // reference cycle through the plugin element's mimetype array. We rely on the
+  // cycle collector to break this cycle.
   RefPtr<nsPluginElement> mPluginElement;
   nsString mType;
   nsString mDescription;

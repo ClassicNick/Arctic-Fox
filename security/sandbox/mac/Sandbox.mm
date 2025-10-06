@@ -15,6 +15,8 @@
 #include <stdlib.h>
 #include <CoreFoundation/CoreFoundation.h>
 
+#include "mozilla/Assertions.h"
+
 // XXX There are currently problems with the /usr/include/sandbox.h file on
 // some/all of the Macs in Mozilla's build system.  For the time being (until
 // this problem is resolved), we refer directly to what we need from it,
@@ -150,6 +152,9 @@ static const char pluginSandboxRules[] =
   "    (literal \"%s\")\n"
   "    (literal \"%s\"))\n";
 
+static const char widevinePluginSandboxRulesAddend[] =
+  "(allow mach-lookup (global-name \"com.apple.windowserver.active\"))\n";
+
 static const char contentSandboxRules[] =
   "(version 1)\n"
   "\n"
@@ -158,6 +163,7 @@ static const char contentSandboxRules[] =
   "(define appPath \"%s\")\n"
   "(define appBinaryPath \"%s\")\n"
   "(define appDir \"%s\")\n"
+  "(define appTempDir \"%s\")\n"
   "(define home-path \"%s\")\n"
   "\n"
   "(import \"/System/Library/Sandbox/Profiles/system.sb\")\n"
@@ -326,7 +332,8 @@ static const char contentSandboxRules[] =
   "    (allow file-read*\n"
   "        (home-regex \"/Library/Application Support/[^/]+/Extensions/[^/]/\")\n"
   "        (resolving-regex \"/Library/Application Support/[^/]+/Extensions/[^/]/\")\n"
-  "        (home-regex \"/Library/Application Support/Firefox/Profiles/[^/]+/extensions/\"))\n"
+  "        (home-regex \"/Library/Application Support/Firefox/Profiles/[^/]+/extensions/\")\n"
+  "        (home-regex \"/Library/Application Support/Firefox/Profiles/[^/]+/weave/\"))\n"
   "\n"
   "; the following rules should be removed when printing and \n"
   "; opening a file from disk are brokered through the main process\n"
@@ -392,11 +399,6 @@ static const char contentSandboxRules[] =
   "        (appleevent-destination \"com.apple.preview\")\n"
   "        (appleevent-destination \"com.apple.imagecaptureextension2\"))\n"
   "\n"
-  "; bug 1153809\n"
-  "    (allow iokit-open\n"
-  "        (iokit-user-client-class \"NVDVDContextTesla\")\n"
-  "        (iokit-user-client-class \"Gen6DVDContext\"))\n"
-  "\n"
   "; accelerated graphics\n"
   "    (allow-shared-preferences-read \"com.apple.opengl\")\n"
   "    (allow-shared-preferences-read \"com.nvidia.OpenGL\")\n"
@@ -412,6 +414,25 @@ static const char contentSandboxRules[] =
   "        (iokit-user-client-class \"AGPMClient\")\n"
   "        (iokit-user-client-class \"AppleGraphicsControlClient\")\n"
   "        (iokit-user-client-class \"AppleGraphicsPolicyClient\"))\n"
+  "\n"
+  "; bug 1153809\n"
+  "    (allow iokit-open\n"
+  "        (iokit-user-client-class \"NVDVDContextTesla\")\n"
+  "        (iokit-user-client-class \"Gen6DVDContext\"))\n"
+  "\n"
+  "; bug 1190032\n"
+  "    (allow file*\n"
+  "        (home-regex \"/Library/Caches/TemporaryItems/plugtmp.*\"))\n"
+  "\n"
+  "; bug 1201935\n"
+  "    (allow file-read*\n"
+  "        (home-subpath \"/Library/Caches/TemporaryItems\"))\n"
+  "\n"
+  "; bug 1237847\n"
+  "    (allow file-read*\n"
+  "        (subpath appTempDir))\n"
+  "    (allow file-write*\n"
+  "        (subpath appTempDir))\n"
   "  )\n"
   ")\n";
 
@@ -432,14 +453,31 @@ bool StartMacSandbox(MacSandboxInfo aInfo, std::string &aErrorMessage)
                aInfo.appPath.c_str(),
                aInfo.appBinaryPath.c_str());
     }
+
+    if (profile &&
+      aInfo.pluginInfo.type == MacSandboxPluginType_GMPlugin_EME_Widevine) {
+      char *widevineProfile = NULL;
+      asprintf(&widevineProfile, "%s%s", profile,
+        widevinePluginSandboxRulesAddend);
+      free(profile);
+      profile = widevineProfile;
+    }
   }
   else if (aInfo.type == MacSandboxType_Content) {
-    asprintf(&profile, contentSandboxRules, aInfo.level,
-             OSXVersion::OSXVersionMinor(),
-             aInfo.appPath.c_str(),
-             aInfo.appBinaryPath.c_str(),
-             aInfo.appDir.c_str(),
-             getenv("HOME"));
+    MOZ_ASSERT(aInfo.level >= 1);
+    if (aInfo.level >= 1) {
+      asprintf(&profile, contentSandboxRules, aInfo.level,
+               OSXVersion::OSXVersionMinor(),
+               aInfo.appPath.c_str(),
+               aInfo.appBinaryPath.c_str(),
+               aInfo.appDir.c_str(),
+               aInfo.appTempDir.c_str(),
+               getenv("HOME"));
+    } else {
+      fprintf(stderr,
+        "Content sandbox disabled due to sandbox level setting\n");
+      return false;
+    }
   }
   else {
     char *msg = NULL;

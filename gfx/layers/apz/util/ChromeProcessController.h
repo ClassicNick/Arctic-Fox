@@ -21,36 +21,32 @@ namespace mozilla {
 
 namespace layers {
 
-class APZCTreeManager;
+class IAPZCTreeManager;
 class APZEventState;
 
 // A ChromeProcessController is attached to the root of a compositor's layer
 // tree.
 class ChromeProcessController : public mozilla::layers::GeckoContentController
 {
+protected:
   typedef mozilla::layers::FrameMetrics FrameMetrics;
   typedef mozilla::layers::ScrollableLayerGuid ScrollableLayerGuid;
 
 public:
-  explicit ChromeProcessController(nsIWidget* aWidget, APZEventState* aAPZEventState, APZCTreeManager* aAPZCTreeManager);
+  explicit ChromeProcessController(nsIWidget* aWidget, APZEventState* aAPZEventState, IAPZCTreeManager* aAPZCTreeManager);
   ~ChromeProcessController();
   virtual void Destroy() override;
 
   // GeckoContentController interface
   virtual void RequestContentRepaint(const FrameMetrics& aFrameMetrics) override;
-  virtual void PostDelayedTask(Task* aTask, int aDelayMs) override;
-  virtual void RequestFlingSnap(const FrameMetrics::ViewID& aScrollId,
-                                const mozilla::CSSPoint& aDestination) override;
-  virtual void AcknowledgeScrollUpdate(const FrameMetrics::ViewID& aScrollId,
-                                       const uint32_t& aScrollGeneration) override;
-
-  virtual void HandleDoubleTap(const mozilla::CSSPoint& aPoint, Modifiers aModifiers,
-                               const ScrollableLayerGuid& aGuid) override;
-  virtual void HandleSingleTap(const mozilla::CSSPoint& aPoint, Modifiers aModifiers,
-                               const ScrollableLayerGuid& aGuid) override;
-  virtual void HandleLongTap(const mozilla::CSSPoint& aPoint, Modifiers aModifiers,
-                               const ScrollableLayerGuid& aGuid,
-                               uint64_t aInputBlockId) override;
+  virtual void PostDelayedTask(already_AddRefed<Runnable> aTask, int aDelayMs) override;
+  virtual bool IsRepaintThread() override;
+  virtual void DispatchToRepaintThread(already_AddRefed<Runnable> aTask) override;
+  virtual void HandleTap(TapType aType,
+                         const mozilla::LayoutDevicePoint& aPoint,
+                         Modifiers aModifiers,
+                         const ScrollableLayerGuid& aGuid,
+                         uint64_t aInputBlockId) override;
   virtual void NotifyAPZStateChange(const ScrollableLayerGuid& aGuid,
                                     APZStateChange aChange,
                                     int aArg) override;
@@ -60,13 +56,15 @@ public:
 private:
   nsCOMPtr<nsIWidget> mWidget;
   RefPtr<APZEventState> mAPZEventState;
-  RefPtr<APZCTreeManager> mAPZCTreeManager;
+  RefPtr<IAPZCTreeManager> mAPZCTreeManager;
   MessageLoop* mUILoop;
 
   void InitializeRoot();
   nsIPresShell* GetPresShell() const;
   nsIDocument* GetRootDocument() const;
   nsIDocument* GetRootContentDocument(const FrameMetrics::ViewID& aScrollId) const;
+  void HandleDoubleTap(const mozilla::CSSPoint& aPoint, Modifiers aModifiers,
+                       const ScrollableLayerGuid& aGuid);
 };
 
 } // namespace layers

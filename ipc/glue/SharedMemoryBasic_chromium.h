@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: sw=2 ts=8 et :
- */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10,6 +9,10 @@
 
 #include "base/shared_memory.h"
 #include "SharedMemory.h"
+
+#ifdef FUZZING
+#include "SharedMemoryFuzzer.h"
+#endif
 
 #include "nsDebug.h"
 
@@ -57,7 +60,12 @@ public:
 
   virtual void* memory() const override
   {
+#ifdef FUZZING
+    return SharedMemoryFuzzer::MutateSharedMemory(mSharedMemory.memory(),
+                                                  mAllocSize);
+#else
     return mSharedMemory.memory();
+#endif
   }
 
   virtual SharedMemoryType Type() const override

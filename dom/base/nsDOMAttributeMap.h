@@ -35,10 +35,10 @@ public:
   int32_t  mNamespaceID;
 
   /**
-   * The atom for attribute, weak ref. is fine as we only use it for the
-   * hashcode, we never dereference it.
+   * The atom for attribute, stored as void*, to make sure that we only use it
+   * for the hashcode, and we can never dereference it.
    */
-  nsIAtom* mLocalName;
+  void* mLocalName;
 
   nsAttrKey(int32_t aNs, nsIAtom* aName)
     : mNamespaceID(aNs), mLocalName(aName) {}
@@ -139,7 +139,6 @@ public:
   // WebIDL
   Attr* GetNamedItem(const nsAString& aAttrName);
   Attr* NamedGetter(const nsAString& aAttrName, bool& aFound);
-  bool NameIsEnumerable(const nsAString& aName);
   already_AddRefed<Attr>
   RemoveNamedItem(mozilla::dom::NodeInfo* aNodeInfo, ErrorResult& aError);
   already_AddRefed<Attr>
@@ -159,7 +158,7 @@ public:
                     ErrorResult& aError);
 
   void
-  GetSupportedNames(unsigned aFlags, nsTArray<nsString>& aNames);
+  GetSupportedNames(nsTArray<nsString>& aNames);
 
   size_t SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const;
 

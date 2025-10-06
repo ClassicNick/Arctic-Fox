@@ -18,7 +18,7 @@
 #include "mozilla/DOMEventTargetHelper.h" // for DOMEventTargetHelper
 #include "mozilla/dom/KeyframeEffect.h" // for KeyframeEffectReadOnly
 #include "mozilla/dom/Promise.h" // for Promise
-#include "nsCSSProperty.h" // for nsCSSProperty
+#include "nsCSSPropertyID.h" // for nsCSSPropertyID
 #include "nsIGlobalObject.h"
 
 // X11 has a #define for CurrentTime.
@@ -33,7 +33,7 @@
 #endif
 
 struct JSContext;
-class nsCSSPropertySet;
+class nsCSSPropertyIDSet;
 class nsIDocument;
 class nsPresContext;
 
@@ -69,7 +69,7 @@ public:
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(Animation,
                                            DOMEventTargetHelper)
 
-  AnimationTimeline* GetParentObject() const { return mTimeline; }
+  nsIGlobalObject* GetParentObject() const { return GetOwnerGlobal(); }
   virtual JSObject* WrapObject(JSContext* aCx,
                                JS::Handle<JSObject*> aGivenProto) override;
 
@@ -93,7 +93,7 @@ public:
   static already_AddRefed<Animation>
   Constructor(const GlobalObject& aGlobal,
               KeyframeEffectReadOnly* aEffect,
-              AnimationTimeline* aTimeline,
+              const Optional<AnimationTimeline*>& aTimeline,
               ErrorResult& aRv);
   void GetId(nsAString& aResult) const { aResult = mId; }
   void SetId(const nsAString& aId);
@@ -144,7 +144,8 @@ public:
 
   // Wrapper functions for Animation DOM methods when called from style.
 
-  virtual void CancelFromStyle() { DoCancel(); }
+  virtual void CancelFromStyle() { CancelNoUpdate(); }
+  void SetTimelineNoUpdate(AnimationTimeline* aTimeline);
 
   virtual void Tick();
   bool NeedsTicks() const
@@ -312,16 +313,16 @@ public:
    * properties that are changed are added to |aSetProperties|.
    */
   void ComposeStyle(RefPtr<AnimValuesStyleRule>& aStyleRule,
-                    nsCSSPropertySet& aSetProperties);
+                    nsCSSPropertyIDSet& aSetProperties);
 
   void NotifyEffectTimingUpdated();
 
 protected:
   void SilentlySetCurrentTime(const TimeDuration& aNewCurrentTime);
   void SilentlySetPlaybackRate(double aPlaybackRate);
-  void DoCancel();
-  void DoPlay(ErrorResult& aRv, LimitBehavior aLimitBehavior);
-  void DoPause(ErrorResult& aRv);
+  void CancelNoUpdate();
+  void PlayNoUpdate(ErrorResult& aRv, LimitBehavior aLimitBehavior);
+  void PauseNoUpdate(ErrorResult& aRv);
   void ResumeAt(const TimeDuration& aReadyTime);
   void PauseAt(const TimeDuration& aReadyTime);
   void FinishPendingAt(const TimeDuration& aReadyTime)

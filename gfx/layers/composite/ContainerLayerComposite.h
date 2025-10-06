@@ -11,7 +11,6 @@
 #include "mozilla/UniquePtr.h"          // for UniquePtr
 #include "mozilla/layers/LayerManagerComposite.h"
 #include "mozilla/gfx/Rect.h"
-#include "gfxVR.h"
 
 namespace mozilla {
 namespace layers {
@@ -68,6 +67,7 @@ public:
   {
     LayerComposite::SetLayerManager(aManager);
     mManager = aManager;
+    mLastIntermediateSurface = nullptr;
 
     for (Layer* l = GetFirstChild(); l; l = l->GetNextSibling()) {
       LayerComposite* child = l->AsLayerComposite();
@@ -116,7 +116,6 @@ public:
   UniquePtr<PreparedData> mPrepared;
 
   RefPtr<CompositingRenderTarget> mLastIntermediateSurface;
-  RefPtr<gfx::VRHMDRenderingSupport::RenderTargetSet> mVRRenderTargetSet;
 };
 
 class RefLayerComposite : public RefLayer,
@@ -182,7 +181,6 @@ public:
   virtual const char* Name() const override { return "RefLayerComposite"; }
   UniquePtr<PreparedData> mPrepared;
   RefPtr<CompositingRenderTarget> mLastIntermediateSurface;
-  RefPtr<gfx::VRHMDRenderingSupport::RenderTargetSet> mVRRenderTargetSet;
 };
 
 } // namespace layers

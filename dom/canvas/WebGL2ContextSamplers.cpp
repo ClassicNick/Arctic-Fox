@@ -12,24 +12,15 @@ namespace mozilla {
 already_AddRefed<WebGLSampler>
 WebGL2Context::CreateSampler()
 {
-    const char funcName[] = "createSampler";
-
     if (IsContextLost())
         return nullptr;
 
-    /*
     GLuint sampler;
     MakeContextCurrent();
     gl->fGenSamplers(1, &sampler);
 
     RefPtr<WebGLSampler> globj = new WebGLSampler(this, sampler);
     return globj.forget();
-    */
-
-    ErrorInvalidOperation("%s: Sampler objects are still under development, and are"
-                          " currently disabled.",
-                          funcName);
-    return nullptr;
 }
 
 void
@@ -47,6 +38,8 @@ WebGL2Context::DeleteSampler(WebGLSampler* sampler)
     for (int n = 0; n < mGLMaxTextureUnits; n++) {
         if (mBoundSamplers[n] == sampler) {
             mBoundSamplers[n] = nullptr;
+
+            InvalidateResolveCacheForTextureWithTexUnit(n);
         }
     }
 
@@ -88,6 +81,7 @@ WebGL2Context::BindSampler(GLuint unit, WebGLSampler* sampler)
         return ErrorInvalidOperation("bindSampler: binding deleted sampler");
 
     WebGLContextUnchecked::BindSampler(unit, sampler);
+    InvalidateResolveCacheForTextureWithTexUnit(unit);
 
     mBoundSamplers[unit] = sampler;
 }
@@ -104,6 +98,7 @@ WebGL2Context::SamplerParameteri(WebGLSampler* sampler, GLenum pname, GLint para
     if (!ValidateSamplerParameterParams(pname, WebGLIntOrFloat(param), "samplerParameteri"))
         return;
 
+    sampler->SamplerParameter1i(pname, param);
     WebGLContextUnchecked::SamplerParameteri(sampler, pname, param);
 }
 
@@ -124,6 +119,7 @@ WebGL2Context::SamplerParameteriv(WebGLSampler* sampler, GLenum pname, const dom
     if (!ValidateSamplerParameterParams(pname, WebGLIntOrFloat(param.Data()[0]), "samplerParameteriv"))
         return;
 
+    sampler->SamplerParameter1i(pname, param.Data()[0]);
     WebGLContextUnchecked::SamplerParameteriv(sampler, pname, param.Data());
 }
 
@@ -143,6 +139,7 @@ WebGL2Context::SamplerParameteriv(WebGLSampler* sampler, GLenum pname, const dom
     if (!ValidateSamplerParameterParams(pname, WebGLIntOrFloat(param[0]), "samplerParameteriv"))
         return;
 
+    sampler->SamplerParameter1i(pname, param[0]);
     WebGLContextUnchecked::SamplerParameteriv(sampler, pname, param.Elements());
 }
 
@@ -158,6 +155,7 @@ WebGL2Context::SamplerParameterf(WebGLSampler* sampler, GLenum pname, GLfloat pa
     if (!ValidateSamplerParameterParams(pname, WebGLIntOrFloat(param), "samplerParameterf"))
         return;
 
+    sampler->SamplerParameter1f(pname, param);
     WebGLContextUnchecked::SamplerParameterf(sampler, pname, param);
 }
 
@@ -178,6 +176,7 @@ WebGL2Context::SamplerParameterfv(WebGLSampler* sampler, GLenum pname, const dom
     if (!ValidateSamplerParameterParams(pname, WebGLIntOrFloat(param.Data()[0]), "samplerParameterfv"))
         return;
 
+    sampler->SamplerParameter1f(pname, param.Data()[0]);
     WebGLContextUnchecked::SamplerParameterfv(sampler, pname, param.Data());
 }
 
@@ -197,12 +196,15 @@ WebGL2Context::SamplerParameterfv(WebGLSampler* sampler, GLenum pname, const dom
     if (!ValidateSamplerParameterParams(pname, WebGLIntOrFloat(param[0]), "samplerParameterfv"))
         return;
 
+    sampler->SamplerParameter1f(pname, param[0]);
     WebGLContextUnchecked::SamplerParameterfv(sampler, pname, param.Elements());
 }
 
 void
 WebGL2Context::GetSamplerParameter(JSContext*, WebGLSampler* sampler, GLenum pname, JS::MutableHandleValue retval)
 {
+    retval.setNull();
+
     if (IsContextLost())
         return;
 
@@ -211,8 +213,6 @@ WebGL2Context::GetSamplerParameter(JSContext*, WebGLSampler* sampler, GLenum pna
 
     if (!ValidateSamplerParameterName(pname, "getSamplerParameter"))
         return;
-
-    retval.set(JS::NullValue());
 
     switch (pname) {
     case LOCAL_GL_TEXTURE_MIN_FILTER:

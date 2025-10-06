@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const { interfaces: Ci, classes: Cc, results: Cr, utils: Cu } = Components;
+var { interfaces: Ci, classes: Cc, results: Cr, utils: Cu } = Components;
 
 Cu.import("resource://gre/modules/Services.jsm");
 
@@ -20,11 +20,6 @@ function runAsyncTests(tests, dontResetBefore = false) {
 
   cps = Cc["@mozilla.org/content-pref/service;1"].
         getService(Ci.nsIContentPrefService2);
-
-  // Without this the private-browsing service tries to open a dialog when you
-  // change its enabled state.
-  Services.prefs.setBoolPref("browser.privatebrowsing.keep_current_session",
-                             true);
 
   let s = {};
   Cu.import("resource://test/AsyncRunner.jsm", s);

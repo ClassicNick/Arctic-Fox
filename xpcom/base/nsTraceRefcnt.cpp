@@ -49,9 +49,6 @@
 
 ////////////////////////////////////////////////////////////////////////////////
 
-#define NS_IMPL_REFCNT_LOGGING
-
-#ifdef NS_IMPL_REFCNT_LOGGING
 #include "plhash.h"
 #include "prmem.h"
 
@@ -61,17 +58,24 @@
 // only held for a very short time, and gets grabbed at a very high frequency
 // (~100000 times per second). On Mac, the overhead of using a regular lock
 // is very high, see bug 1137963.
-static mozilla::Atomic<bool, mozilla::ReleaseAcquire> gTraceLogLocked;
+static mozilla::Atomic<uintptr_t, mozilla::ReleaseAcquire> gTraceLogLocked;
 
 struct MOZ_STACK_CLASS AutoTraceLogLock final
 {
+  bool doRelease;
   AutoTraceLogLock()
+    : doRelease(true)
   {
-    while (!gTraceLogLocked.compareExchange(false, true)) {
-      PR_Sleep(PR_INTERVAL_NO_WAIT); /* yield */
+    uintptr_t currentThread = reinterpret_cast<uintptr_t>(PR_GetCurrentThread());
+    if (gTraceLogLocked == currentThread) {
+      doRelease = false;
+    } else {
+      while (!gTraceLogLocked.compareExchange(0, currentThread)) {
+        PR_Sleep(PR_INTERVAL_NO_WAIT); /* yield */
+      }
     }
   }
-  ~AutoTraceLogLock() { gTraceLogLocked = false; }
+  ~AutoTraceLogLock() { if (doRelease) gTraceLogLocked = 0; }
 };
 
 static PLHashTable* gBloatView;
@@ -174,7 +178,7 @@ AssertActivityIsLegal()
   PR_END_MACRO
 #else
 #  define ASSERT_ACTIVITY_IS_LEGAL PR_BEGIN_MACRO PR_END_MACRO
-#endif  // DEBUG
+#endif // DEBUG
 
 // These functions are copied from nsprpub/lib/ds/plhash.c, with changes
 // to the functions not called Default* to free the SerialNumberRecord or
@@ -444,17 +448,12 @@ GetBloatEntry(const char* aTypeName, uint32_t aInstanceSize)
         entry = nullptr;
       }
     } else {
-#ifdef DEBUG
-      static const char kMismatchedSizesMessage[] =
-        "Mismatched sizes were recorded in the memory leak logging table. "
-        "The usual cause of this is having a templated class that uses "
-        "MOZ_COUNT_{C,D}TOR in the constructor or destructor, respectively. "
-        "As a workaround, the MOZ_COUNT_{C,D}TOR calls can be moved to a "
-        "non-templated base class.";
-      NS_ASSERTION(aInstanceSize == 0 ||
-                   entry->GetClassSize() == aInstanceSize,
-                   kMismatchedSizesMessage);
-#endif
+      MOZ_ASSERT(aInstanceSize == 0 || entry->GetClassSize() == aInstanceSize,
+                 "Mismatched sizes were recorded in the memory leak logging table. "
+                 "The usual cause of this is having a templated class that uses "
+                 "MOZ_COUNT_{C,D}TOR in the constructor or destructor, respectively. "
+                 "As a workaround, the MOZ_COUNT_{C,D}TOR calls can be moved to a "
+                 "non-templated base class.");
     }
   }
   return entry;
@@ -512,12 +511,10 @@ public:
   }
 };
 
-#endif /* NS_IMPL_REFCNT_LOGGING */
 
 nsresult
 nsTraceRefcnt::DumpStatistics(StatisticsType aType, FILE* aOut)
 {
-#ifdef NS_IMPL_REFCNT_LOGGING
   if (!gBloatLog || !gBloatView) {
     return NS_ERROR_FAILURE;
   }
@@ -571,7 +568,6 @@ nsTraceRefcnt::DumpStatistics(StatisticsType aType, FILE* aOut)
     fprintf(aOut, "\nSerial Numbers of Leaked Objects:\n");
     PL_HashTableEnumerateEntries(gSerialNumbers, DumpSerialNumbers, aOut);
   }
-#endif
 
   return NS_OK;
 }
@@ -579,16 +575,13 @@ nsTraceRefcnt::DumpStatistics(StatisticsType aType, FILE* aOut)
 void
 nsTraceRefcnt::ResetStatistics()
 {
-#ifdef NS_IMPL_REFCNT_LOGGING
   AutoTraceLogLock lock;
   if (gBloatView) {
     PL_HashTableDestroy(gBloatView);
     gBloatView = nullptr;
   }
-#endif
 }
 
-#ifdef NS_IMPL_REFCNT_LOGGING
 static bool
 LogThisType(const char* aTypeName)
 {
@@ -633,7 +626,7 @@ GetRefCount(void* aPtr)
   }
 }
 
-#if defined(NS_IMPL_REFCNT_LOGGING) && defined(HAVE_CPP_DYNAMIC_CAST_TO_VOID_PTR)
+#ifdef HAVE_CPP_DYNAMIC_CAST_TO_VOID_PTR
 static int32_t*
 GetCOMPtrCount(void* aPtr)
 {
@@ -645,7 +638,7 @@ GetCOMPtrCount(void* aPtr)
   }
   return nullptr;
 }
-#endif
+#endif // HAVE_CPP_DYNAMIC_CAST_TO_VOID_PTR
 
 static void
 RecycleSerialNumberPtr(void* aPtr)
@@ -768,7 +761,7 @@ InitTraceLog()
   if (comptr_log) {
     fprintf(stdout, "### XPCOM_MEM_COMPTR_LOG defined -- but it will not work without dynamic_cast\n");
   }
-#endif
+#endif // HAVE_CPP_DYNAMIC_CAST_TO_VOID_PTR
 
   if (classes) {
     // if XPCOM_MEM_LOG_CLASSES was set to some value, the value is interpreted
@@ -869,7 +862,6 @@ InitTraceLog()
   }
 }
 
-#endif
 
 extern "C" {
 
@@ -906,7 +898,7 @@ RecordStackFrame(uint32_t /*aFrameNumber*/, void* aPC, void* /*aSP*/,
   auto locations = static_cast<std::vector<void*>*>(aClosure);
   locations->push_back(aPC);
 }
-#endif
+#endif // MOZ_STACKWALKING
 
 }
 
@@ -919,8 +911,16 @@ nsTraceRefcnt::WalkTheStack(FILE* aStream)
 #endif
 }
 
-void
-nsTraceRefcnt::WalkTheStackCached(FILE* aStream)
+/**
+ * This is a variant of |WalkTheStack| that uses |CodeAddressService| to cache
+ * the results of |NS_DescribeCodeAddress|. If |WalkTheStackCached| is being
+ * called frequently, it will be a few orders of magnitude faster than
+ * |WalkTheStack|. However, the cache uses a lot of memory, which can cause
+ * OOM crashes. Therefore, this should only be used for things like refcount
+ * logging which walk the stack extremely frequently.
+ */
+static void
+WalkTheStackCached(FILE* aStream)
 {
 #ifdef MOZ_STACKWALKING
   if (!gCodeAddressService) {
@@ -949,38 +949,6 @@ WalkTheStackSavingLocations(std::vector<void*>& aLocations)
 
 //----------------------------------------------------------------------
 
-// This thing is exported by libstdc++
-// Yes, this is a gcc only hack
-#if defined(MOZ_DEMANGLE_SYMBOLS)
-#include <cxxabi.h>
-#include <stdlib.h> // for free()
-#endif // MOZ_DEMANGLE_SYMBOLS
-
-void
-nsTraceRefcnt::DemangleSymbol(const char* aSymbol,
-                              char* aBuffer,
-                              int aBufLen)
-{
-  NS_ASSERTION(aSymbol, "null symbol");
-  NS_ASSERTION(aBuffer, "null buffer");
-  NS_ASSERTION(aBufLen >= 32 , "pulled 32 out of you know where");
-
-  aBuffer[0] = '\0';
-
-#if defined(MOZ_DEMANGLE_SYMBOLS)
-  /* See demangle.h in the gcc source for the voodoo */
-  char* demangled = abi::__cxa_demangle(aSymbol, 0, 0, 0);
-
-  if (demangled) {
-    strncpy(aBuffer, demangled, aBufLen);
-    free(demangled);
-  }
-#endif // MOZ_DEMANGLE_SYMBOLS
-}
-
-
-//----------------------------------------------------------------------
-
 EXPORT_XPCOM_API(void)
 NS_LogInit()
 {
@@ -990,11 +958,9 @@ NS_LogInit()
 #ifdef MOZ_STACKWALKING
   StackWalkInitCriticalAddress();
 #endif
-#ifdef NS_IMPL_REFCNT_LOGGING
   if (++gInitCount) {
     nsTraceRefcnt::SetActivityIsLegal(true);
   }
-#endif
 }
 
 EXPORT_XPCOM_API(void)
@@ -1034,7 +1000,7 @@ LogDMDFile()
 
   nsMemoryInfoDumper::DumpDMDToFile(logFile);
 }
-#endif
+#endif // MOZ_DMD
 
 namespace mozilla {
 void
@@ -1065,10 +1031,8 @@ LogTerm()
       nsTraceRefcnt::ResetStatistics();
     }
     nsTraceRefcnt::Shutdown();
-#ifdef NS_IMPL_REFCNT_LOGGING
     nsTraceRefcnt::SetActivityIsLegal(false);
     gActivityTLS = BAD_TLS_INDEX;
-#endif
 
 #ifdef MOZ_DMD
     LogDMDFile();
@@ -1082,7 +1046,6 @@ EXPORT_XPCOM_API(void)
 NS_LogAddRef(void* aPtr, nsrefcnt aRefcnt,
              const char* aClass, uint32_t aClassSize)
 {
-#ifdef NS_IMPL_REFCNT_LOGGING
   ASSERT_ACTIVITY_IS_LEGAL;
   if (!gInitialized) {
     InitTraceLog();
@@ -1119,25 +1082,23 @@ NS_LogAddRef(void* aPtr, nsrefcnt aRefcnt,
 
     bool loggingThisObject = (!gObjectsToLog || LogThisObj(serialno));
     if (aRefcnt == 1 && gAllocLog && loggingThisType && loggingThisObject) {
-      fprintf(gAllocLog, "\n<%s> %p %" PRIdPTR " Create\n", aClass, aPtr, serialno);
-      nsTraceRefcnt::WalkTheStackCached(gAllocLog);
+      fprintf(gAllocLog, "\n<%s> %p %" PRIdPTR " Create [thread %p]\n", aClass, aPtr, serialno, PR_GetCurrentThread());
+      WalkTheStackCached(gAllocLog);
     }
 
     if (gRefcntsLog && loggingThisType && loggingThisObject) {
       // Can't use MOZ_LOG(), b/c it truncates the line
-      fprintf(gRefcntsLog, "\n<%s> %p %" PRIuPTR " AddRef %" PRIuPTR "\n",
-              aClass, aPtr, serialno, aRefcnt);
-      nsTraceRefcnt::WalkTheStackCached(gRefcntsLog);
+      fprintf(gRefcntsLog, "\n<%s> %p %" PRIuPTR " AddRef %" PRIuPTR " [thread %p]\n",
+              aClass, aPtr, serialno, aRefcnt, PR_GetCurrentThread());
+      WalkTheStackCached(gRefcntsLog);
       fflush(gRefcntsLog);
     }
   }
-#endif
 }
 
 EXPORT_XPCOM_API(void)
 NS_LogRelease(void* aPtr, nsrefcnt aRefcnt, const char* aClass)
 {
-#ifdef NS_IMPL_REFCNT_LOGGING
   ASSERT_ACTIVITY_IS_LEGAL;
   if (!gInitialized) {
     InitTraceLog();
@@ -1173,9 +1134,9 @@ NS_LogRelease(void* aPtr, nsrefcnt aRefcnt, const char* aClass)
     if (gRefcntsLog && loggingThisType && loggingThisObject) {
       // Can't use MOZ_LOG(), b/c it truncates the line
       fprintf(gRefcntsLog,
-              "\n<%s> %p %" PRIuPTR " Release %" PRIuPTR "\n",
-              aClass, aPtr, serialno, aRefcnt);
-      nsTraceRefcnt::WalkTheStackCached(gRefcntsLog);
+              "\n<%s> %p %" PRIuPTR " Release %" PRIuPTR " [thread %p]\n",
+              aClass, aPtr, serialno, aRefcnt, PR_GetCurrentThread());
+      WalkTheStackCached(gRefcntsLog);
       fflush(gRefcntsLog);
     }
 
@@ -1183,21 +1144,19 @@ NS_LogRelease(void* aPtr, nsrefcnt aRefcnt, const char* aClass)
     // yet we still want to see deletion information:
 
     if (aRefcnt == 0 && gAllocLog && loggingThisType && loggingThisObject) {
-      fprintf(gAllocLog, "\n<%s> %p %" PRIdPTR " Destroy\n", aClass, aPtr, serialno);
-      nsTraceRefcnt::WalkTheStackCached(gAllocLog);
+      fprintf(gAllocLog, "\n<%s> %p %" PRIdPTR " Destroy [thread %p]\n", aClass, aPtr, serialno, PR_GetCurrentThread());
+      WalkTheStackCached(gAllocLog);
     }
 
     if (aRefcnt == 0 && gSerialNumbers && loggingThisType) {
       RecycleSerialNumberPtr(aPtr);
     }
   }
-#endif
 }
 
 EXPORT_XPCOM_API(void)
 NS_LogCtor(void* aPtr, const char* aType, uint32_t aInstanceSize)
 {
-#ifdef NS_IMPL_REFCNT_LOGGING
   ASSERT_ACTIVITY_IS_LEGAL;
   if (!gInitialized) {
     InitTraceLog();
@@ -1223,17 +1182,15 @@ NS_LogCtor(void* aPtr, const char* aType, uint32_t aInstanceSize)
     if (gAllocLog && loggingThisType && loggingThisObject) {
       fprintf(gAllocLog, "\n<%s> %p %" PRIdPTR " Ctor (%d)\n",
               aType, aPtr, serialno, aInstanceSize);
-      nsTraceRefcnt::WalkTheStackCached(gAllocLog);
+      WalkTheStackCached(gAllocLog);
     }
   }
-#endif
 }
 
 
 EXPORT_XPCOM_API(void)
 NS_LogDtor(void* aPtr, const char* aType, uint32_t aInstanceSize)
 {
-#ifdef NS_IMPL_REFCNT_LOGGING
   ASSERT_ACTIVITY_IS_LEGAL;
   if (!gInitialized) {
     InitTraceLog();
@@ -1263,17 +1220,16 @@ NS_LogDtor(void* aPtr, const char* aType, uint32_t aInstanceSize)
     if (gAllocLog && loggingThisType && loggingThisObject) {
       fprintf(gAllocLog, "\n<%s> %p %" PRIdPTR " Dtor (%d)\n",
               aType, aPtr, serialno, aInstanceSize);
-      nsTraceRefcnt::WalkTheStackCached(gAllocLog);
+      WalkTheStackCached(gAllocLog);
     }
   }
-#endif
 }
 
 
 EXPORT_XPCOM_API(void)
 NS_LogCOMPtrAddRef(void* aCOMPtr, nsISupports* aObject)
 {
-#if defined(NS_IMPL_REFCNT_LOGGING) && defined(HAVE_CPP_DYNAMIC_CAST_TO_VOID_PTR)
+#ifdef HAVE_CPP_DYNAMIC_CAST_TO_VOID_PTR
   // Get the most-derived object.
   void* object = dynamic_cast<void*>(aObject);
 
@@ -1283,16 +1239,16 @@ NS_LogCOMPtrAddRef(void* aCOMPtr, nsISupports* aObject)
   if (!gTypesToLog || !gSerialNumbers) {
     return;
   }
-  intptr_t serialno = GetSerialNumber(object, false);
-  if (serialno == 0) {
-    return;
-  }
-
   if (!gInitialized) {
     InitTraceLog();
   }
   if (gLogging == FullLogging) {
     AutoTraceLogLock lock;
+
+    intptr_t serialno = GetSerialNumber(object, false);
+    if (serialno == 0) {
+      return;
+    }
 
     int32_t* count = GetCOMPtrCount(object);
     if (count) {
@@ -1304,17 +1260,17 @@ NS_LogCOMPtrAddRef(void* aCOMPtr, nsISupports* aObject)
     if (gCOMPtrLog && loggingThisObject) {
       fprintf(gCOMPtrLog, "\n<?> %p %" PRIdPTR " nsCOMPtrAddRef %d %p\n",
               object, serialno, count ? (*count) : -1, aCOMPtr);
-      nsTraceRefcnt::WalkTheStackCached(gCOMPtrLog);
+      WalkTheStackCached(gCOMPtrLog);
     }
   }
-#endif
+#endif // HAVE_CPP_DYNAMIC_CAST_TO_VOID_PTR
 }
 
 
 EXPORT_XPCOM_API(void)
 NS_LogCOMPtrRelease(void* aCOMPtr, nsISupports* aObject)
 {
-#if defined(NS_IMPL_REFCNT_LOGGING) && defined(HAVE_CPP_DYNAMIC_CAST_TO_VOID_PTR)
+#ifdef HAVE_CPP_DYNAMIC_CAST_TO_VOID_PTR
   // Get the most-derived object.
   void* object = dynamic_cast<void*>(aObject);
 
@@ -1324,16 +1280,16 @@ NS_LogCOMPtrRelease(void* aCOMPtr, nsISupports* aObject)
   if (!gTypesToLog || !gSerialNumbers) {
     return;
   }
-  intptr_t serialno = GetSerialNumber(object, false);
-  if (serialno == 0) {
-    return;
-  }
-
   if (!gInitialized) {
     InitTraceLog();
   }
   if (gLogging == FullLogging) {
     AutoTraceLogLock lock;
+
+    intptr_t serialno = GetSerialNumber(object, false);
+    if (serialno == 0) {
+      return;
+    }
 
     int32_t* count = GetCOMPtrCount(object);
     if (count) {
@@ -1345,16 +1301,15 @@ NS_LogCOMPtrRelease(void* aCOMPtr, nsISupports* aObject)
     if (gCOMPtrLog && loggingThisObject) {
       fprintf(gCOMPtrLog, "\n<?> %p %" PRIdPTR " nsCOMPtrRelease %d %p\n",
               object, serialno, count ? (*count) : -1, aCOMPtr);
-      nsTraceRefcnt::WalkTheStackCached(gCOMPtrLog);
+      WalkTheStackCached(gCOMPtrLog);
     }
   }
-#endif
+#endif // HAVE_CPP_DYNAMIC_CAST_TO_VOID_PTR
 }
 
 void
 nsTraceRefcnt::Shutdown()
 {
-#ifdef NS_IMPL_REFCNT_LOGGING
 #ifdef MOZ_STACKWALKING
   gCodeAddressService = nullptr;
 #endif
@@ -1378,17 +1333,14 @@ nsTraceRefcnt::Shutdown()
   maybeUnregisterAndCloseFile(gRefcntsLog);
   maybeUnregisterAndCloseFile(gAllocLog);
   maybeUnregisterAndCloseFile(gCOMPtrLog);
-#endif
 }
 
 void
 nsTraceRefcnt::SetActivityIsLegal(bool aLegal)
 {
-#ifdef NS_IMPL_REFCNT_LOGGING
   if (gActivityTLS == BAD_TLS_INDEX) {
     PR_NewThreadPrivateIndex(&gActivityTLS, nullptr);
   }
 
   PR_SetThreadPrivate(gActivityTLS, reinterpret_cast<void*>(!aLegal));
-#endif
 }

@@ -271,9 +271,8 @@ TimerManager.prototype = {
       this._timer.initWithCallback(this, interval,
                                    Ci.nsITimer.TYPE_REPEATING_SLACK);
       this.lastTimerReset = Date.now();
-    } else {
-      if (Date.now() + interval < this.lastTimerReset + this._timer.delay)
-        this._timer.delay = Math.max(this.lastTimerReset + interval - Date.now(), 0);
+    } else if (Date.now() + interval < this.lastTimerReset + this._timer.delay) {
+      this._timer.delay = Math.max(this.lastTimerReset + interval - Date.now(), 0);
     }
   },
 
@@ -292,6 +291,10 @@ TimerManager.prototype = {
    */
   registerTimer: function TM_registerTimer(id, callback, interval) {
     LOG("TimerManager:registerTimer - id: " + id);
+    if (id in this._timers && callback != this._timers[id].callback) {
+      LOG("TimerManager:registerTimer - Ignoring second registration for " + id);
+      return;
+    }
     let prefLastUpdate = PREF_APP_UPDATE_LASTUPDATETIME_FMT.replace(/%ID%/, id);
     // Initialize the last update time to 0 when the preference isn't set so
     // the timer will be notified soon after a new profile's first use.

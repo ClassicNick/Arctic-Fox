@@ -47,10 +47,6 @@ bool MediaPipelineFilter::Filter(const webrtc::RTPHeader& header,
   return false;
 }
 
-void MediaPipelineFilter::AddLocalSSRC(uint32_t ssrc) {
-  local_ssrc_set_.insert(ssrc);
-}
-
 void MediaPipelineFilter::AddRemoteSSRC(uint32_t ssrc) {
   remote_ssrc_set_.insert(ssrc);
 }
@@ -71,7 +67,6 @@ void MediaPipelineFilter::Update(const MediaPipelineFilter& filter_update) {
     remote_ssrc_set_ = filter_update.remote_ssrc_set_;
   }
 
-  local_ssrc_set_ = filter_update.local_ssrc_set_;
   payload_type_set_ = filter_update.payload_type_set_;
   correlator_ = filter_update.correlator_;
 }
@@ -79,7 +74,7 @@ void MediaPipelineFilter::Update(const MediaPipelineFilter& filter_update) {
 bool
 MediaPipelineFilter::FilterSenderReport(const unsigned char* data,
                                         size_t len) const {
-  if (len < FIRST_SSRC_OFFSET) {
+  if (len < FIRST_SSRC_OFFSET + 4) {
     return false;
   }
 

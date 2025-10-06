@@ -114,7 +114,7 @@ public:
   /**
    * Returns the content node that focus will be redirected to if aContent was
    * focused. This is used for the special case of certain XUL elements such
-   * as textboxes which redirect focus to an anonymous child.
+   * as textboxes or input number which redirect focus to an anonymous child.
    *
    * aContent must be non-null.
    *
@@ -241,7 +241,8 @@ protected:
   bool Blur(nsPIDOMWindowOuter* aWindowToClear,
             nsPIDOMWindowOuter* aAncestorWindowToFocus,
             bool aIsLeavingDocument,
-            bool aAdjustWidget);
+            bool aAdjustWidget,
+            nsIContent* aContentToFocus = nullptr);
 
   /**
    * Focus an element in the active window and child frame.
@@ -275,7 +276,8 @@ protected:
              bool aIsNewDocument,
              bool aFocusChanged,
              bool aWindowRaised,
-             bool aAdjustWidget);
+             bool aAdjustWidget,
+             nsIContent* aContentLostFocus = nullptr);
 
   /**
    * Fires a focus or blur event at aTarget.
@@ -291,7 +293,8 @@ protected:
                             nsISupports* aTarget,
                             uint32_t aFocusMethod,
                             bool aWindowRaised,
-                            bool aIsRefocus = false);
+                            bool aIsRefocus = false,
+                            mozilla::dom::EventTarget* aRelatedTarget = nullptr);
 
   /**
    * Scrolls aContent into view unless the FLAG_NOSCROLL flag is set.

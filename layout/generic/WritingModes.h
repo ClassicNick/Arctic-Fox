@@ -269,6 +269,18 @@ public:
   }
 #endif
 
+  /**
+   * Return true if boxes with this writing mode should use central baselines.
+   */
+  bool IsCentralBaseline() const { return IsVertical() && !IsSideways(); }
+
+  /**
+   * Return true if boxes with this writing mode should use alphabetical
+   * baselines.
+   */
+  bool IsAlphabeticalBaseline() const { return !IsCentralBaseline(); }
+
+
   static mozilla::PhysicalAxis PhysicalAxisForLogicalAxis(
                                               uint8_t aWritingModeValue,
                                               LogicalAxis aAxis)
@@ -1856,6 +1868,18 @@ inline nsStyleUnit nsStyleSides::GetBEndUnit(mozilla::WritingMode aWM) const
   return GetUnit(aWM, mozilla::eLogicalSideBEnd);
 }
 
+inline bool nsStyleSides::HasBlockAxisAuto(mozilla::WritingMode aWM) const
+{
+  return GetBStartUnit(aWM) == eStyleUnit_Auto ||
+         GetBEndUnit(aWM) == eStyleUnit_Auto;
+}
+
+inline bool nsStyleSides::HasInlineAxisAuto(mozilla::WritingMode aWM) const
+{
+  return GetIStartUnit(aWM) == eStyleUnit_Auto ||
+         GetIEndUnit(aWM) == eStyleUnit_Auto;
+}
+
 inline nsStyleCoord nsStyleSides::Get(mozilla::WritingMode aWM,
                                       mozilla::LogicalSide aSide) const
 {
@@ -1977,16 +2001,17 @@ nsStylePosition::MaxBSizeDependsOnContainer(mozilla::WritingMode aWM) const
                           : MaxHeightDependsOnContainer();
 }
 
-inline uint8_t
+inline mozilla::StyleFloat
 nsStyleDisplay::PhysicalFloats(mozilla::WritingMode aWM) const
 {
-  if (mFloats == NS_STYLE_FLOAT_INLINE_START) {
-    return aWM.IsBidiLTR() ? NS_STYLE_FLOAT_LEFT : NS_STYLE_FLOAT_RIGHT;
+  using StyleFloat = mozilla::StyleFloat;
+  if (mFloat == StyleFloat::InlineStart) {
+    return aWM.IsBidiLTR() ? StyleFloat::Left : StyleFloat::Right;
   }
-  if (mFloats == NS_STYLE_FLOAT_INLINE_END) {
-    return aWM.IsBidiLTR() ? NS_STYLE_FLOAT_RIGHT : NS_STYLE_FLOAT_LEFT;
+  if (mFloat == StyleFloat::InlineEnd) {
+    return aWM.IsBidiLTR() ? StyleFloat::Right : StyleFloat::Left;
   }
-  return mFloats;
+  return mFloat;
 }
 
 inline uint8_t
@@ -1999,6 +2024,17 @@ nsStyleDisplay::PhysicalBreakType(mozilla::WritingMode aWM) const
     return aWM.IsBidiLTR() ? NS_STYLE_CLEAR_RIGHT : NS_STYLE_CLEAR_LEFT;
   }
   return mBreakType;
+}
+
+inline bool
+nsStyleMargin::HasBlockAxisAuto(mozilla::WritingMode aWM) const
+{
+  return mMargin.HasBlockAxisAuto(aWM);
+}
+inline bool
+nsStyleMargin::HasInlineAxisAuto(mozilla::WritingMode aWM) const
+{
+  return mMargin.HasInlineAxisAuto(aWM);
 }
 
 #endif // WritingModes_h_

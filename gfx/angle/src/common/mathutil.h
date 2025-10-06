@@ -9,15 +9,23 @@
 #ifndef COMMON_MATHUTIL_H_
 #define COMMON_MATHUTIL_H_
 
-#include "common/debug.h"
-#include "common/platform.h"
-
 #include <limits>
 #include <algorithm>
 #include <math.h>
 #include <string.h>
 #include <stdint.h>
 #include <stdlib.h>
+
+#include <base/numerics/safe_math.h>
+
+#include "common/debug.h"
+#include "common/platform.h"
+
+namespace angle
+{
+using base::CheckedNumeric;
+using base::IsValueInRangeForNumericType;
+}
 
 namespace gl
 {
@@ -467,6 +475,43 @@ inline T shiftData(T input)
     return (input & mask) << inputBitStart;
 }
 
+inline unsigned int CountLeadingZeros(uint32_t x)
+{
+    // Use binary search to find the amount of leading zeros.
+    unsigned int zeros = 32u;
+    uint32_t y;
+
+    y = x >> 16u;
+    if (y != 0)
+    {
+        zeros = zeros - 16u;
+        x     = y;
+    }
+    y = x >> 8u;
+    if (y != 0)
+    {
+        zeros = zeros - 8u;
+        x     = y;
+    }
+    y = x >> 4u;
+    if (y != 0)
+    {
+        zeros = zeros - 4u;
+        x     = y;
+    }
+    y = x >> 2u;
+    if (y != 0)
+    {
+        zeros = zeros - 2u;
+        x     = y;
+    }
+    y = x >> 1u;
+    if (y != 0)
+    {
+        return zeros - 2u;
+    }
+    return zeros - x;
+}
 
 inline unsigned char average(unsigned char a, unsigned char b)
 {
@@ -493,9 +538,10 @@ inline unsigned int average(unsigned int a, unsigned int b)
     return ((a ^ b) >> 1) + (a & b);
 }
 
-inline signed int average(signed int a, signed int b)
+inline int average(int a, int b)
 {
-    return ((long long)a + (long long)b) / 2;
+    long long average = (static_cast<long long>(a) + static_cast<long long>(b)) / 2ll;
+    return static_cast<int>(average);
 }
 
 inline float average(float a, float b)
@@ -584,9 +630,10 @@ struct IndexRange
 // packSnorm2x16 : round(clamp(c, -1, +1) * 32767.0)
 inline uint32_t packSnorm2x16(float f1, float f2)
 {
-    uint16_t leastSignificantBits = static_cast<uint16_t>(roundf(clamp(f1, -1.0f, 1.0f) * 32767.0f));
-    uint16_t mostSignificantBits = static_cast<uint16_t>(roundf(clamp(f2, -1.0f, 1.0f) * 32767.0f));
-    return static_cast<uint32_t>(mostSignificantBits) << 16 | static_cast<uint32_t>(leastSignificantBits);
+    int16_t leastSignificantBits = static_cast<int16_t>(roundf(clamp(f1, -1.0f, 1.0f) * 32767.0f));
+    int16_t mostSignificantBits = static_cast<int16_t>(roundf(clamp(f2, -1.0f, 1.0f) * 32767.0f));
+    return static_cast<uint32_t>(mostSignificantBits) << 16 |
+           (static_cast<uint32_t>(leastSignificantBits) & 0xFFFF);
 }
 
 // First, unpacks a single 32-bit unsigned integer u into a pair of 16-bit unsigned integers. Then, each
@@ -674,7 +721,41 @@ inline bool isInf(float f)
     return ((bitCast<uint32_t>(f) & 0x7f800000u) == 0x7f800000u) && !(bitCast<uint32_t>(f) & 0x7fffffu);
 }
 
+namespace priv
+{
+template <unsigned int N, unsigned int R>
+struct iSquareRoot
+{
+    static constexpr unsigned int solve()
+    {
+        return (R * R > N)
+                   ? 0
+                   : ((R * R == N) ? R : static_cast<unsigned int>(iSquareRoot<N, R + 1>::value));
+    }
+    enum Result
+    {
+        value = iSquareRoot::solve()
+    };
+};
+
+template <unsigned int N>
+struct iSquareRoot<N, N>
+{
+    enum result
+    {
+        value = N
+    };
+};
+
+}  // namespace priv
+
+template <unsigned int N>
+constexpr unsigned int iSquareRoot()
+{
+    return priv::iSquareRoot<N, 1>::value;
 }
+
+}  // namespace gl
 
 namespace rx
 {
@@ -682,33 +763,22 @@ namespace rx
 template <typename T>
 T roundUp(const T value, const T alignment)
 {
-    return value + alignment - 1 - (value - 1) % alignment;
+    auto temp = value + alignment - static_cast<T>(1);
+    return temp - temp % alignment;
+}
+
+template <typename T>
+angle::CheckedNumeric<T> CheckedRoundUp(const T value, const T alignment)
+{
+    angle::CheckedNumeric<T> checkedValue(value);
+    angle::CheckedNumeric<T> checkedAlignment(alignment);
+    return roundUp(checkedValue, checkedAlignment);
 }
 
 inline unsigned int UnsignedCeilDivide(unsigned int value, unsigned int divisor)
 {
     unsigned int divided = value / divisor;
     return (divided + ((value % divisor == 0) ? 0 : 1));
-}
-
-template <class T>
-inline bool IsUnsignedAdditionSafe(T lhs, T rhs)
-{
-    static_assert(!std::numeric_limits<T>::is_signed, "T must be unsigned.");
-    return (rhs <= std::numeric_limits<T>::max() - lhs);
-}
-
-template <class T>
-inline bool IsUnsignedMultiplicationSafe(T lhs, T rhs)
-{
-    static_assert(!std::numeric_limits<T>::is_signed, "T must be unsigned.");
-    return (lhs == T(0) || rhs == T(0) || (rhs <= std::numeric_limits<T>::max() / lhs));
-}
-
-template <class SmallIntT, class BigIntT>
-inline bool IsIntegerCastSafe(BigIntT bigValue)
-{
-    return (static_cast<BigIntT>(static_cast<SmallIntT>(bigValue)) == bigValue);
 }
 
 #if defined(_MSC_VER)

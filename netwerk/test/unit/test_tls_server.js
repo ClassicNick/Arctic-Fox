@@ -20,6 +20,9 @@ const socketTransportService =
   Cc["@mozilla.org/network/socket-transport-service;1"]
   .getService(Ci.nsISocketTransportService);
 
+const prefs = Cc["@mozilla.org/preferences-service;1"]
+              .getService(Ci.nsIPrefBranch);
+
 function run_test() {
   run_next_test();
 }
@@ -38,7 +41,8 @@ function getCert() {
   return deferred.promise;
 }
 
-function startServer(cert) {
+function startServer(cert, expectingPeerCert, clientCertificateConfig,
+                     expectedVersion, expectedVersionStr) {
   let tlsServer = Cc["@mozilla.org/network/tls-server-socket;1"]
                   .createInstance(Ci.nsITLSServerSocket);
   tlsServer.init(-1, true, -1);
@@ -57,18 +61,16 @@ function startServer(cert) {
     },
     onHandshakeDone: function(socket, status) {
       do_print("TLS handshake done");
-      ok(!!status.peerCert, "Has peer cert");
-      ok(status.peerCert.equals(cert), "Peer cert matches expected cert");
-
-      equal(status.tlsVersionUsed, Ci.nsITLSClientStatus.TLS_VERSION_1_2,
-            "Using TLS 1.2");
-      let expectedCipher;
-      if (expectedVersion >= 772) {
-        expectedCipher = "TLS_AES_128_GCM_SHA256";
+      if (expectingPeerCert) {
+        ok(!!status.peerCert, "Has peer cert");
+        ok(status.peerCert.equals(cert), "Peer cert matches expected cert");
       } else {
-        expectedCipher = "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256";
+        ok(!status.peerCert, "No peer cert (as expected)");
       }
-      equal(status.cipherName, expectedCipher,
+
+      equal(status.tlsVersionUsed, expectedVersion,
+            "Using " + expectedVersionStr);
+      equal(status.cipherName, "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
             "Using expected cipher");
       equal(status.keyLength, 128, "Using 128-bit key");
       equal(status.macLength, 128, "Using 128-bit MAC");
@@ -84,7 +86,7 @@ function startServer(cert) {
 
   tlsServer.setSessionCache(false);
   tlsServer.setSessionTickets(false);
-  tlsServer.setRequestClientCertificate(Ci.nsITLSServerSocket.REQUIRE_ALWAYS);
+  tlsServer.setRequestClientCertificate(clientCertificateConfig);
 
   tlsServer.asyncListen(listener);
 
@@ -98,7 +100,9 @@ function storeCertOverride(port, cert) {
                                                overrideBits, true);
 }
 
-function startClient(port, cert) {
+function startClient(port, cert, expectingBadCertAlert) {
+  let SSL_ERROR_BASE = Ci.nsINSSErrorsService.NSS_SSL_ERROR_BASE;
+  let SSL_ERROR_BAD_CERT_ALERT = SSL_ERROR_BASE + 17;
   let transport =
     socketTransportService.createTransport(["ssl"], 1, "127.0.0.1", port, null);
   let input;
@@ -121,24 +125,26 @@ function startClient(port, cert) {
         equal(data, "HELLO", "Echoed data received");
         input.close();
         output.close();
+        ok(!expectingBadCertAlert, "No bad cert alert expected");
         inputDeferred.resolve();
       } catch (e) {
-        let SEC_ERROR_BASE = Ci.nsINSSErrorsService.NSS_SEC_ERROR_BASE;
-        let SEC_ERROR_UNKNOWN_ISSUER = SEC_ERROR_BASE + 13;
         let errorCode = -1 * (e.result & 0xFFFF);
-        if (errorCode == SEC_ERROR_UNKNOWN_ISSUER) {
-          do_print("Client doesn't like server cert");
+        if (expectingBadCertAlert && errorCode == SSL_ERROR_BAD_CERT_ALERT) {
+          inputDeferred.resolve();
+        } else {
+          inputDeferred.reject(e);
         }
-        inputDeferred.reject(e);
       }
     },
 
     onOutputStreamReady: function(output) {
       try {
-        // Set the cert we want to avoid any cert UI prompts
-        let clientSecInfo = transport.securityInfo;
-        let tlsControl = clientSecInfo.QueryInterface(Ci.nsISSLSocketControl);
-        tlsControl.clientCert = cert;
+        // Set the client certificate as appropriate.
+        if (cert) {
+          let clientSecInfo = transport.securityInfo;
+          let tlsControl = clientSecInfo.QueryInterface(Ci.nsISSLSocketControl);
+          tlsControl.clientCert = cert;
+        }
 
         output.write("HELLO", 5);
         do_print("Output to server written");
@@ -146,8 +152,6 @@ function startClient(port, cert) {
         input = transport.openInputStream(0, 0, 0);
         input.asyncWait(handler, 0, 0, Services.tm.currentThread);
       } catch (e) {
-        let SSL_ERROR_BASE = Ci.nsINSSErrorsService.NSS_SSL_ERROR_BASE;
-        let SSL_ERROR_BAD_CERT_ALERT = SSL_ERROR_BASE + 17;
         let errorCode = -1 * (e.result & 0xFFFF);
         if (errorCode == SSL_ERROR_BAD_CERT_ALERT) {
           do_print("Server doesn't like client cert");
@@ -164,10 +168,64 @@ function startClient(port, cert) {
   return promise.all([inputDeferred.promise, outputDeferred.promise]);
 }
 
+// Replace the UI dialog that prompts the user to pick a client certificate.
+do_load_manifest("client_cert_chooser.manifest");
+
+const tests = [{
+  expectingPeerCert: true,
+  clientCertificateConfig: Ci.nsITLSServerSocket.REQUIRE_ALWAYS,
+  sendClientCert: true,
+  expectingBadCertAlert: false
+}, {
+  expectingPeerCert: true,
+  clientCertificateConfig: Ci.nsITLSServerSocket.REQUIRE_ALWAYS,
+  sendClientCert: false,
+  expectingBadCertAlert: true
+}, {
+  expectingPeerCert: true,
+  clientCertificateConfig: Ci.nsITLSServerSocket.REQUEST_ALWAYS,
+  sendClientCert: true,
+  expectingBadCertAlert: false
+}, {
+  expectingPeerCert: false,
+  clientCertificateConfig: Ci.nsITLSServerSocket.REQUEST_ALWAYS,
+  sendClientCert: false,
+  expectingBadCertAlert: false
+}, {
+  expectingPeerCert: false,
+  clientCertificateConfig: Ci.nsITLSServerSocket.REQUEST_NEVER,
+  sendClientCert: true,
+  expectingBadCertAlert: false
+}, {
+  expectingPeerCert: false,
+  clientCertificateConfig: Ci.nsITLSServerSocket.REQUEST_NEVER,
+  sendClientCert: false,
+  expectingBadCertAlert: false
+}];
+
+const versions = [{
+  prefValue: 3, version: Ci.nsITLSClientStatus.TLS_VERSION_1_2, versionStr: "TLS 1.2"
+}, {
+  prefValue: 4, version: Ci.nsITLSClientStatus.TLS_VERSION_1_3, versionStr: "TLS 1.3"
+}];
+
 add_task(function*() {
   let cert = yield getCert();
   ok(!!cert, "Got self-signed cert");
-  let port = startServer(cert);
-  storeCertOverride(port, cert);
-  yield startClient(port, cert);
+  for (let v of versions) {
+    prefs.setIntPref("security.tls.version.max", v.prefValue);
+    for (let t of tests) {
+      let port = startServer(cert,
+                             t.expectingPeerCert,
+                             t.clientCertificateConfig,
+                             v.version,
+                             v.versionStr);
+      storeCertOverride(port, cert);
+      yield startClient(port, t.sendClientCert ? cert : null, t.expectingBadCertAlert);
+    }
+  }
+});
+
+do_register_cleanup(function() {
+  prefs.clearUserPref("security.tls.version.max");
 });

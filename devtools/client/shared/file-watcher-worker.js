@@ -58,11 +58,12 @@ function scanFiles(files, onChangedFile) {
   });
 }
 
-onmessage = function(event) {
+onmessage = function (event) {
   const { path, fileRegex } = event.data;
-  let info = OS.File.stat(path);
+
+  const info = OS.File.stat(path);
   if (!info.isDir) {
-    throw new Error("watcher expects a directory as root path");
+    throw new Error("Watcher expects a directory as root path");
   }
 
   // We get a list of all the files upfront, which means we don't
@@ -73,6 +74,8 @@ onmessage = function(event) {
   // Every second, scan for file changes by stat-ing each of them and
   // comparing modification time.
   setInterval(() => {
-    scanFiles(files, changedFile => postMessage(changedFile));
+    scanFiles(files, changedFile => {
+      postMessage({ path: changedFile });
+    });
   }, 1000);
 };

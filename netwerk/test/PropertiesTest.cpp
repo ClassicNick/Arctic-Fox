@@ -4,7 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "TestCommon.h"
-#include "mozilla/Snprintf.h"
+#include "mozilla/Sprintf.h"
 #include "nsXPCOM.h"
 #include "nsStringAPI.h"
 #include "nsIPersistentProperties2.h"
@@ -55,11 +55,11 @@ main(int argc, char* argv[])
   ret = NS_NewChannel(&channel,
                       uri,
                       systemPrincipal,
-                      nsILoadInfo::SEC_NORMAL,
+                      nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL,
                       nsIContentPolicy::TYPE_OTHER);
   if (NS_FAILED(ret)) return 1;
 
-  ret = channel->Open(&in);
+  ret = channel->Open2(&in);
   if (NS_FAILED(ret)) return 1;
 
   nsIPersistentProperties* props;
@@ -77,7 +77,7 @@ main(int argc, char* argv[])
   while (1) {
     char name[16];
     name[0] = 0;
-    snprintf_literal(name, "%d", i);
+    SprintfLiteral(name, "%d", i);
     nsAutoString v;
     ret = props->GetStringProperty(nsDependentCString(name), v);
     if (NS_FAILED(ret) || (!v.Length())) {

@@ -1,30 +1,32 @@
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
+/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 "use strict";
 
 var { classes: Cc, interfaces: Ci, utils: Cu } = Components;
 
 var { loader, require } = Cu.import("resource://devtools/shared/Loader.jsm", {});
-// Require this module just to setup things like themes and tools
-// devtools-browser is special as it loads main module
-// To be cleaned up in bug 1247203.
-require("devtools/client/framework/devtools-browser");
+// Require this module to setup core modules
+loader.require("devtools/client/framework/devtools-browser");
+
 var { gDevTools } = require("devtools/client/framework/devtools");
 var { TargetFactory } = require("devtools/client/framework/target");
 var { Toolbox } = require("devtools/client/framework/toolbox");
-var { Services } = Cu.import("resource://gre/modules/Services.jsm", {});
+var Services = require("Services");
 var { DebuggerClient } = require("devtools/shared/client/main");
-var { ViewHelpers } =
-  Cu.import("resource://devtools/client/shared/widgets/ViewHelpers.jsm", {});
-var { Task } = Cu.import("resource://gre/modules/Task.jsm", {});
+var { PrefsHelper } = require("devtools/client/shared/prefs");
+var { Task } = require("devtools/shared/task");
 
 /**
  * Shortcuts for accessing various debugger preferences.
  */
-var Prefs = new ViewHelpers.Prefs("devtools.debugger", {
+var Prefs = new PrefsHelper("devtools.debugger", {
   chromeDebuggingHost: ["Char", "chrome-debugging-host"],
-  chromeDebuggingPort: ["Int", "chrome-debugging-port"]
+  chromeDebuggingPort: ["Int", "chrome-debugging-port"],
+  chromeDebuggingWebSocket: ["Bool", "chrome-debugging-websocket"],
 });
 
 var gToolbox, gClient;
@@ -34,23 +36,28 @@ var connect = Task.async(function*() {
   // Initiate the connection
   let transport = yield DebuggerClient.socketConnect({
     host: Prefs.chromeDebuggingHost,
-    port: Prefs.chromeDebuggingPort
+    port: Prefs.chromeDebuggingPort,
+    webSocket: Prefs.chromeDebuggingWebSocket,
   });
   gClient = new DebuggerClient(transport);
-  gClient.connect().then(() => {
-    let addonID = getParameterByName("addonID");
+  yield gClient.connect();
+  let addonID = getParameterByName("addonID");
 
-    if (addonID) {
-      gClient.listAddons(({addons}) => {
-        let addonActor = addons.filter(addon => addon.id === addonID).pop();
-        openToolbox({ form: addonActor, chrome: true, isTabActor: false });
-      });
-    } else {
-      gClient.getProcess().then(aResponse => {
-        openToolbox({ form: aResponse.form, chrome: true });
-      });
-    }
-  });
+  if (addonID) {
+    let { addons } = yield gClient.listAddons();
+    let addonActor = addons.filter(addon => addon.id === addonID).pop();
+    openToolbox({
+      form: addonActor,
+      chrome: true,
+      isTabActor: addonActor.isWebExtension ? true : false
+    });
+  } else {
+    let response = yield gClient.getProcess();
+    openToolbox({
+      form: response.form,
+      chrome: true
+    });
+  }
 });
 
 // Certain options should be toggled since we can assume chrome debugging here
@@ -59,6 +66,10 @@ function setPrefDefaults() {
   Services.prefs.setBoolPref("devtools.performance.ui.show-platform-data", true);
   Services.prefs.setBoolPref("devtools.inspector.showAllAnonymousContent", true);
   Services.prefs.setBoolPref("browser.dom.window.dump.enabled", true);
+  Services.prefs.setBoolPref("devtools.command-button-noautohide.enabled", true);
+  Services.prefs.setBoolPref("devtools.scratchpad.enabled", true);
+  // Bug 1225160 - Using source maps with browser debugging can lead to a crash
+  Services.prefs.setBoolPref("devtools.debugger.source-maps-enabled", false);
 }
 
 window.addEventListener("load", function() {
@@ -68,9 +79,9 @@ window.addEventListener("load", function() {
   connect().catch(e => {
     let errorMessageContainer = document.getElementById("error-message-container");
     let errorMessage = document.getElementById("error-message");
-    errorMessage.value = e;
+    errorMessage.value = e.message || e;
     errorMessageContainer.hidden = false;
-    Cu.reportError(e);
+    console.error(e);
   });
 });
 
@@ -112,7 +123,8 @@ function onNewToolbox(toolbox) {
   gToolbox = toolbox;
   bindToolboxHandlers();
   raise();
-  let testScript = getParameterByName("testScript");
+  let env = Components.classes["@mozilla.org/process/environment;1"].getService(Components.interfaces.nsIEnvironment);
+  let testScript = env.get("MOZ_TOOLBOX_TEST_SCRIPT");
   if (testScript) {
     // Only allow executing random chrome scripts when a special
     // test-only pref is set
@@ -184,7 +196,7 @@ function onMessage(event) {
         setTitle(json.data.value);
         break;
     }
-  } catch(e) { Cu.reportError(e); }
+  } catch(e) { console.error(e); }
 }
 
 window.addEventListener("message", onMessage);

@@ -8,6 +8,7 @@
 #include "GLContext.h"
 #include "mozilla/CheckedInt.h"
 #include "mozilla/UniquePtrExtensions.h"
+#include "nsPrintfCString.h"
 #include "WebGLBuffer.h"
 #include "WebGLContextUtils.h"
 #include "WebGLFramebuffer.h"
@@ -42,43 +43,111 @@ public:
     ~ScopedResolveTexturesForDraw();
 };
 
+bool
+WebGLTexture::IsFeedback(WebGLContext* webgl, const char* funcName, uint32_t texUnit,
+                         const std::vector<const WebGLFBAttachPoint*>& fbAttachments) const
+{
+    auto itr = fbAttachments.cbegin();
+    for (; itr != fbAttachments.cend(); ++itr) {
+        const auto& attach = *itr;
+        if (attach->Texture() == this)
+            break;
+    }
+
+    if (itr == fbAttachments.cend())
+        return false;
+
+    ////
+
+    const auto minLevel = mBaseMipmapLevel;
+    uint32_t maxLevel;
+    if (!MaxEffectiveMipmapLevel(texUnit, &maxLevel)) {
+        // No valid mips. Will need fake-black.
+        return false;
+    }
+
+    ////
+
+    for (; itr != fbAttachments.cend(); ++itr) {
+        const auto& attach = *itr;
+        if (attach->Texture() != this)
+            continue;
+
+        const auto dstLevel = attach->MipLevel();
+
+        if (minLevel <= dstLevel && dstLevel <= maxLevel) {
+            webgl->ErrorInvalidOperation("%s: Feedback loop detected between tex target"
+                                         " 0x%04x, tex unit %u, levels %u-%u; and"
+                                         " framebuffer attachment 0x%04x, level %u.",
+                                         funcName, mTarget.get(), texUnit, minLevel,
+                                         maxLevel, attach->mAttachmentPoint, dstLevel);
+            return true;
+        }
+    }
+
+    return false;
+}
+
 ScopedResolveTexturesForDraw::ScopedResolveTexturesForDraw(WebGLContext* webgl,
                                                            const char* funcName,
                                                            bool* const out_error)
     : mWebGL(webgl)
 {
-    //typedef nsTArray<WebGLRefPtr<WebGLTexture>> TexturesT;
-    typedef decltype(WebGLContext::mBound2DTextures) TexturesT;
+    MOZ_ASSERT(mWebGL->gl->IsCurrent());
 
-    const auto fnResolveAll = [this, funcName, out_error](const TexturesT& textures)
-    {
-        const auto len = textures.Length();
-        for (uint32_t texUnit = 0; texUnit < len; ++texUnit) {
-            WebGLTexture* tex = textures[texUnit];
+    if (!mWebGL->mActiveProgramLinkInfo) {
+        mWebGL->ErrorInvalidOperation("%s: The current program is not linked.", funcName);
+        *out_error = true;
+        return;
+    }
+
+    std::vector<const WebGLFBAttachPoint*> fbAttachments;
+    if (mWebGL->mBoundDrawFramebuffer) {
+        const auto& fb = mWebGL->mBoundDrawFramebuffer;
+        fb->GatherAttachments(&fbAttachments);
+    }
+
+    MOZ_ASSERT(mWebGL->mActiveProgramLinkInfo);
+    const auto& uniformSamplers = mWebGL->mActiveProgramLinkInfo->uniformSamplers;
+    for (const auto& uniform : uniformSamplers) {
+        const auto& texList = *(uniform->mSamplerTexList);
+
+        for (const auto& texUnit : uniform->mSamplerValues) {
+            if (texUnit >= texList.Length())
+                continue;
+
+            const auto& tex = texList[texUnit];
             if (!tex)
                 continue;
 
+            if (tex->IsFeedback(mWebGL, funcName, texUnit, fbAttachments)) {
+                *out_error = true;
+                return;
+            }
+
             FakeBlackType fakeBlack;
-            *out_error |= !tex->ResolveForDraw(funcName, texUnit, &fakeBlack);
+            if (!tex->ResolveForDraw(funcName, texUnit, &fakeBlack)) {
+                mWebGL->ErrorOutOfMemory("%s: Failed to resolve textures for draw.",
+                                         funcName);
+                *out_error = true;
+                return;
+            }
 
             if (fakeBlack == FakeBlackType::None)
                 continue;
 
-            mWebGL->BindFakeBlack(texUnit, tex->Target(), fakeBlack);
+            if (!mWebGL->BindFakeBlack(texUnit, tex->Target(), fakeBlack)) {
+                mWebGL->ErrorOutOfMemory("%s: Failed to create fake black texture.",
+                                         funcName);
+                *out_error = true;
+                return;
+            }
+
             mRebindRequests.push_back({texUnit, tex});
         }
-    };
+    }
 
     *out_error = false;
-
-    fnResolveAll(mWebGL->mBound2DTextures);
-    fnResolveAll(mWebGL->mBoundCubeMapTextures);
-    fnResolveAll(mWebGL->mBound3DTextures);
-    fnResolveAll(mWebGL->mBound2DArrayTextures);
-
-    if (*out_error) {
-        mWebGL->ErrorOutOfMemory("%s: Failed to resolve textures for draw.", funcName);
-    }
 }
 
 ScopedResolveTexturesForDraw::~ScopedResolveTexturesForDraw()
@@ -96,7 +165,7 @@ ScopedResolveTexturesForDraw::~ScopedResolveTexturesForDraw()
     gl->fActiveTexture(LOCAL_GL_TEXTURE0 + mWebGL->mActiveTexture);
 }
 
-void
+bool
 WebGLContext::BindFakeBlack(uint32_t texUnit, TexTarget target, FakeBlackType fakeBlack)
 {
     MOZ_ASSERT(fakeBlack == FakeBlackType::RGBA0000 ||
@@ -130,17 +199,21 @@ WebGLContext::BindFakeBlack(uint32_t texUnit, TexTarget target, FakeBlackType fa
 
     UniquePtr<FakeBlackTexture>* slot = fnGetSlot();
     if (!slot) {
-        MOZ_CRASH("fnGetSlot failed.");
+        MOZ_CRASH("GFX: fnGetSlot failed.");
     }
     UniquePtr<FakeBlackTexture>& fakeBlackTex = *slot;
 
     if (!fakeBlackTex) {
-        fakeBlackTex.reset(new FakeBlackTexture(gl, target, fakeBlack));
+        fakeBlackTex = FakeBlackTexture::Create(gl, target, fakeBlack);
+        if (!fakeBlackTex) {
+            return false;
+        }
     }
 
     gl->fActiveTexture(LOCAL_GL_TEXTURE0 + texUnit);
     gl->fBindTexture(target.get(), fakeBlackTex->mGLName);
     gl->fActiveTexture(LOCAL_GL_TEXTURE0 + mActiveTexture);
+    return true;
 }
 
 ////////////////////////////////////////
@@ -185,14 +258,18 @@ WebGLContext::DrawArrays_check(GLint first, GLsizei count, GLsizei primcount,
         return false;
     }
 
-    // If count is 0, there's nothing to do.
-    if (count == 0 || primcount == 0) {
-        return false;
+    if (IsWebGL2() && !gl->IsSupported(gl::GLFeature::prim_restart_fixed)) {
+        MOZ_ASSERT(gl->IsSupported(gl::GLFeature::prim_restart));
+        if (mPrimRestartTypeBytes != 4) {
+            mPrimRestartTypeBytes = 4;
+
+            // OSX has issues leaving this as 0.
+            gl->fPrimitiveRestartIndex(UINT32_MAX);
+        }
     }
 
-    // Any checks below this depend on a program being available.
-    if (!mCurrentProgram) {
-        ErrorInvalidOperation("%s: null CURRENT_PROGRAM", info);
+    // If count is 0, there's nothing to do.
+    if (count == 0 || primcount == 0) {
         return false;
     }
 
@@ -217,7 +294,7 @@ WebGLContext::DrawArrays_check(GLint first, GLsizei count, GLsizei primcount,
         return false;
     }
 
-    MakeContextCurrent();
+    MOZ_ASSERT(gl->IsCurrent());
 
     if (mBoundDrawFramebuffer) {
         if (!mBoundDrawFramebuffer->ValidateAndInitAttachments(info))
@@ -242,6 +319,8 @@ WebGLContext::DrawArrays(GLenum mode, GLint first, GLsizei count)
 
     if (!ValidateDrawModeEnum(mode, funcName))
         return;
+
+    MakeContextCurrent();
 
     bool error;
     ScopedResolveTexturesForDraw scopedResolve(this, funcName, &error);
@@ -270,6 +349,8 @@ WebGLContext::DrawArraysInstanced(GLenum mode, GLint first, GLsizei count, GLsiz
 
     if (!ValidateDrawModeEnum(mode, funcName))
         return;
+
+    MakeContextCurrent();
 
     bool error;
     ScopedResolveTexturesForDraw scopedResolve(this, funcName, &error);
@@ -343,17 +424,25 @@ WebGLContext::DrawElements_check(GLsizei count, GLenum type,
         return false;
     }
 
+    ////
+
+    if (IsWebGL2() && !gl->IsSupported(gl::GLFeature::prim_restart_fixed)) {
+        MOZ_ASSERT(gl->IsSupported(gl::GLFeature::prim_restart));
+        if (mPrimRestartTypeBytes != bytesPerElem) {
+            mPrimRestartTypeBytes = bytesPerElem;
+
+            const uint32_t ones = UINT32_MAX >> (4 - mPrimRestartTypeBytes);
+            gl->fPrimitiveRestartIndex(ones);
+        }
+    }
+
+    ////
+
     const GLsizei first = byteOffset / bytesPerElem;
     const CheckedUint32 checked_byteCount = bytesPerElem * CheckedUint32(count);
 
     if (!checked_byteCount.isValid()) {
         ErrorInvalidValue("%s: overflow in byteCount", info);
-        return false;
-    }
-
-    // Any checks below this depend on a program being available.
-    if (!mCurrentProgram) {
-        ErrorInvalidOperation("%s: null CURRENT_PROGRAM", info);
         return false;
     }
 
@@ -406,7 +495,7 @@ WebGLContext::DrawElements_check(GLsizei count, GLenum type,
                         WebGLContext::EnumName(type));
     }
 
-    MakeContextCurrent();
+    MOZ_ASSERT(gl->IsCurrent());
 
     if (mBoundDrawFramebuffer) {
         if (!mBoundDrawFramebuffer->ValidateAndInitAttachments(info))
@@ -432,6 +521,8 @@ WebGLContext::DrawElements(GLenum mode, GLsizei count, GLenum type,
 
     if (!ValidateDrawModeEnum(mode, funcName))
         return;
+
+    MakeContextCurrent();
 
     bool error;
     ScopedResolveTexturesForDraw scopedResolve(this, funcName, &error);
@@ -469,6 +560,8 @@ WebGLContext::DrawElementsInstanced(GLenum mode, GLsizei count, GLenum type,
 
     if (!ValidateDrawModeEnum(mode, funcName))
         return;
+
+    MakeContextCurrent();
 
     bool error;
     ScopedResolveTexturesForDraw scopedResolve(this, funcName, &error);
@@ -568,24 +661,38 @@ WebGLContext::ValidateBufferFetching(const char* info)
     bool hasPerVertex = false;
     uint32_t maxVertices = UINT32_MAX;
     uint32_t maxInstances = UINT32_MAX;
-    uint32_t attribs = mBoundVertexArray->mAttribs.Length();
+    const uint32_t attribCount = mBoundVertexArray->mAttribs.Length();
 
-    for (uint32_t i = 0; i < attribs; ++i) {
-        const WebGLVertexAttribData& vd = mBoundVertexArray->mAttribs[i];
-
+    uint32_t i = 0;
+    for (const auto& vd : mBoundVertexArray->mAttribs) {
         // If the attrib array isn't enabled, there's nothing to check;
         // it's a static value.
         if (!vd.enabled)
             continue;
 
         if (vd.buf == nullptr) {
-            ErrorInvalidOperation("%s: no VBO bound to enabled vertex attrib index %d!", info, i);
+            ErrorInvalidOperation("%s: no VBO bound to enabled vertex attrib index %du!",
+                                  info, i);
             return false;
         }
 
-        // If the attrib is not in use, then we don't have to validate
-        // it, just need to make sure that the binding is non-null.
-        if (!mActiveProgramLinkInfo->HasActiveAttrib(i))
+        ++i;
+    }
+
+    mBufferFetch_IsAttrib0Active = false;
+
+    for (const auto& attrib : mActiveProgramLinkInfo->attribs) {
+        const auto& attribLoc = attrib.mLoc;
+
+        if (attribLoc >= attribCount)
+            continue;
+
+        if (attribLoc == 0) {
+            mBufferFetch_IsAttrib0Active = true;
+        }
+
+        const auto& vd = mBoundVertexArray->mAttribs[attribLoc];
+        if (!vd.enabled)
             continue;
 
         // the base offset
@@ -595,7 +702,9 @@ WebGLContext::ValidateBufferFetching(const char* info)
         if (!checked_byteLength.isValid() ||
             !checked_sizeOfLastElement.isValid())
         {
-            ErrorInvalidOperation("%s: integer overflow occured while checking vertex attrib %d", info, i);
+            ErrorInvalidOperation("%s: Integer overflow occured while checking vertex"
+                                  " attrib %u.",
+                                  info, attribLoc);
             return false;
         }
 
@@ -608,7 +717,9 @@ WebGLContext::ValidateBufferFetching(const char* info)
         CheckedUint32 checked_maxAllowedCount = ((checked_byteLength - checked_sizeOfLastElement) / vd.actualStride()) + 1;
 
         if (!checked_maxAllowedCount.isValid()) {
-            ErrorInvalidOperation("%s: integer overflow occured while checking vertex attrib %d", info, i);
+            ErrorInvalidOperation("%s: Integer overflow occured while checking vertex"
+                                  " attrib %u.",
+                                  info, attribLoc);
             return false;
         }
 
@@ -648,7 +759,7 @@ WebGLContext::WhatDoesVertexAttrib0Need()
 #ifdef XP_MACOSX
     if (gl->WorkAroundDriverBugs() &&
         mBoundVertexArray->IsAttribArrayEnabled(0) &&
-        !mActiveProgramLinkInfo->HasActiveAttrib(0))
+        !mBufferFetch_IsAttrib0Active)
     {
         return WebGLVertexAttrib0Status::EmulatedUninitializedArray;
     }
@@ -660,7 +771,7 @@ WebGLContext::WhatDoesVertexAttrib0Need()
         return WebGLVertexAttrib0Status::Default;
     }
 
-    return mActiveProgramLinkInfo->HasActiveAttrib(0)
+    return mBufferFetch_IsAttrib0Active
            ? WebGLVertexAttrib0Status::EmulatedInitializedArray
            : WebGLVertexAttrib0Status::EmulatedUninitializedArray;
 }
@@ -796,10 +907,9 @@ CreateGLTexture(gl::GLContext* gl)
     return ret;
 }
 
-WebGLContext::FakeBlackTexture::FakeBlackTexture(gl::GLContext* gl, TexTarget target,
-                                                 FakeBlackType type)
-    : mGL(gl)
-    , mGLName(CreateGLTexture(gl))
+UniquePtr<WebGLContext::FakeBlackTexture>
+WebGLContext::FakeBlackTexture::Create(gl::GLContext* gl, TexTarget target,
+                                       FakeBlackType type)
 {
     GLenum texFormat;
     switch (type) {
@@ -812,13 +922,14 @@ WebGLContext::FakeBlackTexture::FakeBlackTexture(gl::GLContext* gl, TexTarget ta
         break;
 
     default:
-        MOZ_CRASH("bad type");
+        MOZ_CRASH("GFX: bad type");
     }
 
-    gl::ScopedBindTexture scopedBind(mGL, mGLName, target.get());
+    UniquePtr<FakeBlackTexture> result(new FakeBlackTexture(gl));
+    gl::ScopedBindTexture scopedBind(gl, result->mGLName, target.get());
 
-    mGL->fTexParameteri(target.get(), LOCAL_GL_TEXTURE_MIN_FILTER, LOCAL_GL_NEAREST);
-    mGL->fTexParameteri(target.get(), LOCAL_GL_TEXTURE_MAG_FILTER, LOCAL_GL_NEAREST);
+    gl->fTexParameteri(target.get(), LOCAL_GL_TEXTURE_MIN_FILTER, LOCAL_GL_NEAREST);
+    gl->fTexParameteri(target.get(), LOCAL_GL_TEXTURE_MAG_FILTER, LOCAL_GL_NEAREST);
 
     // We allocate our zeros on the heap, and we overallocate (16 bytes instead of 4) to
     // minimize the risk of running into a driver bug in texImage2D, as it is a bit
@@ -828,20 +939,32 @@ WebGLContext::FakeBlackTexture::FakeBlackTexture(gl::GLContext* gl, TexTarget ta
     const webgl::DriverUnpackInfo dui = {texFormat, texFormat, LOCAL_GL_UNSIGNED_BYTE};
     UniqueBuffer zeros = moz_xcalloc(1, 16); // Infallible allocation.
 
+    MOZ_ASSERT(gl->IsCurrent());
+
     if (target == LOCAL_GL_TEXTURE_CUBE_MAP) {
         for (int i = 0; i < 6; ++i) {
             const TexImageTarget curTarget = LOCAL_GL_TEXTURE_CUBE_MAP_POSITIVE_X + i;
-            const GLenum error = DoTexImage(mGL, curTarget.get(), 0, &dui, 1, 1, 1,
+            const GLenum error = DoTexImage(gl, curTarget.get(), 0, &dui, 1, 1, 1,
                                             zeros.get());
-            if (error)
-                MOZ_CRASH("Unexpected error during FakeBlack creation.");
+            if (error) {
+                return nullptr;
+            }
         }
     } else {
-        const GLenum error = DoTexImage(mGL, target.get(), 0, &dui, 1, 1, 1,
+        const GLenum error = DoTexImage(gl, target.get(), 0, &dui, 1, 1, 1,
                                         zeros.get());
-        if (error)
-            MOZ_CRASH("Unexpected error during FakeBlack creation.");
+        if (error) {
+            return nullptr;
+        }
     }
+
+    return result;
+}
+
+WebGLContext::FakeBlackTexture::FakeBlackTexture(gl::GLContext* gl)
+    : mGL(gl)
+    , mGLName(CreateGLTexture(gl))
+{
 }
 
 WebGLContext::FakeBlackTexture::~FakeBlackTexture()

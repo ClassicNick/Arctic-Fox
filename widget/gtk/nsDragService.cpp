@@ -26,7 +26,6 @@
 #include "mozilla/BasicEvents.h"
 #include "mozilla/Services.h"
 
-#include "gfxASurface.h"
 #include "gfxXlibSurface.h"
 #include "gfxContext.h"
 #include "nsImageToPixbuf.h"
@@ -238,8 +237,8 @@ OnSourceGrabEventAfter(GtkWidget *widget, GdkEvent *event, gpointer user_data)
         // the eDragEnd event.
         nsDragService *dragService = static_cast<nsDragService*>(user_data);
         gint scale = nsScreenGtk::GetGtkMonitorScaleFactor();
-        LayoutDeviceIntPoint p(floor(event->motion.x_root * scale + 0.5),
-                               floor(event->motion.y_root * scale + 0.5));
+        auto p = LayoutDeviceIntPoint::Round(event->motion.x_root * scale,
+                                             event->motion.y_root * scale);
         dragService->SetDragEndPoint(p);
     } else if (sMotionEvent && (event->type == GDK_KEY_PRESS ||
                                 event->type == GDK_KEY_RELEASE)) {
@@ -303,7 +302,9 @@ NS_IMETHODIMP
 nsDragService::InvokeDragSession(nsIDOMNode *aDOMNode,
                                  nsISupportsArray * aArrayTransferables,
                                  nsIScriptableRegion * aRegion,
-                                 uint32_t aActionType)
+                                 uint32_t aActionType,
+                                 nsContentPolicyType aContentPolicyType =
+                                   nsIContentPolicy::TYPE_OTHER)
 {
     MOZ_LOG(sDragLm, LogLevel::Debug, ("nsDragService::InvokeDragSession"));
 
@@ -315,7 +316,8 @@ nsDragService::InvokeDragSession(nsIDOMNode *aDOMNode,
         return NS_ERROR_NOT_AVAILABLE;
 
     return nsBaseDragService::InvokeDragSession(aDOMNode, aArrayTransferables,
-                                                aRegion, aActionType);
+                                                aRegion, aActionType,
+                                                aContentPolicyType);
 }
 
 // nsBaseDragService
@@ -436,16 +438,11 @@ nsDragService::SetAlphaPixmap(SourceSurface *aSurface,
 
     gdk_drawable_set_colormap(GDK_DRAWABLE(pixmap), alphaColormap);
 
-    // Make a gfxXlibSurface wrapped around the pixmap to render on
-    RefPtr<gfxASurface> xPixmapSurface =
-         nsWindow::GetSurfaceForGdkDrawable(GDK_DRAWABLE(pixmap),
-                                            dragRect.Size());
-    if (!xPixmapSurface)
-      return false;
-
+    // Make a DrawTarget wrapped around the pixmap to render on
     RefPtr<DrawTarget> dt =
-    gfxPlatform::GetPlatform()->
-      CreateDrawTargetForSurface(xPixmapSurface, IntSize(dragRect.width, dragRect.height));
+         nsWindow::GetDrawTargetForGdkDrawable(GDK_DRAWABLE(pixmap),
+                                               IntSize(dragRect.width,
+                                                       dragRect.height));
     if (!dt)
       return false;
 
@@ -468,6 +465,13 @@ nsDragService::SetAlphaPixmap(SourceSurface *aSurface,
 #ifdef cairo_image_surface_create
 #error "Looks like we're including Mozilla's cairo instead of system cairo"
 #endif
+    // Prior to GTK 3.9.12, cairo surfaces passed into gtk_drag_set_icon_surface
+    // had their shape information derived from the alpha channel and used with
+    // the X SHAPE extension instead of being displayed as an ARGB window.
+    // See bug 1249604.
+    if (gtk_check_version(3, 9, 12))
+      return false;
+
     // TODO: grab X11 pixmap or image data instead of expensive readback.
     cairo_surface_t *surf = cairo_image_surface_create(CAIRO_FORMAT_ARGB32,
                                                        dragRect.width,
@@ -475,8 +479,8 @@ nsDragService::SetAlphaPixmap(SourceSurface *aSurface,
     if (!surf)
         return false;
 
-    RefPtr<DrawTarget> dt = gfxPlatform::GetPlatform()->
-        CreateDrawTargetForData(cairo_image_surface_get_data(surf),
+    RefPtr<DrawTarget> dt = gfxPlatform::CreateDrawTargetForData(
+                                cairo_image_surface_get_data(surf),
                                 dragRect.Size(),
                                 cairo_image_surface_get_stride(surf),
                                 SurfaceFormat::B8G8R8A8);
@@ -963,12 +967,14 @@ nsDragService::GetData(nsITransferable * aTransferable,
             } // else we try one last ditch effort to find our data
 
             if (dataFound) {
-                // the DOM only wants LF, so convert from MacOS line endings
-                // to DOM line endings.
-                nsLinebreakHelpers::ConvertPlatformToDOMLinebreaks(
-                             flavorStr,
-                             &mTargetDragData,
-                             reinterpret_cast<int*>(&mTargetDragDataLen));
+                if (strcmp(flavorStr, kCustomTypesMime) != 0) {
+                  // the DOM only wants LF, so convert from MacOS line endings
+                  // to DOM line endings.
+                  nsLinebreakHelpers::ConvertPlatformToDOMLinebreaks(
+                               flavorStr,
+                               &mTargetDragData,
+                               reinterpret_cast<int*>(&mTargetDragDataLen));
+                }
         
                 // put it into the transferable.
                 nsCOMPtr<nsISupports> genericDataWrapper;
@@ -1659,7 +1665,11 @@ void nsDragService::SetDragIcon(GdkDragContext* aContext)
 
     // If a popup is set as the drag image, use its widget. Otherwise, use
     // the surface that DrawDrag created.
-    if (mDragPopup) {
+    //
+    // XXX: Disable drag popups on GTK 3.19.4 and above: see bug 1264454.
+    //      Fix this once a new GTK version ships that does not destroy our
+    //      widget in gtk_drag_set_icon_widget.
+    if (mDragPopup && gtk_check_version(3, 19, 4)) {
         GtkWidget* gtkWidget = nullptr;
         nsIFrame* frame = mDragPopup->GetPrimaryFrame();
         if (frame) {

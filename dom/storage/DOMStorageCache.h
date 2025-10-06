@@ -15,7 +15,7 @@
 #include "nsHashKeys.h"
 #include "mozilla/Monitor.h"
 #include "mozilla/Telemetry.h"
-#include "nsAutoPtr.h"
+#include "mozilla/Atomics.h"
 
 namespace mozilla {
 namespace dom {
@@ -101,7 +101,7 @@ public:
 
   // The set of methods that are invoked by DOM storage web API.
   // We are passing the DOMStorage object just to let the cache
-  // read properties like mPrivate and mSessionOnly.
+  // read properties like mPrincipal and mSessionOnly.
   // Get* methods return error when load from the database has failed.
   nsresult GetLength(const DOMStorage* aStorage, uint32_t* aRetval);
   nsresult GetKey(const DOMStorage* aStorage, uint32_t index, nsAString& aRetval);
@@ -220,8 +220,9 @@ private:
   // Flag that is initially false.  When the cache is about to work with
   // the database (i.e. it is persistent) this flags is set to true after
   // all keys and coresponding values are loaded from the database.
-  // This flag never goes from true back to false.
-  bool mLoaded;
+  // This flag never goes from true back to false.  Since this flag is
+  // critical for mData hashtable synchronization, it's made atomic.
+  Atomic<bool, ReleaseAcquire> mLoaded;
 
   // Result of load from the database.  Valid after mLoaded flag has been set.
   nsresult mLoadResult;

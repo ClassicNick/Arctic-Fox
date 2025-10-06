@@ -1,4 +1,4 @@
-# -*- Mode: python; c-basic-offset: 4; indent-tabs-mode: nil; tab-width: 40 -*-
+# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
 # vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -8,7 +8,8 @@
 ASFLAGS += CONFIG['FFVPX_ASFLAGS']
 ASFLAGS += ['-I%s/media/ffvpx' % TOPSRCDIR]
 
-if CONFIG['FFVPX_AS']:
+if CONFIG['FFVPX_ASFLAGS']:
+    USE_YASM = True
     if CONFIG['OS_ARCH'] == 'WINNT':
        # Fix inline symbols and math defines for windows.
         DEFINES['_USE_MATH_DEFINES'] = True
@@ -49,8 +50,8 @@ if CONFIG['GNU_CC']:
             '-Wno-incompatible-pointer-types-discards-qualifiers',
             '-Wno-logical-op-parentheses',
         ]
-    # Force visibility of cpu symbols
-    CFLAGS += ['-include', 'cpu_perms.h']
+    # Force visibility of cpu and av_log symbols.
+    CFLAGS += ['-include', 'libavutil_visibility.h']
 elif CONFIG['_MSC_VER']:
     CFLAGS += [
         '-wd4090', # 'return' : different 'const' qualifiers
@@ -77,10 +78,12 @@ elif CONFIG['_MSC_VER']:
         '-wd4057', '-wd4204', '-wd4706', '-wd4305', '-wd4152', '-wd4324',
         '-we4013', '-wd4100', '-wd4214', '-wd4307', '-wd4273', '-wd4554',
     ]
-    if CONFIG['_MSC_VER'] < '1900':
-        DEFINES['MSVC_2013_OR_LOWER'] = True
-        DEFINES['snprintf'] = "avpriv_snprintf"
-        DEFINES['_snprintf'] = "avpriv_snprintf"
-        DEFINES['vsnprintf'] = "avpriv_vsnprintf"
 
 DEFINES['HAVE_AV_CONFIG_H'] = True
+
+if CONFIG['MOZ_DEBUG']:
+    # Enable all assertions in debug builds.
+    DEFINES['ASSERT_LEVEL'] = 2
+elif not CONFIG['RELEASE_BUILD']:
+    # Enable fast assertions in opt builds of Nightly and Aurora.
+    DEFINES['ASSERT_LEVEL'] = 1

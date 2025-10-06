@@ -8,7 +8,6 @@
 
 #include "mozilla/RefPtr.h"
 #include "ImageContainer.h"
-#include "nsAutoPtr.h"
 #include "d3d9.h"
 #include "mozilla/layers/TextureClientRecycleAllocator.h"
 
@@ -47,7 +46,7 @@ protected:
 // resource is ready to use.
 class D3D9SurfaceImage : public Image {
 public:
-  explicit D3D9SurfaceImage(bool aIsFirstFrame);
+  explicit D3D9SurfaceImage();
   virtual ~D3D9SurfaceImage();
 
   HRESULT AllocateAndCopy(D3D9RecycleAllocator* aAllocator,
@@ -63,19 +62,17 @@ public:
 
   virtual TextureClient* GetTextureClient(CompositableClient* aClient) override;
 
-  virtual bool IsValid() override;
+  already_AddRefed<IDirect3DSurface9> GetD3D9Surface();
+
+  virtual bool IsValid() override { return mValid; }
+
+  void Invalidate() { mValid = false; }
 
 private:
 
-  // Blocks the calling thread until the copy operation started in SetData()
-  // is complete, whereupon the texture is safe to use.
-  void EnsureSynchronized();
-
   gfx::IntSize mSize;
-  RefPtr<IDirect3DQuery9> mQuery;
   RefPtr<TextureClient> mTextureClient;
   bool mValid;
-  bool mIsFirstFrame;
 };
 
 } // namepace layers

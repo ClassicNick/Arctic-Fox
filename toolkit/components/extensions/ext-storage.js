@@ -10,25 +10,22 @@ var {
   EventManager,
 } = ExtensionUtils;
 
-extensions.registerSchemaAPI("storage", "storage", (extension, context) => {
+extensions.registerSchemaAPI("storage", context => {
+  let {extension} = context;
   return {
     storage: {
       local: {
-        get: function(keys, callback) {
-          return context.wrapPromise(
-            ExtensionStorage.get(extension.id, keys), callback);
+        get: function(keys) {
+          return ExtensionStorage.get(extension.id, keys);
         },
-        set: function(items, callback) {
-          return context.wrapPromise(
-            ExtensionStorage.set(extension.id, items), callback);
+        set: function(items) {
+          return ExtensionStorage.set(extension.id, items, context.cloneScope);
         },
-        remove: function(items, callback) {
-          return context.wrapPromise(
-            ExtensionStorage.remove(extension.id, items), callback);
+        remove: function(items) {
+          return ExtensionStorage.remove(extension.id, items);
         },
-        clear: function(callback) {
-          return context.wrapPromise(
-            ExtensionStorage.clear(extension.id), callback);
+        clear: function() {
+          return ExtensionStorage.clear(extension.id);
         },
       },
 

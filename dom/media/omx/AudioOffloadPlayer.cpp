@@ -20,6 +20,7 @@
 #include "AudioOffloadPlayer.h"
 #include "nsComponentManagerUtils.h"
 #include "nsITimer.h"
+#include "MediaOmxCommonDecoder.h"
 #include "mozilla/dom/HTMLMediaElement.h"
 #include "VideoUtils.h"
 #include "mozilla/dom/power/PowerManagerService.h"
@@ -58,8 +59,7 @@ AudioOffloadPlayer::AudioOffloadPlayer(MediaOmxCommonDecoder* aObserver) :
   mSampleRate(0),
   mStartPosUs(0),
   mPositionTimeMediaUs(-1),
-  mInputBuffer(nullptr),
-  mObserver(aObserver)
+  mInputBuffer(nullptr)
 {
   MOZ_ASSERT(NS_IsMainThread());
 
@@ -73,6 +73,17 @@ AudioOffloadPlayer::AudioOffloadPlayer(MediaOmxCommonDecoder* aObserver) :
 #endif
   mAudioSink = new AudioOutput(mSessionId,
       IPCThreadState::self()->getCallingUid());
+
+  nsCOMPtr<nsIThread> thread;
+  MOZ_ALWAYS_SUCCEEDS(NS_GetMainThread(getter_AddRefs(thread)));
+  mPositionChanged = mOnPositionChanged.Connect(
+    thread, aObserver, &MediaOmxCommonDecoder::NotifyOffloadPlayerPositionChanged);
+  mPlaybackEnded = mOnPlaybackEnded.Connect(
+    thread, aObserver, &MediaDecoder::PlaybackEnded);
+  mPlayerTearDown = mOnPlayerTearDown.Connect(
+    thread, aObserver, &MediaOmxCommonDecoder::AudioOffloadTearDown);
+  mSeekingStarted = mOnSeekingStarted.Connect(
+    thread, aObserver, &MediaDecoder::SeekingStarted);
 }
 
 AudioOffloadPlayer::~AudioOffloadPlayer()
@@ -83,6 +94,13 @@ AudioOffloadPlayer::~AudioOffloadPlayer()
 #else
   AudioSystem::releaseAudioSessionId(mSessionId);
 #endif
+
+  // Disconnect the listeners to prevent notifications from reaching
+  // the MediaOmxCommonDecoder object after shutdown.
+  mPositionChanged.Disconnect();
+  mPlaybackEnded.Disconnect();
+  mPlayerTearDown.Disconnect();
+  mSeekingStarted.Disconnect();
 }
 
 void AudioOffloadPlayer::SetSource(const sp<MediaSource> &aSource)
@@ -346,19 +364,15 @@ status_t AudioOffloadPlayer::DoSeek()
   CHECK(mAudioSink.get());
 
   AUDIO_OFFLOAD_LOG(LogLevel::Debug,
-                    "DoSeek ( %lld )", mSeekTarget.GetTime().ToMicroseconds());
+                    ("DoSeek ( %lld )", mSeekTarget.GetTime().ToMicroseconds()));
 
   mReachedEOS = false;
   mPositionTimeMediaUs = -1;
   mStartPosUs = mSeekTarget.GetTime().ToMicroseconds();
 
-  if (!mSeekPromise.IsEmpty()) {
-    nsCOMPtr<nsIRunnable> nsEvent =
-      NS_NewRunnableMethodWithArg<MediaDecoderEventVisibility>(
-        mObserver,
-        &MediaDecoder::SeekingStarted,
-        mSeekTarget.mEventVisibility);
-    NS_DispatchToCurrentThread(nsEvent);
+  if (!mSeekPromise.IsEmpty() &&
+      mSeekTarget.mEventVisibility == MediaDecoderEventVisibility::Observable) {
+    mOnSeekingStarted.Notify();
   }
 
   if (mPlaying) {
@@ -425,16 +439,12 @@ void AudioOffloadPlayer::NotifyAudioEOS()
     MediaDecoder::SeekResolveValue val(mReachedEOS, mSeekTarget.mEventVisibility);
     mSeekPromise.Resolve(val, __func__);
   }
-  nsCOMPtr<nsIRunnable> nsEvent = NS_NewRunnableMethod(mObserver,
-      &MediaDecoder::PlaybackEnded);
-  NS_DispatchToMainThread(nsEvent);
+  mOnPlaybackEnded.Notify();
 }
 
 void AudioOffloadPlayer::NotifyPositionChanged()
 {
-  nsCOMPtr<nsIRunnable> nsEvent =
-    NS_NewRunnableMethod(mObserver, &MediaOmxCommonDecoder::NotifyOffloadPlayerPositionChanged);
-  NS_DispatchToMainThread(nsEvent);
+  mOnPositionChanged.Notify();
 }
 
 void AudioOffloadPlayer::NotifyAudioTearDown()
@@ -448,9 +458,7 @@ void AudioOffloadPlayer::NotifyAudioTearDown()
     MediaDecoder::SeekResolveValue val(mReachedEOS, mSeekTarget.mEventVisibility);
     mSeekPromise.Resolve(val, __func__);
   }
-  nsCOMPtr<nsIRunnable> nsEvent = NS_NewRunnableMethod(mObserver,
-      &MediaOmxCommonDecoder::AudioOffloadTearDown);
-  NS_DispatchToMainThread(nsEvent);
+  mOnPlayerTearDown.Notify();
 }
 
 // static
@@ -502,7 +510,6 @@ size_t AudioOffloadPlayer::FillBuffer(void* aData, size_t aSize)
   while (sizeRemaining > 0) {
     MediaSource::ReadOptions options;
     bool refreshSeekTime = false;
-
     {
       android::Mutex::Autolock autoLock(mLock);
 
@@ -519,7 +526,6 @@ size_t AudioOffloadPlayer::FillBuffer(void* aData, size_t aSize)
     }
 
     if (!mInputBuffer) {
-
       status_t err;
       err = mSource->read(&mInputBuffer, &options);
 
@@ -573,7 +579,7 @@ size_t AudioOffloadPlayer::FillBuffer(void* aData, size_t aSize)
         AUDIO_OFFLOAD_LOG(LogLevel::Debug, ("seek is updated during unlocking mLock"));
       }
 
-        if (refreshSeekTime) {
+      if (refreshSeekTime) {
         NotifyPositionChanged();
 
         // need to adjust the mStartPosUs for offload decoding since parser

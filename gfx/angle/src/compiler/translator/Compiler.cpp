@@ -7,6 +7,7 @@
 #include "compiler/translator/Cache.h"
 #include "compiler/translator/Compiler.h"
 #include "compiler/translator/CallDAG.h"
+#include "compiler/translator/DeferGlobalInitializers.h"
 #include "compiler/translator/ForLoopUnroll.h"
 #include "compiler/translator/Initialize.h"
 #include "compiler/translator/InitializeParseContext.h"
@@ -20,6 +21,7 @@
 #include "compiler/translator/ScalarizeVecAndMatConstructorArgs.h"
 #include "compiler/translator/UnfoldShortCircuitAST.h"
 #include "compiler/translator/ValidateLimitations.h"
+#include "compiler/translator/ValidateMaxParameters.h"
 #include "compiler/translator/ValidateOutputs.h"
 #include "compiler/translator/VariablePacker.h"
 #include "compiler/translator/depgraph/DependencyGraph.h"
@@ -141,6 +143,7 @@ TCompiler::TCompiler(sh::GLenum type, ShShaderSpec spec, ShShaderOutput output)
       maxUniformVectors(0),
       maxExpressionComplexity(0),
       maxCallStackDepth(0),
+      maxFunctionParameters(0),
       fragmentPrecisionHigh(false),
       clampingStrategy(SH_CLAMP_WITH_CLAMP_INTRINSIC),
       builtInFunctionEmulator(),
@@ -169,7 +172,8 @@ bool TCompiler::Init(const ShBuiltInResources& resources)
         resources.MaxVertexUniformVectors :
         resources.MaxFragmentUniformVectors;
     maxExpressionComplexity = resources.MaxExpressionComplexity;
-    maxCallStackDepth = resources.MaxCallStackDepth;
+    maxCallStackDepth       = resources.MaxCallStackDepth;
+    maxFunctionParameters   = resources.MaxFunctionParameters;
 
     SetGlobalPoolAllocator(&allocator);
 
@@ -294,12 +298,14 @@ TIntermNode *TCompiler::compileTreeImpl(const char *const shaderStrings[],
         // Unroll for-loop markup needs to happen after validateLimitations pass.
         if (success && (compileOptions & SH_UNROLL_FOR_LOOP_WITH_INTEGER_INDEX))
         {
-            ForLoopUnrollMarker marker(ForLoopUnrollMarker::kIntegerIndex);
+            ForLoopUnrollMarker marker(ForLoopUnrollMarker::kIntegerIndex,
+                                       shouldRunLoopAndIndexingValidation(compileOptions));
             root->traverse(&marker);
         }
         if (success && (compileOptions & SH_UNROLL_FOR_LOOP_WITH_SAMPLER_ARRAY_INDEX))
         {
-            ForLoopUnrollMarker marker(ForLoopUnrollMarker::kSamplerArrayIndex);
+            ForLoopUnrollMarker marker(ForLoopUnrollMarker::kSamplerArrayIndex,
+                                       shouldRunLoopAndIndexingValidation(compileOptions));
             root->traverse(&marker);
             if (marker.samplerArrayIndexIsFloatLoopIndex())
             {
@@ -312,7 +318,10 @@ TIntermNode *TCompiler::compileTreeImpl(const char *const shaderStrings[],
         // Built-in function emulation needs to happen after validateLimitations pass.
         if (success)
         {
+            // TODO(jmadill): Remove global pool allocator.
+            GetGlobalPoolAllocator()->lock();
             initBuiltInFunctionEmulator(&builtInFunctionEmulator, compileOptions);
+            GetGlobalPoolAllocator()->unlock();
             builtInFunctionEmulator.MarkBuiltInFunctionsForEmulation(root);
         }
 
@@ -320,7 +329,10 @@ TIntermNode *TCompiler::compileTreeImpl(const char *const shaderStrings[],
         if (success && (compileOptions & SH_CLAMP_INDIRECT_ARRAY_BOUNDS))
             arrayBoundsClamper.MarkIndirectArrayBoundsForClamping(root);
 
-        if (success && shaderType == GL_VERTEX_SHADER && (compileOptions & SH_INIT_GL_POSITION))
+        // gl_Position is always written in compatibility output mode
+        if (success && shaderType == GL_VERTEX_SHADER &&
+            ((compileOptions & SH_INIT_GL_POSITION) ||
+             (outputType == SH_GLSL_COMPATIBILITY_OUTPUT)))
             initializeGLPosition(root);
 
         // This pass might emit short circuits so keep it before the short circuit unfolding
@@ -367,6 +379,11 @@ TIntermNode *TCompiler::compileTreeImpl(const char *const shaderStrings[],
         {
             RegenerateStructNames gen(symbolTable, shaderVersion);
             root->traverse(&gen);
+        }
+
+        if (success)
+        {
+            DeferGlobalInitializers(root);
         }
     }
 
@@ -423,11 +440,6 @@ bool TCompiler::InitBuiltInSymbolTable(const ShBuiltInResources &resources)
     floatingPoint.secondarySize = 1;
     floatingPoint.array = false;
 
-    TPublicType sampler;
-    sampler.primarySize = 1;
-    sampler.secondarySize = 1;
-    sampler.array = false;
-
     switch(shaderType)
     {
       case GL_FRAGMENT_SHADER:
@@ -440,14 +452,15 @@ bool TCompiler::InitBuiltInSymbolTable(const ShBuiltInResources &resources)
       default:
         assert(false && "Language not supported");
     }
-    // We set defaults for all the sampler types, even those that are
+    // Set defaults for sampler types that have default precision, even those that are
     // only available if an extension exists.
-    for (int samplerType = EbtGuardSamplerBegin + 1;
-         samplerType < EbtGuardSamplerEnd; ++samplerType)
-    {
-        sampler.type = static_cast<TBasicType>(samplerType);
-        symbolTable.setDefaultPrecision(sampler, EbpLow);
-    }
+    // New sampler types in ESSL3 don't have default precision. ESSL1 types do.
+    initSamplerDefaultPrecision(EbtSampler2D);
+    initSamplerDefaultPrecision(EbtSamplerCube);
+    // SamplerExternalOES is specified in the extension to have default precision.
+    initSamplerDefaultPrecision(EbtSamplerExternalOES);
+    // It isn't specified whether Sampler2DRect has default precision.
+    initSamplerDefaultPrecision(EbtSampler2DRect);
 
     InsertBuiltInFunctions(shaderType, shaderSpec, resources, symbolTable);
 
@@ -456,9 +469,22 @@ bool TCompiler::InitBuiltInSymbolTable(const ShBuiltInResources &resources)
     return true;
 }
 
+void TCompiler::initSamplerDefaultPrecision(TBasicType samplerType)
+{
+    ASSERT(samplerType > EbtGuardSamplerBegin && samplerType < EbtGuardSamplerEnd);
+    TPublicType sampler;
+    sampler.primarySize   = 1;
+    sampler.secondarySize = 1;
+    sampler.array         = false;
+    sampler.type          = samplerType;
+    symbolTable.setDefaultPrecision(sampler, EbpLow);
+}
+
 void TCompiler::setResourceString()
 {
     std::ostringstream strstream;
+
+    // clang-format off
     strstream << ":MaxVertexAttribs:" << compileResources.MaxVertexAttribs
               << ":MaxVertexUniformVectors:" << compileResources.MaxVertexUniformVectors
               << ":MaxVaryingVectors:" << compileResources.MaxVaryingVectors
@@ -469,11 +495,14 @@ void TCompiler::setResourceString()
               << ":MaxDrawBuffers:" << compileResources.MaxDrawBuffers
               << ":OES_standard_derivatives:" << compileResources.OES_standard_derivatives
               << ":OES_EGL_image_external:" << compileResources.OES_EGL_image_external
+              << ":OES_EGL_image_external_essl3:" << compileResources.OES_EGL_image_external_essl3
+              << ":NV_EGL_stream_consumer_external:" << compileResources.NV_EGL_stream_consumer_external
               << ":ARB_texture_rectangle:" << compileResources.ARB_texture_rectangle
               << ":EXT_draw_buffers:" << compileResources.EXT_draw_buffers
               << ":FragmentPrecisionHigh:" << compileResources.FragmentPrecisionHigh
               << ":MaxExpressionComplexity:" << compileResources.MaxExpressionComplexity
               << ":MaxCallStackDepth:" << compileResources.MaxCallStackDepth
+              << ":MaxFunctionParameters:" << compileResources.MaxFunctionParameters
               << ":EXT_blend_func_extended:" << compileResources.EXT_blend_func_extended
               << ":EXT_frag_depth:" << compileResources.EXT_frag_depth
               << ":EXT_shader_texture_lod:" << compileResources.EXT_shader_texture_lod
@@ -487,6 +516,7 @@ void TCompiler::setResourceString()
               << ":MaxDualSourceDrawBuffers:" << compileResources.MaxDualSourceDrawBuffers
               << ":NV_draw_buffers:" << compileResources.NV_draw_buffers
               << ":WEBGL_debug_shader_precision:" << compileResources.WEBGL_debug_shader_precision;
+    // clang-format on
 
     builtInResourcesString = strstream.str();
 }
@@ -598,7 +628,7 @@ bool TCompiler::tagUsedFunctions()
     }
 
     infoSink.info.prefix(EPrefixError);
-    infoSink.info << "Missing main()";
+    infoSink.info << "Missing main()\n";
     return false;
 }
 
@@ -689,7 +719,7 @@ void TCompiler::rewriteCSSShader(TIntermNode* root)
 
 bool TCompiler::validateLimitations(TIntermNode* root)
 {
-    ValidateLimitations validate(shaderType, infoSink.info);
+    ValidateLimitations validate(shaderType, &infoSink.info);
     root->traverse(&validate);
     return validate.numErrors() == 0;
 }
@@ -735,15 +765,10 @@ bool TCompiler::limitExpressionComplexity(TIntermNode* root)
         return false;
     }
 
-    TDependencyGraph graph(root);
-
-    for (TFunctionCallVector::const_iterator iter = graph.beginUserDefinedFunctionCalls();
-         iter != graph.endUserDefinedFunctionCalls();
-         ++iter)
+    if (!ValidateMaxParameters::validate(root, maxFunctionParameters))
     {
-        TGraphFunctionCall* samplerSymbol = *iter;
-        TDependencyGraphTraverser graphTraverser;
-        samplerSymbol->traverse(&graphTraverser);
+        infoSink.info << "Function has too many parameters.";
+        return false;
     }
 
     return true;

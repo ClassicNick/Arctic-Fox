@@ -35,6 +35,8 @@ XPCOMUtils.defineLazyModuleGetter(this, "ProfileAge",
                                   "resource://gre/modules/ProfileAge.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "UpdateUtils",
                                   "resource://gre/modules/UpdateUtils.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "WindowsRegistry",
+                                  "resource://gre/modules/WindowsRegistry.jsm");
 
 const CHANGE_THROTTLE_INTERVAL_MS = 5 * 60 * 1000;
 
@@ -86,8 +88,20 @@ this.TelemetryEnvironment = {
   RECORD_PREF_VALUE: 2, // We only record user-set prefs.
 
   // Testing method
-  _watchPreferences: function(prefMap) {
+  testWatchPreferences: function(prefMap) {
     return getGlobal()._watchPreferences(prefMap);
+  },
+
+  /**
+   * Intended for use in tests only.
+   *
+   * In multiple tests we need a way to shut and re-start telemetry together
+   * with TelemetryEnvironment. This is problematic due to the fact that
+   * TelemetryEnvironment is a singleton. We, therefore, need this helper
+   * method to be able to re-set TelemetryEnvironment.
+   */
+  testReset: function() {
+    return getGlobal().reset();
   },
 };
 
@@ -116,8 +130,8 @@ const DEFAULT_ENVIRONMENT_PREFS = new Map([
   ["browser.search.suggest.enabled", {what: RECORD_PREF_VALUE}],
   ["browser.startup.homepage", {what: RECORD_PREF_STATE}],
   ["browser.startup.page", {what: RECORD_PREF_VALUE}],
+  ["browser.tabs.animate", {what: RECORD_PREF_VALUE}],
   ["browser.urlbar.suggest.searches", {what: RECORD_PREF_VALUE}],
-  ["browser.urlbar.unifiedcomplete", {what: RECORD_PREF_VALUE}],
   ["browser.urlbar.userMadeSearchSuggestionsChoice", {what: RECORD_PREF_VALUE}],
   ["devtools.chrome.enabled", {what: RECORD_PREF_VALUE}],
   ["devtools.debugger.enabled", {what: RECORD_PREF_VALUE}],
@@ -125,6 +139,7 @@ const DEFAULT_ENVIRONMENT_PREFS = new Map([
   ["dom.ipc.plugins.asyncInit.enabled", {what: RECORD_PREF_VALUE}],
   ["dom.ipc.plugins.enabled", {what: RECORD_PREF_VALUE}],
   ["dom.ipc.processCount", {what: RECORD_PREF_VALUE, requiresRestart: true}],
+  ["dom.max_script_run_time", {what: RECORD_PREF_VALUE}],
   ["experiments.manifest.uri", {what: RECORD_PREF_VALUE}],
   ["extensions.autoDisableScopes", {what: RECORD_PREF_VALUE}],
   ["extensions.enabledScopes", {what: RECORD_PREF_VALUE}],
@@ -146,7 +161,7 @@ const DEFAULT_ENVIRONMENT_PREFS = new Map([
   ["layers.componentalpha.enabled", {what: RECORD_PREF_VALUE}],
   ["layers.d3d11.disable-warp", {what: RECORD_PREF_VALUE}],
   ["layers.d3d11.force-warp", {what: RECORD_PREF_VALUE}],
-  ["layers.offmainthreadcomposition.enabled", {what: RECORD_PREF_VALUE}],
+  ["layers.offmainthreadcomposition.force-disabled", {what: RECORD_PREF_VALUE}],
   ["layers.prefer-d3d9", {what: RECORD_PREF_VALUE}],
   ["layers.prefer-opengl", {what: RECORD_PREF_VALUE}],
   ["layout.css.devPixelsPerPx", {what: RECORD_PREF_VALUE}],
@@ -176,12 +191,14 @@ const PREF_PARTNER_ID = "mozilla.partner.id";
 const PREF_UPDATE_ENABLED = "app.update.enabled";
 const PREF_UPDATE_AUTODOWNLOAD = "app.update.auto";
 const PREF_SEARCH_COHORT = "browser.search.cohort";
+const PREF_E10S_COHORT = "e10s.rollout.cohort";
 
-const EXPERIMENTS_CHANGED_TOPIC = "experiments-changed";
-const SEARCH_ENGINE_MODIFIED_TOPIC = "browser-search-engine-modified";
-const SEARCH_SERVICE_TOPIC = "browser-search-service";
 const COMPOSITOR_CREATED_TOPIC = "compositor:created";
 const DISTRIBUTION_CUSTOMIZATION_COMPLETE_TOPIC = "distribution-customization-complete";
+const EXPERIMENTS_CHANGED_TOPIC = "experiments-changed";
+const GFX_FEATURES_READY_TOPIC = "gfx-features-ready";
+const SEARCH_ENGINE_MODIFIED_TOPIC = "browser-search-engine-modified";
+const SEARCH_SERVICE_TOPIC = "browser-search-service";
 
 /**
  * Enforces the parameter to a boolean value.
@@ -264,7 +281,7 @@ function getGfxField(aPropertyName, aDefault) {
   try {
     // Accessing the field may throw if |aPropertyName| does not exist.
     let gfxProp = gfxInfo[aPropertyName];
-    if (gfxProp !== "") {
+    if (gfxProp !== undefined && gfxProp !== "") {
       return gfxProp;
     }
   } catch (e) {}
@@ -314,16 +331,17 @@ function getGfxAdapter(aSuffix = "") {
 }
 
 /**
- * Gets the service pack information on Windows platforms. This was copied from
- * nsUpdateService.js.
+ * Gets the service pack and build information on Windows platforms. The initial version
+ * was copied from nsUpdateService.js.
  *
- * @return An object containing the service pack major and minor versions.
+ * @return An object containing the service pack major and minor versions, along with the
+ *         build number.
  */
-function getServicePack() {
-  const UNKNOWN_SERVICE_PACK = {major: null, minor: null};
+function getWindowsVersionInfo() {
+  const UNKNOWN_VERSION_INFO = {servicePackMajor: null, servicePackMinor: null, buildNumber: null};
 
   if (AppConstants.platform !== "win") {
-    return UNKNOWN_SERVICE_PACK;
+    return UNKNOWN_VERSION_INFO;
   }
 
   const BYTE = ctypes.uint8_t;
@@ -359,16 +377,17 @@ function getServicePack() {
     let winVer = OSVERSIONINFOEXW();
     winVer.dwOSVersionInfoSize = OSVERSIONINFOEXW.size;
 
-    if(0 === GetVersionEx(winVer.address())) {
-      throw("Failure in GetVersionEx (returned 0)");
+    if (0 === GetVersionEx(winVer.address())) {
+      throw ("Failure in GetVersionEx (returned 0)");
     }
 
     return {
-      major: winVer.wServicePackMajor,
-      minor: winVer.wServicePackMinor,
+      servicePackMajor: winVer.wServicePackMajor,
+      servicePackMinor: winVer.wServicePackMinor,
+      buildNumber: winVer.dwBuildNumber,
     };
   } catch (e) {
-    return UNKNOWN_SERVICE_PACK;
+    return UNKNOWN_VERSION_INFO;
   } finally {
     kernel32.close();
   }
@@ -505,7 +524,8 @@ EnvironmentAddonBuilder.prototype = {
     };
 
     let result = {
-      changed: !ObjectUtils.deepEqual(addons, this._environment._currentEnvironment.addons),
+      changed: !this._environment._currentEnvironment.addons ||
+               !ObjectUtils.deepEqual(addons, this._environment._currentEnvironment.addons),
     };
 
     if (result.changed) {
@@ -689,7 +709,7 @@ EnvironmentAddonBuilder.prototype = {
         experimentInfo.id = activeExperiment;
         experimentInfo.branch = experiments.getActiveExperimentBranch();
       }
-    } catch(e) {
+    } catch (e) {
       // If this is not Firefox, the import will fail.
     }
 
@@ -867,7 +887,7 @@ EnvironmentCache.prototype = {
     this._log.trace("_startWatchingPrefs - " + this._watchedPrefs);
 
     for (let [pref, options] of this._watchedPrefs) {
-      if(!("requiresRestart" in options) || !options.requiresRestart) {
+      if (!("requiresRestart" in options) || !options.requiresRestart) {
         Preferences.observe(pref, this._onPrefChanged, this);
       }
     }
@@ -887,7 +907,7 @@ EnvironmentCache.prototype = {
     this._log.trace("_stopWatchingPrefs");
 
     for (let [pref, options] of this._watchedPrefs) {
-      if(!("requiresRestart" in options) || !options.requiresRestart) {
+      if (!("requiresRestart" in options) || !options.requiresRestart) {
         Preferences.ignore(pref, this._onPrefChanged, this);
       }
     }
@@ -895,20 +915,21 @@ EnvironmentCache.prototype = {
 
   _addObservers: function () {
     // Watch the search engine change and service topics.
-    Services.obs.addObserver(this, SEARCH_ENGINE_MODIFIED_TOPIC, false);
-    Services.obs.addObserver(this, SEARCH_SERVICE_TOPIC, false);
     Services.obs.addObserver(this, COMPOSITOR_CREATED_TOPIC, false);
     Services.obs.addObserver(this, DISTRIBUTION_CUSTOMIZATION_COMPLETE_TOPIC, false);
+    Services.obs.addObserver(this, GFX_FEATURES_READY_TOPIC, false);
+    Services.obs.addObserver(this, SEARCH_ENGINE_MODIFIED_TOPIC, false);
+    Services.obs.addObserver(this, SEARCH_SERVICE_TOPIC, false);
   },
 
   _removeObservers: function () {
-    // Remove the search engine change and service observers.
-    Services.obs.removeObserver(this, SEARCH_ENGINE_MODIFIED_TOPIC);
-    Services.obs.removeObserver(this, SEARCH_SERVICE_TOPIC);
     Services.obs.removeObserver(this, COMPOSITOR_CREATED_TOPIC);
     try {
       Services.obs.removeObserver(this, DISTRIBUTION_CUSTOMIZATION_COMPLETE_TOPIC);
-    } catch(ex) {}
+    } catch (ex) {}
+    Services.obs.removeObserver(this, GFX_FEATURES_READY_TOPIC);
+    Services.obs.removeObserver(this, SEARCH_ENGINE_MODIFIED_TOPIC);
+    Services.obs.removeObserver(this, SEARCH_SERVICE_TOPIC);
   },
 
   observe: function (aSubject, aTopic, aData) {
@@ -928,6 +949,7 @@ EnvironmentCache.prototype = {
         // Now that the search engine init is complete, record the default search choice.
         this._updateSearchEngine();
         break;
+      case GFX_FEATURES_READY_TOPIC:
       case COMPOSITOR_CREATED_TOPIC:
         // Full graphics information is not available until we have created at
         // least one off-main-thread-composited window. Thus we wait for the
@@ -1110,6 +1132,7 @@ EnvironmentCache.prototype = {
     this._currentEnvironment.settings = {
       blocklistEnabled: Preferences.get(PREF_BLOCKLIST_ENABLED, true),
       e10sEnabled: Services.appinfo.browserTabsRemoteAutostart,
+      e10sCohort: Preferences.get(PREF_E10S_COHORT, "unknown"),
       telemetryEnabled: Utils.isTelemetryEnabled,
       locale: getBrowserLocale(),
       update: {
@@ -1190,8 +1213,8 @@ EnvironmentCache.prototype = {
     };
 
     const CPU_EXTENSIONS = ["hasMMX", "hasSSE", "hasSSE2", "hasSSE3", "hasSSSE3",
-                            "hasSSE4A", "hasSSE4_1", "hasSSE4_2", "hasEDSP", "hasARMv6",
-                            "hasARMv7", "hasNEON"];
+                            "hasSSE4A", "hasSSE4_1", "hasSSE4_2", "hasAVX", "hasAVX2",
+                            "hasEDSP", "hasARMv6", "hasARMv7", "hasNEON"];
 
     // Enumerate the available CPU extensions.
     let availableExts = [];
@@ -1238,9 +1261,23 @@ EnvironmentCache.prototype = {
     if (["gonk", "android"].includes(AppConstants.platform)) {
       data.kernelVersion = getSysinfoProperty("kernel_version", null);
     } else if (AppConstants.platform === "win") {
-      let servicePack = getServicePack();
-      data.servicePackMajor = servicePack.major;
-      data.servicePackMinor = servicePack.minor;
+      // The path to the "UBR" key, queried to get additional version details on Windows.
+      const WINDOWS_UBR_KEY_PATH = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion";
+
+      let versionInfo = getWindowsVersionInfo();
+      data.servicePackMajor = versionInfo.servicePackMajor;
+      data.servicePackMinor = versionInfo.servicePackMinor;
+      // We only need the build number and UBR if we're at or above Windows 10.
+      if (typeof(data.version) === 'string' &&
+          Services.vc.compare(data.version, "10") >= 0) {
+        data.windowsBuildNumber = versionInfo.buildNumber;
+        // Query the UBR key and only add it to the environment if it's available.
+        // |readRegKey| doesn't throw, but rather returns 'undefined' on error.
+        let ubr = WindowsRegistry.readRegKey(Ci.nsIWindowsRegKey.ROOT_KEY_LOCAL_MACHINE,
+                                             WINDOWS_UBR_KEY_PATH, "UBR",
+                                             Ci.nsIWindowsRegKey.WOW64_64);
+        data.windowsUBR = (ubr !== undefined) ? ubr : null;
+      }
       data.installYear = getSysinfoProperty("installYear", null);
     }
 
@@ -1314,7 +1351,7 @@ EnvironmentCache.prototype = {
     this._log.trace("_getGFXData - Two display adapters detected.");
 
     gfxData.adapters.push(getGfxAdapter("2"));
-    gfxData.adapters[1].GPUActive = getGfxField("isGPU2Active ", null);
+    gfxData.adapters[1].GPUActive = getGfxField("isGPU2Active", null);
 
     return gfxData;
   },
@@ -1374,7 +1411,7 @@ EnvironmentCache.prototype = {
       return;
     }
 
-    if(this._delayedInitFinished) {
+    if (this._delayedInitFinished) {
       this._lastEnvironmentChangeDate = now;
     }
 
@@ -1387,4 +1424,9 @@ EnvironmentCache.prototype = {
       }
     }
   },
+
+  reset: function () {
+    this._shutdown = false;
+    this._delayedInitFinished = false;
+  }
 };

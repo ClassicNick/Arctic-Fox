@@ -95,6 +95,18 @@ function handlePCRequest(aSubject, aTopic, aData) {
   let { windowID, innerWindowID, callID, isSecure } = aSubject;
   let contentWindow = Services.wm.getOuterWindowWithId(windowID);
 
+  let mm = getMessageManagerForWindow(contentWindow);
+  if (!mm) {
+    // Workaround for Bug 1207784. To use WebRTC, add-ons right now use
+    // hiddenWindow.mozRTCPeerConnection which is only privileged on OSX. Other
+    // platforms end up here without a message manager.
+    // TODO: Remove once there's a better way (1215591).
+
+    // Skip permission check in the absence of a message manager.
+    Services.obs.notifyObservers(null, "PeerConnection:response:allow", callID);
+    return;
+  }
+
   if (!contentWindow.pendingPeerConnectionRequests) {
     setupPendingListsInitially(contentWindow);
   }
@@ -107,8 +119,6 @@ function handlePCRequest(aSubject, aTopic, aData) {
     documentURI: contentWindow.document.documentURI,
     secure: isSecure,
   };
-
-  let mm = getMessageManagerForWindow(contentWindow);
   mm.sendAsyncMessage("rtcpeer:Request", request);
 }
 
@@ -120,6 +130,11 @@ function handleGUMRequest(aSubject, aTopic, aData) {
   contentWindow.navigator.mozGetUserMediaDevices(
     constraints,
     function (devices) {
+      // If the window has been closed while we were waiting for the list of
+      // devices, there's nothing to do in the callback anymore.
+      if (contentWindow.closed)
+        return;
+
       prompt(contentWindow, aSubject.windowID, aSubject.callID,
              constraints, devices, secure);
     },
@@ -269,36 +284,28 @@ function updateIndicators() {
   }
 
   for (let contentWindow of contentWindows) {
-    let camera = {}, microphone = {}, screen = {}, window = {}, app = {}, browser = {};
-    MediaManagerService.mediaCaptureWindowState(contentWindow, camera, microphone,
-                                                screen, window, app, browser);
-    let tabState = {camera: camera.value, microphone: microphone.value};
-    if (camera.value)
+    let tabState = getTabStateForContentWindow(contentWindow);
+    if (tabState.camera)
       state.showCameraIndicator = true;
-    if (microphone.value)
+    if (tabState.microphone)
       state.showMicrophoneIndicator = true;
-    if (screen.value) {
-      state.showScreenSharingIndicator = "Screen";
-      tabState.screen = "Screen";
+    if (tabState.screen) {
+      if (tabState.screen == "Screen") {
+        state.showScreenSharingIndicator = "Screen";
+      }
+      else if (tabState.screen == "Window") {
+        if (state.showScreenSharingIndicator != "Screen")
+          state.showScreenSharingIndicator = "Window";
+      }
+      else if (tabState.screen == "Application") {
+        if (!state.showScreenSharingIndicator)
+          state.showScreenSharingIndicator = "Application";
+      }
+      else if (tabState.screen == "Browser") {
+        if (!state.showScreenSharingIndicator)
+          state.showScreenSharingIndicator = "Browser";
+      }
     }
-    else if (window.value) {
-      if (state.showScreenSharingIndicator != "Screen")
-        state.showScreenSharingIndicator = "Window";
-      tabState.screen = "Window";
-    }
-    else if (app.value) {
-      if (!state.showScreenSharingIndicator)
-        state.showScreenSharingIndicator = "Application";
-      tabState.screen = "Application";
-    }
-    else if (browser.value) {
-      if (!state.showScreenSharingIndicator)
-        state.showScreenSharingIndicator = "Browser";
-      tabState.screen = "Browser";
-    }
-
-    tabState.windowId = getInnerWindowIDForWindow(contentWindow);
-    tabState.documentURI = contentWindow.document.documentURI;
     let mm = getMessageManagerForWindow(contentWindow);
     mm.sendAsyncMessage("webrtc:UpdateBrowserIndicators", tabState);
   }
@@ -307,11 +314,34 @@ function updateIndicators() {
 }
 
 function removeBrowserSpecificIndicator(aSubject, aTopic, aData) {
-  let contentWindow = Services.wm.getOuterWindowWithId(aData);
+  let contentWindow = Services.wm.getOuterWindowWithId(aData).top;
+  let tabState = getTabStateForContentWindow(contentWindow);
+  if (!tabState.camera && !tabState.microphone && !tabState.screen)
+    tabState = {windowId: tabState.windowId};
+
   let mm = getMessageManagerForWindow(contentWindow);
   if (mm)
-    mm.sendAsyncMessage("webrtc:UpdateBrowserIndicators",
-                        {windowId: getInnerWindowIDForWindow(contentWindow)});
+    mm.sendAsyncMessage("webrtc:UpdateBrowserIndicators", tabState);
+}
+
+function getTabStateForContentWindow(aContentWindow) {
+  let camera = {}, microphone = {}, screen = {}, window = {}, app = {}, browser = {};
+  MediaManagerService.mediaCaptureWindowState(aContentWindow, camera, microphone,
+                                              screen, window, app, browser);
+  let tabState = {camera: camera.value, microphone: microphone.value};
+  if (screen.value)
+    tabState.screen = "Screen";
+  else if (window.value)
+    tabState.screen = "Window";
+  else if (app.value)
+    tabState.screen = "Application";
+  else if (browser.value)
+    tabState.screen = "Browser";
+
+  tabState.windowId = getInnerWindowIDForWindow(aContentWindow);
+  tabState.documentURI = aContentWindow.document.documentURI;
+
+  return tabState;
 }
 
 function getInnerWindowIDForWindow(aContentWindow) {
@@ -328,7 +358,7 @@ function getMessageManagerForWindow(aContentWindow) {
   try {
     // If e10s is disabled, this throws NS_NOINTERFACE for closed tabs.
     return ir.getInterface(Ci.nsIContentFrameMessageManager);
-  } catch(e) {
+  } catch (e) {
     if (e.result == Cr.NS_NOINTERFACE) {
       return null;
     }

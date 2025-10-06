@@ -17,7 +17,6 @@
 #include "nsStringFwd.h"
 #include "gfx2DGlue.h"
 
-class gfxTextContextPaint;
 class nsIContent;
 class nsIDocument;
 class nsIFrame;
@@ -28,6 +27,7 @@ class nsSVGElement;
 namespace mozilla {
 class nsSVGAnimatedTransformList;
 class SVGAnimatedPreserveAspectRatio;
+class SVGContextPaint;
 class SVGPreserveAspectRatio;
 namespace dom {
 class Element;
@@ -163,10 +163,16 @@ public:
     eAllStrokeOptions,
     eIgnoreStrokeDashing
   };
+  /**
+   * Note: the linecap style returned in aStrokeOptions is not valid when
+   * ShapeTypeHasNoCorners(aElement) == true && aFlags == eIgnoreStrokeDashing,
+   * since when aElement has no corners the rendered linecap style depends on
+   * whether or not the stroke is dashed.
+   */
   static void GetStrokeOptions(AutoStrokeOptions* aStrokeOptions,
                                nsSVGElement* aElement,
                                nsStyleContext* aStyleContext,
-                               gfxTextContextPaint *aContextPaint,
+                               mozilla::SVGContextPaint* aContextPaint,
                                StrokeOptionFlags aFlags = eAllStrokeOptions);
 
   /**
@@ -180,7 +186,7 @@ public:
    */
   static Float GetStrokeWidth(nsSVGElement* aElement,
                               nsStyleContext* aStyleContext,
-                              gfxTextContextPaint *aContextPaint);
+                              mozilla::SVGContextPaint* aContextPaint);
 
   /*
    * Get the number of CSS px (user units) per em (i.e. the em-height in user

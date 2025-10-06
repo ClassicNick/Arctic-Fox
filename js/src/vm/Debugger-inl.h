@@ -29,7 +29,7 @@ js::Debugger::onLeaveFrame(JSContext* cx, AbstractFramePtr frame, jsbytecode* pc
 /* static */ inline js::Debugger*
 js::Debugger::fromJSObject(const JSObject* obj)
 {
-    MOZ_ASSERT(js::GetObjectClass(obj) == &jsclass);
+    MOZ_ASSERT(js::GetObjectClass(obj) == &class_);
     return (Debugger*) obj->as<NativeObject>().getPrivate();
 }
 
@@ -66,27 +66,39 @@ js::Debugger::onExceptionUnwind(JSContext* cx, AbstractFramePtr frame)
     return slowPathOnExceptionUnwind(cx, frame);
 }
 
-/* static */ bool
-js::Debugger::observesIonCompilation(JSContext* cx)
+/* static */ void
+js::Debugger::onNewWasmInstance(JSContext* cx, Handle<WasmInstanceObject*> wasmInstance)
 {
-    // If the current compartment is observed by any Debugger.
-    if (!cx->compartment()->isDebuggee())
-        return false;
-
-    // If any attached Debugger watch for Jit compilation results.
-    if (!Debugger::hasLiveHook(cx->global(), Debugger::OnIonCompilation))
-        return false;
-
-    return true;
+    if (cx->compartment()->isDebuggee())
+        slowPathOnNewWasmInstance(cx, wasmInstance);
 }
 
-/* static */ void
-js::Debugger::onIonCompilation(JSContext* cx, Handle<ScriptVector> scripts, LSprinter& graph)
+inline bool
+js::Debugger::getScriptFrame(JSContext* cx, const ScriptFrameIter& iter,
+                             MutableHandle<DebuggerFrame*> result)
 {
-    if (!observesIonCompilation(cx))
-        return;
+    return getScriptFrameWithIter(cx, iter.abstractFramePtr(), &iter, result);
+}
 
-    slowPathOnIonCompilation(cx, scripts, graph);
+inline js::Debugger*
+js::DebuggerEnvironment::owner() const
+{
+    JSObject* dbgobj = &getReservedSlot(OWNER_SLOT).toObject();
+    return Debugger::fromJSObject(dbgobj);
+}
+
+inline js::Debugger*
+js::DebuggerFrame::owner() const
+{
+    JSObject* dbgobj = &getReservedSlot(OWNER_SLOT).toObject();
+    return Debugger::fromJSObject(dbgobj);
+}
+
+inline js::Debugger*
+js::DebuggerObject::owner() const
+{
+    JSObject* dbgobj = &getReservedSlot(OWNER_SLOT).toObject();
+    return Debugger::fromJSObject(dbgobj);
 }
 
 #endif /* vm_Debugger_inl_h */

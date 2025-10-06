@@ -47,7 +47,7 @@ function openSearchBox(ed) {
   ok(input, "find again command key opens the search box");
 }
 
-function testFindAgain (ed, inputLine, expectCursor, shiftKey=false) {
+function testFindAgain(ed, inputLine, expectCursor, shiftKey = false) {
   let edDoc = ed.container.contentDocument;
   let edWin = edDoc.defaultView;
 
@@ -64,7 +64,7 @@ function testFindAgain (ed, inputLine, expectCursor, shiftKey=false) {
     "find: " + inputLine + " expects cursor: " + expectCursor.toSource());
 }
 
-const testSearchBoxTextIsSelected = Task.async(function*(ed) {
+const testSearchBoxTextIsSelected = Task.async(function* (ed) {
   let edDoc = ed.container.contentDocument;
   let edWin = edDoc.defaultView;
 
@@ -108,7 +108,7 @@ const testSearchBoxTextIsSelected = Task.async(function*(ed) {
   EventUtils.synthesizeKey("VK_ESCAPE", {}, edWin);
 });
 
-const testReplaceBoxTextIsSelected = Task.async(function*(ed) {
+const testReplaceBoxTextIsSelected = Task.async(function* (ed) {
   let edDoc = ed.container.contentDocument;
   let edWin = edDoc.defaultView;
 
@@ -152,7 +152,7 @@ const testReplaceBoxTextIsSelected = Task.async(function*(ed) {
   EventUtils.synthesizeKey("VK_ESCAPE", {}, edWin);
 });
 
-add_task(function*() {
+add_task(function* () {
   let { ed, win } = yield setup();
 
   ed.setText([

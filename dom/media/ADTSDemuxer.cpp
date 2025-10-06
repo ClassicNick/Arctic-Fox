@@ -8,16 +8,17 @@
 
 #include <inttypes.h>
 
+#include "nsAutoPtr.h"
 #include "VideoUtils.h"
 #include "TimeUnits.h"
 #include "prenv.h"
 
 #ifdef PR_LOGGING
-mozilla::LazyLogModule gADTSDemuxerLog("ADTSDemuxer");
+extern mozilla::LazyLogModule gMediaDemuxerLog;
 #define ADTSLOG(msg, ...) \
-  MOZ_LOG(gADTSDemuxerLog, LogLevel::Debug, ("ADTSDemuxer " msg, ##__VA_ARGS__))
+  MOZ_LOG(gMediaDemuxerLog, LogLevel::Debug, ("ADTSDemuxer " msg, ##__VA_ARGS__))
 #define ADTSLOGV(msg, ...) \
-  MOZ_LOG(gADTSDemuxerLog, LogLevel::Verbose, ("ADTSDemuxer " msg, ##__VA_ARGS__))
+  MOZ_LOG(gMediaDemuxerLog, LogLevel::Verbose, ("ADTSDemuxer " msg, ##__VA_ARGS__))
 #else
 #define ADTSLOG(msg, ...)  do {} while (false)
 #define ADTSLOGV(msg, ...) do {} while (false)
@@ -193,11 +194,6 @@ public:
   const Frame& CurrentFrame() const { return mFrame; }
 
 
-#ifdef ENABLE_TESTS
-  // Returns the previously parsed frame. Reset via Reset.
-  const Frame& PrevFrame() const { return mPrevFrame; }
-#endif
-
   // Returns the first parsed frame. Reset via Reset.
   const Frame& FirstFrame() const { return mFirstFrame; }
 
@@ -212,9 +208,6 @@ public:
   // - resets the CurrentFrame
   // - resets ID3Header if no valid header was parsed yet
   void EndFrameSession() {
-#ifdef ENABLE_TESTS
-    mPrevFrame = mFrame;
-#endif
     mFrame.Reset();
   }
 
@@ -237,9 +230,6 @@ private:
   // previously parsed frame for debugging and the currently parsed frame.
   Frame mFirstFrame;
   Frame mFrame;
-#ifdef ENABLE_TESTS
-  Frame mPrevFrame;
-#endif
 };
 
 
@@ -435,26 +425,6 @@ ADTSTrackDemuxer::Init()
 
   return mSamplesPerSecond && mChannels;
 }
-
-#ifdef ENABLE_TESTS
-const adts::Frame&
-ADTSTrackDemuxer::LastFrame() const
-{
-  return mParser->PrevFrame();
-}
-
-RefPtr<MediaRawData>
-ADTSTrackDemuxer::DemuxSample()
-{
-  return GetNextFrame(FindNextFrame());
-}
-
-media::TimeUnit
-ADTSTrackDemuxer::SeekPosition() const
-{
-  return Duration(mFrameIndex);
-}
-#endif
 
 UniquePtr<TrackInfo>
 ADTSTrackDemuxer::GetInfo() const

@@ -100,7 +100,7 @@
 #endif
 
 #ifdef MOZ_WIDGET_ANDROID
-#include "AndroidBridge.h"
+#include "GeneratedJNIWrappers.h"
 #endif
 
 #include "mozilla/Preferences.h"
@@ -122,7 +122,7 @@ enum {
 , NS_FOLDER_VALUE_CUSTOM = 2
 };
 
-PRLogModuleInfo* nsExternalHelperAppService::mLog = nullptr;
+LazyLogModule nsExternalHelperAppService::mLog("HelperAppService");
 
 // Using level 3 here because the OSHelperAppServices use a log level
 // of LogLevel::Debug (4), and we want less detailed output here
@@ -376,16 +376,20 @@ static nsresult GetDownloadDirectory(nsIFile **_directory,
   }
   dir = dsf->mFile;
 #elif defined(ANDROID)
-  // On mobile devices, we are avoiding exposing users to the file
-  // system, and don't save downloads to temp directories
+  // We ask Java for the temporary download directory. The directory will be
+  // different depending on whether we have the permission to write to the
+  // public download directory or not.
+  // In the case where we do not have the permission we will start the
+  // download to the app cache directory and later move it to the final
+  // destination after prompting for the permission.
+  auto downloadDir = java::DownloadsIntegration::GetTemporaryDownloadDirectory();
 
-  // On Android we only return something if we have and SD-card
-  char* downloadDir = getenv("DOWNLOADS_DIRECTORY");
   nsresult rv;
   if (downloadDir) {
     nsCOMPtr<nsIFile> ldir;
-    rv = NS_NewNativeLocalFile(nsDependentCString(downloadDir),
+    rv = NS_NewNativeLocalFile(downloadDir->ToCString(),
                                true, getter_AddRefs(ldir));
+
     NS_ENSURE_SUCCESS(rv, rv);
     dir = do_QueryInterface(ldir);
 
@@ -416,12 +420,12 @@ static nsresult GetDownloadDirectory(nsIFile **_directory,
     const char* userName = PR_GetEnv("USERNAME");
     if (!userName || !*userName) {
       userName = PR_GetEnv("USER");
-      if (!userName || !*userName) {
-        userName = PR_GetEnv("LOGNAME");
-      }
-      else {
-        userName = "mozillaUser";
-      }
+    }
+    if (!userName || !*userName) {
+      userName = PR_GetEnv("LOGNAME");
+    }
+    if (!userName || !*userName) {
+      userName = "mozillaUser";
     }
 
     nsAutoString userDir;
@@ -447,7 +451,12 @@ static nsresult GetDownloadDirectory(nsIFile **_directory,
         rv = finalPath->GetPermissions(&permissions);
         NS_ENSURE_SUCCESS(rv, rv);
 
-        if (permissions == PR_IRWXU) {
+        // Ensuring the path is writable by the current user.
+        bool isWritable;
+        rv = finalPath->IsWritable(&isWritable);
+        NS_ENSURE_SUCCESS(rv, rv);
+
+        if (permissions == PR_IRWXU && isWritable) {
           dir = finalPath;
           break;
         }
@@ -488,7 +497,7 @@ struct nsDefaultMimeTypeEntry {
  * Default extension->mimetype mappings. These are not overridable.
  * If you add types here, make sure they are lowercase, or you'll regret it.
  */
-static nsDefaultMimeTypeEntry defaultMimeEntries [] = 
+static const nsDefaultMimeTypeEntry defaultMimeEntries[] =
 {
   // The following are those extensions that we're asked about during startup,
   // sorted by order used
@@ -502,11 +511,6 @@ static nsDefaultMimeTypeEntry defaultMimeEntries [] =
   { TEXT_CSS, "css" },
   { IMAGE_JPEG, "jpeg" },
   { IMAGE_JPEG, "jpg" },
-#ifdef MOZ_JXR
-  { IMAGE_JXR, "jxr" },
-  { IMAGE_JXR, "hdp" },
-  { IMAGE_JXR, "wdp" },
-#endif
   { IMAGE_SVG_XML, "svg" },
   { TEXT_HTML, "html" },
   { TEXT_HTML, "htm" },
@@ -519,6 +523,7 @@ static nsDefaultMimeTypeEntry defaultMimeEntries [] =
   { APPLICATION_OGG, "ogg" },
   { AUDIO_OGG, "oga" },
   { AUDIO_OGG, "opus" },
+  { APPLICATION_PDF, "pdf" },
   { VIDEO_WEBM, "webm" },
   { AUDIO_WEBM, "webm" },
 #if defined(MOZ_WMF)
@@ -554,7 +559,7 @@ struct nsExtraMimeTypeEntry {
  * overridden by user helper app prefs.
  * If you add types here, make sure they are lowercase, or you'll regret it.
  */
-static nsExtraMimeTypeEntry extraMimeEntries [] =
+static const nsExtraMimeTypeEntry extraMimeEntries[] =
 {
 #if defined(XP_MACOSX) // don't define .bin on the mac...use internet config to look that up...
   { APPLICATION_OCTET_STREAM, "exe,com", "Binary File" },
@@ -577,11 +582,8 @@ static nsExtraMimeTypeEntry extraMimeEntries [] =
   { IMAGE_GIF, "gif", "GIF Image" },
   { IMAGE_ICO, "ico,cur", "ICO Image" },
   { IMAGE_JPEG, "jpeg,jpg,jfif,pjpeg,pjp", "JPEG Image" },
-#ifdef MOZ_JXR
-  { IMAGE_JXR, "jxr", "JPEG XR Image" },
-  { IMAGE_MS_PHOTO, "jxr", "JPEG XR Image" },
-#endif
   { IMAGE_PNG, "png", "PNG Image" },
+  { IMAGE_APNG, "apng", "APNG Image" },
   { IMAGE_TIFF, "tiff,tif", "TIFF Image" },
   { IMAGE_XBM, "xbm", "XBM Image" },
   { IMAGE_WEBP, "webp", "WEBP Image" },
@@ -636,7 +638,7 @@ static nsExtraMimeTypeEntry extraMimeEntries [] =
  * File extensions for which decoding should be disabled.
  * NOTE: These MUST be lower-case and ASCII.
  */
-static nsDefaultMimeTypeEntry nonDecodableExtensions [] = {
+static const nsDefaultMimeTypeEntry nonDecodableExtensions[] = {
   { APPLICATION_GZIP, "gz" }, 
   { APPLICATION_GZIP, "tgz" },
   { APPLICATION_ZIP, "zip" },
@@ -662,12 +664,6 @@ nsresult nsExternalHelperAppService::Init()
   nsCOMPtr<nsIObserverService> obs = mozilla::services::GetObserverService();
   if (!obs)
     return NS_ERROR_FAILURE;
-
-  if (!mLog) {
-    mLog = PR_NewLogModule("HelperAppService");
-    if (!mLog)
-      return NS_ERROR_OUT_OF_MEMORY;
-  }
 
   nsresult rv = obs->AddObserver(this, "profile-before-change", true);
   NS_ENSURE_SUCCESS(rv, rv);
@@ -1577,6 +1573,13 @@ nsExternalAppHandler::MaybeApplyDecodingForExtension(nsIRequest *aRequest)
   // Turn off content encoding conversions if needed
   bool applyConversion = true;
 
+  // First, check to see if conversion is already disabled.  If so, we
+  // have nothing to do here.
+  encChannel->GetApplyConversion(&applyConversion);
+  if (!applyConversion) {
+    return;
+  }
+
   nsCOMPtr<nsIURL> sourceURL(do_QueryInterface(mSourceUrl));
   if (sourceURL)
   {
@@ -1875,7 +1878,7 @@ void nsExternalAppHandler::SendStatusChange(ErrorType type, nsresult rv, nsIRequ
           break;
         }
 #endif
-        // fall through
+        MOZ_FALLTHROUGH;
 
     default:
         // Generic read/write/launch error message.
@@ -1892,9 +1895,11 @@ void nsExternalAppHandler::SendStatusChange(ErrorType type, nsresult rv, nsIRequ
         }
         break;
     }
+
     MOZ_LOG(nsExternalHelperAppService::mLog, LogLevel::Error,
         ("Error: %s, type=%i, listener=0x%p, transfer=0x%p, rv=0x%08X\n",
          NS_LossyConvertUTF16toASCII(msgId).get(), type, mDialogProgressListener.get(), mTransfer.get(), rv));
+
     MOZ_LOG(nsExternalHelperAppService::mLog, LogLevel::Error,
         ("       path='%s'\n", NS_ConvertUTF16toUTF8(path).get()));
 
@@ -1919,7 +1924,7 @@ void nsExternalAppHandler::SendStatusChange(ErrorType type, nsresult rv, nsIRequ
                 nsresult qiRv;
                 nsCOMPtr<nsIPrompt> prompter(do_GetInterface(GetDialogParent(), &qiRv));
                 nsXPIDLString title;
-                bundle->FormatStringFromName(MOZ_UTF16("title"),
+                bundle->FormatStringFromName(u"title",
                                              strings,
                                              1,
                                              getter_Copies(title));
@@ -2194,13 +2199,10 @@ nsresult nsExternalAppHandler::CreateTransfer()
   // Now let's add the download to history
   nsCOMPtr<nsIDownloadHistory> dh(do_GetService(NS_DOWNLOADHISTORY_CONTRACTID));
   if (dh) {
-    nsCOMPtr<nsIURI> referrer;
-    nsCOMPtr<nsIChannel> channel = do_QueryInterface(mRequest);
-    if (channel) {
-      NS_GetReferrerFromChannel(channel, getter_AddRefs(referrer));
-    }
-
     if (channel && !NS_UsePrivateBrowsing(channel)) {
+      nsCOMPtr<nsIURI> referrer;
+      NS_GetReferrerFromChannel(channel, getter_AddRefs(referrer));
+
       dh->AddDownload(mSourceUrl, referrer, mTimeDownloadStarted, target);
     }
   }
@@ -2722,47 +2724,44 @@ NS_IMETHODIMP nsExternalHelperAppService::GetFromTypeAndExtension(const nsACStri
   return NS_OK;
 }
 
-NS_IMETHODIMP nsExternalHelperAppService::GetTypeFromExtension(const nsACString& aFileExt, nsACString& aContentType) 
+NS_IMETHODIMP
+nsExternalHelperAppService::GetTypeFromExtension(const nsACString& aFileExt,
+                                                 nsACString& aContentType)
 {
   // OK. We want to try the following sources of mimetype information, in this order:
   // 1. defaultMimeEntries array
-  // 2. User-set preferences (managed by the handler service)
-  // 3. OS-provided information
-  // 4. our "extras" array
-  // 5. Information from plugins
-  // 6. The "ext-to-type-mapping" category
+  // 2. OS-provided information
+  // 3. our "extras" array
+  // 4. Information from plugins
+  // 5. The "ext-to-type-mapping" category
+  // Note that, we are intentionally not looking at the handler service, because
+  // that can be affected by websites, which leads to undesired behavior.
 
   // Early return if called with an empty extension parameter
-  if (aFileExt.IsEmpty())
+  if (aFileExt.IsEmpty()) {
     return NS_ERROR_NOT_AVAILABLE;
-
-  nsresult rv = NS_OK;
-  // First of all, check our default entries
-  for (size_t i = 0; i < ArrayLength(defaultMimeEntries); i++)
-  {
-    if (aFileExt.LowerCaseEqualsASCII(defaultMimeEntries[i].mFileExtension)) {
-      aContentType = defaultMimeEntries[i].mMimeType;
-      return rv;
-    }
   }
 
-  // Check user-set prefs
-  nsCOMPtr<nsIHandlerService> handlerSvc = do_GetService(NS_HANDLERSERVICE_CONTRACTID);
-  if (handlerSvc)
-    rv = handlerSvc->GetTypeFromExtension(aFileExt, aContentType);
-  if (NS_SUCCEEDED(rv) && !aContentType.IsEmpty())
-    return NS_OK;
+  // First of all, check our default entries
+  for (auto& entry : defaultMimeEntries) {
+    if (aFileExt.LowerCaseEqualsASCII(entry.mFileExtension)) {
+      aContentType = entry.mMimeType;
+      return NS_OK;
+    }
+  }
 
   // Ask OS.
   bool found = false;
   nsCOMPtr<nsIMIMEInfo> mi = GetMIMEInfoFromOS(EmptyCString(), aFileExt, &found);
-  if (mi && found)
+  if (mi && found) {
     return mi->GetMIMEType(aContentType);
+  }
 
   // Check extras array.
   found = GetTypeFromExtras(aFileExt, aContentType);
-  if (found)
+  if (found) {
     return NS_OK;
+  }
 
   // Try the plugins
   RefPtr<nsPluginHost> pluginHost = nsPluginHost::GetInst();
@@ -2771,24 +2770,25 @@ NS_IMETHODIMP nsExternalHelperAppService::GetTypeFromExtension(const nsACString&
     return NS_OK;
   }
 
-  rv = NS_OK;
   // Let's see if an extension added something
-  nsCOMPtr<nsICategoryManager> catMan(do_GetService("@mozilla.org/categorymanager;1"));
+  nsCOMPtr<nsICategoryManager> catMan(
+    do_GetService("@mozilla.org/categorymanager;1"));
   if (catMan) {
     // The extension in the category entry is always stored as lowercase
     nsAutoCString lowercaseFileExt(aFileExt);
     ToLowerCase(lowercaseFileExt);
     // Read the MIME type from the category entry, if available
     nsXPIDLCString type;
-    rv = catMan->GetCategoryEntry("ext-to-type-mapping", lowercaseFileExt.get(),
-                                  getter_Copies(type));
-    aContentType = type;
-  }
-  else {
-    rv = NS_ERROR_NOT_AVAILABLE;
+    nsresult rv = catMan->GetCategoryEntry("ext-to-type-mapping",
+                                           lowercaseFileExt.get(),
+                                           getter_Copies(type));
+    if (NS_SUCCEEDED(rv)) {
+      aContentType = type;
+      return NS_OK;
+    }
   }
 
-  return rv;
+  return NS_ERROR_NOT_AVAILABLE;
 }
 
 NS_IMETHODIMP nsExternalHelperAppService::GetPrimaryExtension(const nsACString& aMIMEType, const nsACString& aFileExt, nsACString& _retval)

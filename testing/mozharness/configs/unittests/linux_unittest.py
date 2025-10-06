@@ -9,12 +9,24 @@ XPCSHELL_NAME = "xpcshell"
 EXE_SUFFIX = ""
 DISABLE_SCREEN_SAVER = True
 ADJUST_MOUSE_AND_SCREEN = False
+
+# Note: keep these Valgrind .sup file names consistent with those
+# in testing/mochitest/mochitest_options.py.
+VALGRIND_SUPP_DIR = os.path.join(os.getcwd(), "build/tests/mochitest")
+VALGRIND_SUPP_CROSS_ARCH = os.path.join(VALGRIND_SUPP_DIR,
+                                        "cross-architecture.sup")
+VALGRIND_SUPP_ARCH = None
+
 if platform.architecture()[0] == "64bit":
     TOOLTOOL_MANIFEST_PATH = "config/tooltool-manifests/linux64/releng.manifest"
     MINIDUMP_STACKWALK_PATH = "linux64-minidump_stackwalk"
+    VALGRIND_SUPP_ARCH = os.path.join(VALGRIND_SUPP_DIR,
+                                      "x86_64-redhat-linux-gnu.sup")
 else:
     TOOLTOOL_MANIFEST_PATH = "config/tooltool-manifests/linux32/releng.manifest"
     MINIDUMP_STACKWALK_PATH = "linux32-minidump_stackwalk"
+    VALGRIND_SUPP_ARCH = os.path.join(VALGRIND_SUPP_DIR,
+                                      "i386-redhat-linux-gnu.sup")
 
 #####
 config = {
@@ -36,7 +48,6 @@ config = {
     "exe_suffix": EXE_SUFFIX,
     "run_file_names": {
         "mochitest": "runtests.py",
-        "webapprt": "runtests.py",
         "reftest": "runreftest.py",
         "xpcshell": "runxpcshelltests.py",
         "cppunittest": "runcppunittests.py",
@@ -56,7 +67,6 @@ config = {
     ],
     "specific_tests_zip_dirs": {
         "mochitest": ["mochitest/*"],
-        "webapprt": ["mochitest/*"],
         "reftest": ["reftest/*", "jsreftest/*"],
         "xpcshell": ["xpcshell/*"],
         "cppunittest": ["cppunittest/*"],
@@ -150,20 +160,6 @@ config = {
             "run_filename": "runreftest.py",
             "testsdir": "reftest"
         },
-        "webapprt": {
-            "options": [
-                "--app=%(app_path)s",
-                "--utility-path=tests/bin",
-                "--extra-profile-file=tests/bin/plugins",
-                "--symbols-path=%(symbols_path)s",
-                "--certificate-path=tests/certs",
-                "--console-level=INFO",
-                "--testing-modules-dir=tests/modules",
-                "--quiet"
-            ],
-            "run_filename": "runtests.py",
-            "testsdir": "mochitest"
-        },
         "xpcshell": {
             "options": [
                 "--symbols-path=%(symbols_path)s",
@@ -180,6 +176,7 @@ config = {
                 "--xre-path=%(abs_res_dir)s",
                 "--cwd=%(gtest_dir)s",
                 "--symbols-path=%(symbols_path)s",
+                "--utility-path=tests/bin",
                 "%(binary_path)s",
             ],
             "run_filename": "rungtests.py",
@@ -187,6 +184,9 @@ config = {
     },
     # local mochi suites
     "all_mochitest_suites": {
+        "valgrind-plain": ["--valgrind=/usr/bin/valgrind",
+                           "--valgrind-supp-files=" + VALGRIND_SUPP_ARCH +
+                               "," + VALGRIND_SUPP_CROSS_ARCH],
         "plain": [],
         "plain-chunked": ["--chunk-by-dir=4"],
         "mochitest-push": ["--subsuite=push"],
@@ -194,17 +194,13 @@ config = {
         "browser-chrome": ["--browser-chrome"],
         "browser-chrome-chunked": ["--browser-chrome", "--chunk-by-runtime"],
         "browser-chrome-addons": ["--browser-chrome", "--chunk-by-runtime", "--tag=addons"],
+        "browser-chrome-coverage": ["--timeout=1200"],
         "mochitest-gl": ["--subsuite=webgl"],
         "mochitest-devtools-chrome": ["--browser-chrome", "--subsuite=devtools"],
         "mochitest-devtools-chrome-chunked": ["--browser-chrome", "--subsuite=devtools", "--chunk-by-runtime"],
         "jetpack-package": ["--jetpack-package"],
         "jetpack-addon": ["--jetpack-addon"],
         "a11y": ["--a11y"],
-    },
-    # local webapprt suites
-    "all_webapprt_suites": {
-        "chrome": ["--webapprt-chrome", "--browser-arg=-test-mode"],
-        "content": ["--webapprt-content"]
     },
     # local reftest suites
     "all_reftest_suites": {

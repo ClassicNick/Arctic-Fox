@@ -31,6 +31,7 @@ DOM4_MSG_DEF(TimeoutError, "The operation timed out.", NS_ERROR_DOM_TIMEOUT_ERR)
 DOM4_MSG_DEF(InvalidNodeTypeError, "The supplied node is incorrect or has an incorrect ancestor for this operation.", NS_ERROR_DOM_INVALID_NODE_TYPE_ERR)
 DOM4_MSG_DEF(DataCloneError, "The object could not be cloned.", NS_ERROR_DOM_DATA_CLONE_ERR)
 DOM4_MSG_DEF(InvalidPointerId, "Invalid pointer id.", NS_ERROR_DOM_INVALID_POINTER_ERR)
+DOM4_MSG_DEF(NotAllowedError, "The request is not allowed by the user agent or the platform in the current context, possibly because the user denied permission.", NS_ERROR_DOM_NOT_ALLOWED_ERR)
 
 /* XXX Should be JavaScript native TypeError */
 DOM4_MSG_DEF(TypeError, "The method parameter is missing or invalid.", NS_ERROR_TYPE_ERR)
@@ -118,8 +119,7 @@ DOM4_MSG_DEF(BtAuthRejectedError, "Authentication rejected",  NS_ERROR_DOM_BLUET
 /* Web Animations errors */
 
 DOM4_MSG_DEF(NotSupportedError, "Animation to or from an underlying value is not yet supported.", NS_ERROR_DOM_ANIM_MISSING_PROPS_ERR)
-DOM4_MSG_DEF(NotSupportedError, "Animation with no target is not yet supported.", NS_ERROR_DOM_ANIM_NO_TARGET_ERR)
-DOM4_MSG_DEF(NotSupportedError, "Animation with a target not bound to a document is not yet supported.", NS_ERROR_DOM_ANIM_TARGET_NOT_IN_DOC_ERR)
+DOM4_MSG_DEF(NotSupportedError, "Animation with no effect is not yet supported.", NS_ERROR_DOM_ANIM_NO_EFFECT_ERR)
 
 /* common global codes (from nsError.h) */
 
@@ -154,9 +154,16 @@ DOM4_MSG_DEF(QuotaExceededError, "The current file handle exceeded its quota lim
 
 /* Push API errors. */
 DOM4_MSG_DEF(InvalidStateError, "Invalid service worker registration.", NS_ERROR_DOM_PUSH_INVALID_REGISTRATION_ERR)
-DOM4_MSG_DEF(PermissionDeniedError, "User denied permission to use the Push API.", NS_ERROR_DOM_PUSH_DENIED_ERR)
+DOM4_MSG_DEF(NotAllowedError, "User denied permission to use the Push API.", NS_ERROR_DOM_PUSH_DENIED_ERR)
 DOM4_MSG_DEF(AbortError, "Error retrieving push subscription.", NS_ERROR_DOM_PUSH_ABORT_ERR)
 DOM4_MSG_DEF(NetworkError, "Push service unreachable.", NS_ERROR_DOM_PUSH_SERVICE_UNREACHABLE)
+DOM4_MSG_DEF(InvalidAccessError, "Invalid raw ECDSA P-256 public key.", NS_ERROR_DOM_PUSH_INVALID_KEY_ERR)
+DOM4_MSG_DEF(InvalidStateError, "A subscription with a different application server key already exists.", NS_ERROR_DOM_PUSH_MISMATCHED_KEY_ERR)
 
 DOM_MSG_DEF(NS_ERROR_DOM_JS_EXCEPTION, "A callback threw an exception")
 DOM_MSG_DEF(NS_ERROR_DOM_DOMEXCEPTION, "A DOMException was thrown")
+
+/* Media errors */
+DOM4_MSG_DEF(AbortError,        "The fetching process for the media resource was aborted by the user agent at the user's request.", NS_ERROR_DOM_MEDIA_ABORT_ERR)
+DOM4_MSG_DEF(NotAllowedError,   "The play method is not allowed by the user agent or the platform in the current context, possibly because the user denied permission.", NS_ERROR_DOM_MEDIA_NOT_ALLOWED_ERR)
+DOM4_MSG_DEF(NotSupportedError, "The media resource indicated by the src attribute or assigned media provider object was not suitable.", NS_ERROR_DOM_MEDIA_NOT_SUPPORTED_ERR)

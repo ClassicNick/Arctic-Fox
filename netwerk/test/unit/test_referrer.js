@@ -1,19 +1,14 @@
-Cu.import("resource://gre/modules/Services.jsm");
-
-var ios = Cc["@mozilla.org/network/io-service;1"].
-    getService(Ci.nsIIOService);
+Cu.import("resource://gre/modules/NetUtil.jsm");
 
 function getTestReferrer(server_uri, referer_uri) {
-  var chan = ios.newChannel2(server_uri,
-                             "",
-                             null,
-                             null,      // aLoadingNode
-                             Services.scriptSecurityManager.getSystemPrincipal(),
-                             null,      // aTriggeringPrincipal
-                             Ci.nsILoadInfo.SEC_NORMAL,
-                             Ci.nsIContentPolicy.TYPE_OTHER);
+  var uri = NetUtil.newURI(server_uri, "", null)
+  var chan = NetUtil.newChannel({
+    uri: uri,
+    loadUsingSystemPrincipal: true
+  });
+
   chan.QueryInterface(Components.interfaces.nsIHttpChannel);
-  chan.referrer = ios.newURI(referer_uri, null, null);
+  chan.referrer = NetUtil.newURI(referer_uri, null, null);
   var header = null;
   try {
     header = chan.getRequestHeader("Referer");
@@ -31,6 +26,7 @@ function run_test() {
   var referer_uri = "http://foo.example.com/path";
   var referer_uri_2 = "http://bar.examplesite.com/path3?q=blah";
   var referer_uri_2_anchor = "http://bar.examplesite.com/path3?q=blah#anchor";
+  var referer_uri_idn = "http://sub1.\xe4lt.example/path";
 
   // for https tests
   var server_uri_https = "https://bar.example.com/anotherpath";
@@ -66,10 +62,12 @@ function run_test() {
   // tests for referer.trimmingPolicy
   prefs.setIntPref("network.http.referer.trimmingPolicy", 1);
   do_check_eq(getTestReferrer(server_uri, referer_uri_2), "http://bar.examplesite.com/path3");
+  do_check_eq(getTestReferrer(server_uri, referer_uri_idn), "http://sub1.xn--lt-uia.example/path");
   prefs.setIntPref("network.http.referer.trimmingPolicy", 2);
-  do_check_eq(getTestReferrer(server_uri, referer_uri_2), "http://bar.examplesite.com");
+  do_check_eq(getTestReferrer(server_uri, referer_uri_2), "http://bar.examplesite.com/");
+  do_check_eq(getTestReferrer(server_uri, referer_uri_idn), "http://sub1.xn--lt-uia.example/");
   // https test
-  do_check_eq(getTestReferrer(server_uri_https, referer_uri_https), "https://bar.example.com");
+  do_check_eq(getTestReferrer(server_uri_https, referer_uri_https), "https://bar.example.com/");
   prefs.setIntPref("network.http.referer.trimmingPolicy", 0);
   // test that anchor is lopped off in ordinary case
   do_check_eq(getTestReferrer(server_uri, referer_uri_2_anchor), referer_uri_2);

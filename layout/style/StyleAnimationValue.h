@@ -9,6 +9,7 @@
 #define mozilla_StyleAnimationValue_h_
 
 #include "mozilla/gfx/MatrixFwd.h"
+#include "mozilla/UniquePtr.h"
 #include "nsStringFwd.h"
 #include "nsStringBuffer.h"
 #include "nsCoord.h"
@@ -52,7 +53,7 @@ public:
    * @param aCount      The number of times to add aValueToAdd.
    * @return true on success, false on failure.
    */
-  static bool Add(nsCSSProperty aProperty, StyleAnimationValue& aDest,
+  static bool Add(nsCSSPropertyID aProperty, StyleAnimationValue& aDest,
                   const StyleAnimationValue& aValueToAdd, uint32_t aCount) {
     return AddWeighted(aProperty, 1.0, aDest, aCount, aValueToAdd, aDest);
   }
@@ -75,7 +76,7 @@ public:
    * @param aDistance   The result of the calculation.
    * @return true on success, false on failure.
    */
-  static bool ComputeDistance(nsCSSProperty aProperty,
+  static bool ComputeDistance(nsCSSPropertyID aProperty,
                               const StyleAnimationValue& aStartValue,
                               const StyleAnimationValue& aEndValue,
                               double& aDistance);
@@ -96,7 +97,7 @@ public:
    * @param [out] aResultValue The resulting interpolated value.
    * @return true on success, false on failure.
    */
-  static bool Interpolate(nsCSSProperty aProperty,
+  static bool Interpolate(nsCSSPropertyID aProperty,
                           const StyleAnimationValue& aStartValue,
                           const StyleAnimationValue& aEndValue,
                           double aPortion,
@@ -119,7 +120,7 @@ public:
    * difficulty, we might change this to restrict them to being
    * positive.
    */
-  static bool AddWeighted(nsCSSProperty aProperty,
+  static bool AddWeighted(nsCSSPropertyID aProperty,
                           double aCoeff1, const StyleAnimationValue& aValue1,
                           double aCoeff2, const StyleAnimationValue& aValue2,
                           StyleAnimationValue& aResultValue);
@@ -137,8 +138,10 @@ public:
    *                        applicable. For pseudo-elements, this is the parent
    *                        element to which the pseudo is attached, not the
    *                        generated content node.
-   * @param aPseudoType     The type of pseudo-element to which the computed
-   *                        value is applicable.
+   * @param aStyleContext   The style context used to compute values from the
+   *                        specified value. For pseudo-elements, this should
+   *                        be the style context corresponding to the pseudo
+   *                        element.
    * @param aSpecifiedValue The specified value, from which we'll build our
    *                        computed value.
    * @param aUseSVGMode     A flag to indicate whether we should parse
@@ -154,9 +157,9 @@ public:
    *                        nullptr.
    * @return true on success, false on failure.
    */
-  static bool ComputeValue(nsCSSProperty aProperty,
+  static bool ComputeValue(nsCSSPropertyID aProperty,
                            mozilla::dom::Element* aTargetElement,
-                           CSSPseudoElementType aPseudoType,
+                           nsStyleContext* aStyleContext,
                            const nsAString& aSpecifiedValue,
                            bool aUseSVGMode,
                            StyleAnimationValue& aComputedValue,
@@ -172,31 +175,50 @@ public:
    * to aResult.  On failure, aResult might still have partial results
    * in it.
    */
-  static bool ComputeValues(nsCSSProperty aProperty,
-                            nsCSSProps::EnabledState aEnabledState,
+  static bool ComputeValues(nsCSSPropertyID aProperty,
+                            mozilla::CSSEnabledState aEnabledState,
                             mozilla::dom::Element* aTargetElement,
-                            CSSPseudoElementType aPseudoType,
+                            nsStyleContext* aStyleContext,
                             const nsAString& aSpecifiedValue,
+                            bool aUseSVGMode,
+                            nsTArray<PropertyStyleAnimationValuePair>& aResult);
+
+  /**
+   * A variant on ComputeValues that takes an nsCSSValue as the specified
+   * value. Only longhand properties are supported.
+   */
+  static bool ComputeValues(nsCSSPropertyID aProperty,
+                            mozilla::CSSEnabledState aEnabledState,
+                            mozilla::dom::Element* aTargetElement,
+                            nsStyleContext* aStyleContext,
+                            const nsCSSValue& aSpecifiedValue,
                             bool aUseSVGMode,
                             nsTArray<PropertyStyleAnimationValuePair>& aResult);
 
   /**
    * Creates a specified value for the given computed value.
    *
-   * The first overload fills in an nsCSSValue object; the second
-   * produces a string.  The nsCSSValue result may depend on objects
-   * owned by the |aComputedValue| object, so users of that variant
+   * The first two overloads fill in an nsCSSValue object; the third
+   * produces a string.  For the overload that takes a const
+   * StyleAnimationValue& reference, the nsCSSValue result may depend on
+   * objects owned by the |aComputedValue| object, so users of that variant
    * must keep |aComputedValue| alive longer than |aSpecifiedValue|.
+   * The overload that takes an rvalue StyleAnimationValue reference
+   * transfers ownership for some resources such that the |aComputedValue|
+   * does not depend on the lifetime of |aSpecifiedValue|.
    *
    * @param aProperty      The property whose value we're uncomputing.
    * @param aComputedValue The computed value to be converted.
    * @param [out] aSpecifiedValue The resulting specified value.
    * @return true on success, false on failure.
    */
-  static bool UncomputeValue(nsCSSProperty aProperty,
+  static bool UncomputeValue(nsCSSPropertyID aProperty,
                              const StyleAnimationValue& aComputedValue,
                              nsCSSValue& aSpecifiedValue);
-  static bool UncomputeValue(nsCSSProperty aProperty,
+  static bool UncomputeValue(nsCSSPropertyID aProperty,
+                             StyleAnimationValue&& aComputedValue,
+                             nsCSSValue& aSpecifiedValue);
+  static bool UncomputeValue(nsCSSPropertyID aProperty,
                              const StyleAnimationValue& aComputedValue,
                              nsAString& aSpecifiedValue);
 
@@ -204,12 +226,17 @@ public:
    * Gets the computed value for the given property from the given style
    * context.
    *
+   * Obtaining the computed value allows us to animate properties when the
+   * content author has specified a value like "inherit" or "initial" or some
+   * other keyword that isn't directly interpolatable, but which *computes* to
+   * something interpolatable.
+   *
    * @param aProperty     The property whose value we're looking up.
    * @param aStyleContext The style context to check for the computed value.
    * @param [out] aComputedValue The resulting computed value.
    * @return true on success, false on failure.
    */
-  static bool ExtractComputedValue(nsCSSProperty aProperty,
+  static bool ExtractComputedValue(nsCSSPropertyID aProperty,
                                    nsStyleContext* aStyleContext,
                                    StyleAnimationValue& aComputedValue);
 
@@ -244,18 +271,22 @@ public:
     eUnit_Percent,
     eUnit_Float,
     eUnit_Color,
+    eUnit_CurrentColor,
     eUnit_Calc, // nsCSSValue* (never null), always with a single
                 // calc() expression that's either length or length+percent
     eUnit_ObjectPosition, // nsCSSValue* (never null), always with a
                           // 4-entry nsCSSValue::Array
+    eUnit_URL, // nsCSSValue* (never null), always with a css::URLValue
+    eUnit_DiscreteCSSValue, // nsCSSValue* (never null)
     eUnit_CSSValuePair, // nsCSSValuePair* (never null)
     eUnit_CSSValueTriplet, // nsCSSValueTriplet* (never null)
     eUnit_CSSRect, // nsCSSRect* (never null)
     eUnit_Dasharray, // nsCSSValueList* (never null)
     eUnit_Shadow, // nsCSSValueList* (may be null)
+    eUnit_Shape,  // nsCSSValue::Array* (never null)
     eUnit_Filter, // nsCSSValueList* (may be null)
     eUnit_Transform, // nsCSSValueList* (never null)
-    eUnit_BackgroundPosition, // nsCSSValueList* (never null)
+    eUnit_BackgroundPositionCoord, // nsCSSValueList* (never null)
     eUnit_CSSValuePairList, // nsCSSValuePairList* (never null)
     eUnit_UnparsedString // nsStringBuffer* (never null)
   };
@@ -271,6 +302,7 @@ private:
     nsCSSValuePair* mCSSValuePair;
     nsCSSValueTriplet* mCSSValueTriplet;
     nsCSSRect* mCSSRect;
+    nsCSSValue::Array* mCSSValueArray;
     nsCSSValueList* mCSSValueList;
     nsCSSValueSharedList* mCSSValueSharedList;
     nsCSSValuePairList* mCSSValuePairList;
@@ -325,6 +357,10 @@ public:
     NS_ASSERTION(IsCSSRectUnit(mUnit), "unit mismatch");
     return mValue.mCSSRect;
   }
+  nsCSSValue::Array* GetCSSValueArrayValue() const {
+    NS_ASSERTION(IsCSSValueArrayUnit(mUnit), "unit mismatch");
+    return mValue.mCSSValueArray;
+  }
   nsCSSValueList* GetCSSValueListValue() const {
     NS_ASSERTION(IsCSSValueListUnit(mUnit), "unit mismatch");
     return mValue.mCSSValueList;
@@ -352,6 +388,19 @@ public:
   /// @return the scale for this value, calculated with reference to @aForFrame.
   gfxSize GetScaleValue(const nsIFrame* aForFrame) const;
 
+  UniquePtr<nsCSSValueList> TakeCSSValueListValue() {
+    nsCSSValueList* list = GetCSSValueListValue();
+    mValue.mCSSValueList = nullptr;
+    mUnit = eUnit_Null;
+    return UniquePtr<nsCSSValueList>(list);
+  }
+  UniquePtr<nsCSSValuePairList> TakeCSSValuePairListValue() {
+    nsCSSValuePairList* list = GetCSSValuePairListValue();
+    mValue.mCSSValuePairList = nullptr;
+    mUnit = eUnit_Null;
+    return UniquePtr<nsCSSValuePairList>(list);
+  }
+
   explicit StyleAnimationValue(Unit aUnit = eUnit_Null) : mUnit(aUnit) {
     NS_ASSERTION(aUnit == eUnit_Null || aUnit == eUnit_Normal ||
                  aUnit == eUnit_Auto || aUnit == eUnit_None,
@@ -359,6 +408,12 @@ public:
   }
   StyleAnimationValue(const StyleAnimationValue& aOther)
     : mUnit(eUnit_Null) { *this = aOther; }
+  StyleAnimationValue(StyleAnimationValue&& aOther)
+    : mUnit(aOther.mUnit)
+    , mValue(aOther.mValue)
+  {
+    aOther.mUnit = eUnit_Null;
+  }
   enum IntegerConstructorType { IntegerConstructor };
   StyleAnimationValue(int32_t aInt, Unit aUnit, IntegerConstructorType);
   enum CoordConstructorType { CoordConstructor };
@@ -376,11 +431,21 @@ public:
   void SetAutoValue();
   void SetNoneValue();
   void SetIntValue(int32_t aInt, Unit aUnit);
+  template<typename T,
+           typename = typename std::enable_if<std::is_enum<T>::value>::type>
+  void SetIntValue(T aInt, Unit aUnit)
+  {
+    static_assert(mozilla::IsEnumFittingWithin<T, int32_t>::value,
+                  "aValue must be an enum that fits within mValue.mInt");
+    SetIntValue(static_cast<int32_t>(aInt), aUnit);
+  }
   void SetCoordValue(nscoord aCoord);
   void SetPercentValue(float aPercent);
   void SetFloatValue(float aFloat);
   void SetColorValue(nscolor aColor);
+  void SetCurrentColorValue();
   void SetUnparsedStringValue(const nsString& aString);
+  void SetCSSValueArrayValue(nsCSSValue::Array* aValue, Unit aUnit);
 
   // These setters take ownership of |aValue|, and are therefore named
   // "SetAndAdopt*".
@@ -400,14 +465,6 @@ public:
     { return !(*this == aOther); }
 
 private:
-  static bool ComputeValues(nsCSSProperty aProperty,
-                            nsCSSProps::EnabledState aEnabledState,
-                            mozilla::dom::Element* aTargetElement,
-                            CSSPseudoElementType aPseudoType,
-                            mozilla::css::StyleRule* aStyleRule,
-                            nsTArray<PropertyStyleAnimationValuePair>& aValues,
-                            bool* aIsContextSensitive);
-
   void FreeValue();
 
   static const char16_t* GetBufferValue(nsStringBuffer* aBuffer) {
@@ -420,7 +477,9 @@ private:
   }
   static bool IsCSSValueUnit(Unit aUnit) {
     return aUnit == eUnit_Calc ||
-           aUnit == eUnit_ObjectPosition;
+           aUnit == eUnit_ObjectPosition ||
+           aUnit == eUnit_URL ||
+           aUnit == eUnit_DiscreteCSSValue;
   }
   static bool IsCSSValuePairUnit(Unit aUnit) {
     return aUnit == eUnit_CSSValuePair;
@@ -431,10 +490,13 @@ private:
   static bool IsCSSRectUnit(Unit aUnit) {
     return aUnit == eUnit_CSSRect;
   }
+  static bool IsCSSValueArrayUnit(Unit aUnit) {
+    return aUnit == eUnit_Shape;
+  }
   static bool IsCSSValueListUnit(Unit aUnit) {
     return aUnit == eUnit_Dasharray || aUnit == eUnit_Filter ||
            aUnit == eUnit_Shadow ||
-           aUnit == eUnit_BackgroundPosition;
+           aUnit == eUnit_BackgroundPositionCoord;
   }
   static bool IsCSSValueSharedListValue(Unit aUnit) {
     return aUnit == eUnit_Transform;
@@ -449,7 +511,7 @@ private:
 
 struct PropertyStyleAnimationValuePair
 {
-  nsCSSProperty mProperty;
+  nsCSSPropertyID mProperty;
   StyleAnimationValue mValue;
 };
 

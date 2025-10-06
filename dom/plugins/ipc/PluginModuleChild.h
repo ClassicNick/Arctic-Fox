@@ -19,7 +19,6 @@
 #include "npapi.h"
 #include "npfunctions.h"
 
-#include "nsAutoPtr.h"
 #include "nsDataHashtable.h"
 #include "nsTHashtable.h"
 #include "nsHashKeys.h"
@@ -53,11 +52,6 @@ class PCrashReporterChild;
 
 namespace plugins {
 
-#ifdef MOZ_WIDGET_QT
-class NestedLoopTimer;
-static const int kNestedLoopDetectorIntervalMs = 90;
-#endif
-
 class PluginInstanceChild;
 
 class PluginModuleChild : public PPluginModuleChild
@@ -65,7 +59,8 @@ class PluginModuleChild : public PPluginModuleChild
     typedef mozilla::dom::PCrashReporterChild PCrashReporterChild;
 protected:
     virtual mozilla::ipc::RacyInterruptPolicy
-    MediateInterruptRace(const Message& parent, const Message& child) override
+    MediateInterruptRace(const MessageInfo& parent,
+                         const MessageInfo& child) override
     {
         return MediateRace(parent, child);
     }
@@ -142,8 +137,6 @@ protected:
     virtual void
     ActorDestroy(ActorDestroyReason why) override;
 
-    MOZ_NORETURN void QuickExit();
-
     virtual bool
     RecvProcessNativeEventsInInterruptCall() override;
 
@@ -151,6 +144,8 @@ protected:
     virtual bool RecvStopProfiler() override;
     virtual bool RecvGatherProfile() override;
 
+    virtual bool
+    AnswerModuleSupportsAsyncRender(bool* aResult) override;
 public:
     explicit PluginModuleChild(bool aIsChrome);
     virtual ~PluginModuleChild();
@@ -265,10 +260,6 @@ private:
 
     virtual void EnteredCxxStack() override;
     virtual void ExitedCxxStack() override;
-#elif defined(MOZ_WIDGET_QT)
-
-    virtual void EnteredCxxStack() override;
-    virtual void ExitedCxxStack() override;
 #endif
 
     PRLibrary* mLibrary;
@@ -330,8 +321,6 @@ private:
     // MessagePumpForUI.
     int mTopLoopDepth;
 #  endif
-#elif defined (MOZ_WIDGET_QT)
-    NestedLoopTimer *mNestedLoopTimerObject;
 #endif
 
 public: // called by PluginInstanceChild
@@ -375,6 +364,8 @@ private:
     void ResetEventHooks();
     HHOOK mNestedEventHook;
     HHOOK mGlobalCallWndProcHook;
+public:
+    bool mAsyncRenderSupport;
 #endif
 };
 

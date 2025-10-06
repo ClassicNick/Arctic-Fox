@@ -27,6 +27,8 @@ public:
    , mImageContainer(aImageContainer)
   {}
 
+  MediaDataDecoderCallbackProxy* Callback() const { return mCallback; }
+
   // GMPVideoDecoderCallbackProxy
   void Decoded(GMPVideoi420Frame* aDecodedFrame) override;
   void ReceivedDecodedReferenceFrame(const uint64_t aPictureId) override;
@@ -49,40 +51,23 @@ private:
   RefPtr<layers::ImageContainer> mImageContainer;
 };
 
-class GMPVideoDecoder : public MediaDataDecoder {
-protected:
-  GMPVideoDecoder(const VideoInfo& aConfig,
-                  layers::LayersBackend aLayersBackend,
-                  layers::ImageContainer* aImageContainer,
-                  TaskQueue* aTaskQueue,
-                  MediaDataDecoderCallbackProxy* aCallback,
-                  VideoCallbackAdapter* aAdapter)
-   : mConfig(aConfig)
-   , mCallback(aCallback)
-   , mGMP(nullptr)
-   , mHost(nullptr)
-   , mAdapter(aAdapter)
-   , mConvertNALUnitLengths(false)
-  {
-  }
+struct GMPVideoDecoderParams {
+  explicit GMPVideoDecoderParams(const CreateDecoderParams& aParams);
+  GMPVideoDecoderParams& WithCallback(MediaDataDecoderProxy* aWrapper);
+  GMPVideoDecoderParams& WithAdapter(VideoCallbackAdapter* aAdapter);
 
+  const VideoInfo& mConfig;
+  TaskQueue* mTaskQueue;
+  MediaDataDecoderCallbackProxy* mCallback;
+  VideoCallbackAdapter* mAdapter;
+  layers::ImageContainer* mImageContainer;
+  layers::LayersBackend mLayersBackend;
+  RefPtr<GMPCrashHelper> mCrashHelper;
+};
+
+class GMPVideoDecoder : public MediaDataDecoder {
 public:
-  GMPVideoDecoder(const VideoInfo& aConfig,
-                  layers::LayersBackend aLayersBackend,
-                  layers::ImageContainer* aImageContainer,
-                  TaskQueue* aTaskQueue,
-                  MediaDataDecoderCallbackProxy* aCallback)
-   : mConfig(aConfig)
-   , mCallback(aCallback)
-   , mGMP(nullptr)
-   , mHost(nullptr)
-   , mAdapter(new VideoCallbackAdapter(aCallback,
-                                       VideoInfo(aConfig.mDisplay.width,
-                                                 aConfig.mDisplay.height),
-                                       aImageContainer))
-   , mConvertNALUnitLengths(false)
-  {
-  }
+  explicit GMPVideoDecoder(const GMPVideoDecoderParams& aParams);
 
   RefPtr<InitPromise> Init() override;
   nsresult Input(MediaRawData* aSample) override;
@@ -98,72 +83,37 @@ protected:
   virtual void InitTags(nsTArray<nsCString>& aTags);
   virtual nsCString GetNodeId();
   virtual GMPUniquePtr<GMPVideoEncodedFrame> CreateFrame(MediaRawData* aSample);
+  virtual const VideoInfo& GetConfig() const;
 
 private:
-  class GMPInitDoneRunnable : public nsRunnable
-  {
-  public:
-    GMPInitDoneRunnable()
-      : mInitDone(false),
-        mThread(do_GetCurrentThread())
-    {
-    }
-
-    NS_IMETHOD Run()
-    {
-      mInitDone = true;
-      return NS_OK;
-    }
-
-    void Dispatch()
-    {
-      mThread->Dispatch(this, NS_DISPATCH_NORMAL);
-    }
-
-    bool IsDone()
-    {
-      MOZ_ASSERT(nsCOMPtr<nsIThread>(do_GetCurrentThread()) == mThread);
-      return mInitDone;
-    }
-
-  private:
-    bool mInitDone;
-    nsCOMPtr<nsIThread> mThread;
-  };
-
-  void GetGMPAPI(GMPInitDoneRunnable* aInitDone);
 
   class GMPInitDoneCallback : public GetGMPVideoDecoderCallback
   {
   public:
-    GMPInitDoneCallback(GMPVideoDecoder* aDecoder,
-                        GMPInitDoneRunnable* aGMPInitDone)
+    explicit GMPInitDoneCallback(GMPVideoDecoder* aDecoder)
       : mDecoder(aDecoder)
-      , mGMPInitDone(aGMPInitDone)
     {
     }
 
     void Done(GMPVideoDecoderProxy* aGMP, GMPVideoHost* aHost) override
     {
-      if (aGMP) {
-        mDecoder->GMPInitDone(aGMP, aHost);
-      }
-      mGMPInitDone->Dispatch();
+      mDecoder->GMPInitDone(aGMP, aHost);
     }
 
   private:
     RefPtr<GMPVideoDecoder> mDecoder;
-    RefPtr<GMPInitDoneRunnable> mGMPInitDone;
   };
   void GMPInitDone(GMPVideoDecoderProxy* aGMP, GMPVideoHost* aHost);
 
-  const VideoInfo& mConfig;
+  const VideoInfo mConfig;
   MediaDataDecoderCallbackProxy* mCallback;
   nsCOMPtr<mozIGeckoMediaPluginService> mMPS;
   GMPVideoDecoderProxy* mGMP;
   GMPVideoHost* mHost;
   nsAutoPtr<VideoCallbackAdapter> mAdapter;
   bool mConvertNALUnitLengths;
+  MozPromiseHolder<InitPromise> mInitPromise;
+  RefPtr<GMPCrashHelper> mCrashHelper;
 };
 
 } // namespace mozilla

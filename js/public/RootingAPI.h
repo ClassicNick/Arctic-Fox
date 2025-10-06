@@ -16,10 +16,12 @@
 
 #include "jspubtd.h"
 
+#include "js/GCAnnotations.h"
 #include "js/GCAPI.h"
 #include "js/GCPolicyAPI.h"
 #include "js/HeapAPI.h"
 #include "js/TypeDecls.h"
+#include "js/UniquePtr.h"
 #include "js/Utility.h"
 
 /*
@@ -221,7 +223,7 @@ class Heap : public js::HeapBase<T>
     Heap() {
         static_assert(sizeof(T) == sizeof(Heap<T>),
                       "Heap<T> must be binary compatible with T.");
-        init(js::GCPolicy<T>::initial());
+        init(GCPolicy<T>::initial());
     }
     explicit Heap(T p) { init(p); }
 
@@ -234,7 +236,7 @@ class Heap : public js::HeapBase<T>
     explicit Heap(const Heap<T>& p) { init(p.ptr); }
 
     ~Heap() {
-        post(ptr, js::GCPolicy<T>::initial());
+        post(ptr, GCPolicy<T>::initial());
     }
 
     DECLARE_POINTER_CONSTREF_OPS(T);
@@ -258,7 +260,7 @@ class Heap : public js::HeapBase<T>
   private:
     void init(T newPtr) {
         ptr = newPtr;
-        post(js::GCPolicy<T>::initial(), ptr);
+        post(GCPolicy<T>::initial(), ptr);
     }
 
     void set(T newPtr) {
@@ -417,7 +419,7 @@ class MOZ_NONHEAP_CLASS Handle : public js::HandleBase<T>
      *     for the lifetime of the handle, as its users may not expect its value
      *     to change underneath them.
      */
-    static MOZ_CONSTEXPR Handle fromMarkedLocation(const T* p) {
+    static constexpr Handle fromMarkedLocation(const T* p) {
         return Handle(p, DeliberatelyChoosingThisOverload,
                       ImUsingThisOnlyInFromFromMarkedLocation);
     }
@@ -452,7 +454,7 @@ class MOZ_NONHEAP_CLASS Handle : public js::HandleBase<T>
 
     enum Disambiguator { DeliberatelyChoosingThisOverload = 42 };
     enum CallerIdentity { ImUsingThisOnlyInFromFromMarkedLocation = 17 };
-    MOZ_CONSTEXPR Handle(const T* p, Disambiguator, CallerIdentity) : ptr(p) {}
+    constexpr Handle(const T* p, Disambiguator, CallerIdentity) : ptr(p) {}
 
     const T* ptr;
 };
@@ -563,6 +565,8 @@ struct JS_PUBLIC_API(MovableCellHasher)
     using Key = T;
     using Lookup = T;
 
+    static bool hasHash(const Lookup& l);
+    static bool ensureHash(const Lookup& l);
     static HashNumber hash(const Lookup& l);
     static bool match(const Key& k, const Lookup& l);
     static void rekey(Key& k, const Key& newKey) { k = newKey; }
@@ -574,32 +578,50 @@ struct JS_PUBLIC_API(MovableCellHasher<JS::Heap<T>>)
     using Key = JS::Heap<T>;
     using Lookup = T;
 
+    static bool hasHash(const Lookup& l) { return MovableCellHasher<T>::hasHash(l); }
+    static bool ensureHash(const Lookup& l) { return MovableCellHasher<T>::ensureHash(l); }
     static HashNumber hash(const Lookup& l) { return MovableCellHasher<T>::hash(l); }
     static bool match(const Key& k, const Lookup& l) { return MovableCellHasher<T>::match(k, l); }
     static void rekey(Key& k, const Key& newKey) { k.unsafeSet(newKey); }
+};
+
+template <typename T>
+struct FallibleHashMethods<MovableCellHasher<T>>
+{
+    template <typename Lookup> static bool hasHash(Lookup&& l) {
+        return MovableCellHasher<T>::hasHash(mozilla::Forward<Lookup>(l));
+    }
+    template <typename Lookup> static bool ensureHash(Lookup&& l) {
+        return MovableCellHasher<T>::ensureHash(mozilla::Forward<Lookup>(l));
+    }
 };
 
 } /* namespace js */
 
 namespace js {
 
+// The alignment must be set because the Rooted and PersistentRooted ptr fields
+// may be accessed through reinterpret_cast<Rooted<ConcreteTraceable>*>, and
+// the compiler may choose a different alignment for the ptr field when it
+// knows the actual type stored in DispatchWrapper<T>.
+//
+// It would make more sense to align only those specific fields of type
+// DispatchWrapper, rather than DispatchWrapper itself, but that causes MSVC to
+// fail when Rooted is used in an IsConvertible test.
 template <typename T>
-class DispatchWrapper
+class alignas(8) DispatchWrapper
 {
     static_assert(JS::MapTypeToRootKind<T>::kind == JS::RootKind::Traceable,
                   "DispatchWrapper is intended only for usage with a Traceable");
 
     using TraceFn = void (*)(JSTracer*, T*, const char*);
     TraceFn tracer;
-#if JS_BITS_PER_WORD == 32
-    uint32_t padding; // Ensure the storage fields have CellSize alignment.
-#endif
-    T storage;
+    alignas(gc::CellSize) T storage;
 
   public:
     template <typename U>
     MOZ_IMPLICIT DispatchWrapper(U&& initial)
-      : tracer(&GCPolicy<T>::trace),
+      : tracer(&JS::GCPolicy<T>::trace),
         storage(mozilla::Forward<U>(initial))
     { }
 
@@ -633,24 +655,29 @@ namespace JS {
 template <typename T>
 class MOZ_RAII Rooted : public js::RootedBase<T>
 {
-    /* Note: CX is a subclass of either ContextFriendFields or PerThreadDataFriendFields. */
-    void registerWithRootLists(js::RootLists& roots) {
-        this->stack = &roots.stackRoots_[JS::MapTypeToRootKind<T>::kind];
+    inline void registerWithRootLists(js::RootedListHeads& roots) {
+        this->stack = &roots[JS::MapTypeToRootKind<T>::kind];
         this->prev = *stack;
         *stack = reinterpret_cast<Rooted<void*>*>(this);
     }
 
-    js::RootLists& rootLists(js::ContextFriendFields* cx) { return cx->roots; }
-    js::RootLists& rootLists(JSContext* cx) { return js::ContextFriendFields::get(cx)->roots; }
-    js::RootLists& rootLists(js::PerThreadDataFriendFields* pt) { return pt->roots; }
-    js::RootLists& rootLists(JSRuntime* rt) {
-        return js::PerThreadDataFriendFields::getMainThread(rt)->roots;
+    inline js::RootedListHeads& rootLists(JS::RootingContext* cx) {
+        return rootLists(static_cast<js::ContextFriendFields*>(cx));
+    }
+    inline js::RootedListHeads& rootLists(js::ContextFriendFields* cx) {
+        if (JS::Zone* zone = cx->zone_)
+            return JS::shadow::Zone::asShadowZone(zone)->stackRoots_;
+        MOZ_ASSERT(cx->isJSContext);
+        return cx->roots.stackRoots_;
+    }
+    inline js::RootedListHeads& rootLists(JSContext* cx) {
+        return rootLists(js::ContextFriendFields::get(cx));
     }
 
   public:
     template <typename RootingContext>
     explicit Rooted(const RootingContext& cx)
-      : ptr(js::GCPolicy<T>::initial())
+      : ptr(GCPolicy<T>::initial())
     {
         registerWithRootLists(rootLists(cx));
     }
@@ -707,7 +734,7 @@ class MOZ_RAII Rooted : public js::RootedBase<T>
     MaybeWrapped ptr;
 
     Rooted(const Rooted&) = delete;
-};
+} JS_HAZ_ROOTED;
 
 } /* namespace JS */
 
@@ -755,7 +782,7 @@ class MOZ_RAII FakeRooted : public RootedBase<T>
 {
   public:
     template <typename CX>
-    explicit FakeRooted(CX* cx) : ptr(GCPolicy<T>::initial()) {}
+    explicit FakeRooted(CX* cx) : ptr(JS::GCPolicy<T>::initial()) {}
 
     template <typename CX>
     FakeRooted(CX* cx, T initial) : ptr(initial) {}
@@ -959,21 +986,23 @@ class PersistentRooted : public js::PersistentRootedBase<T>,
         roots.heapRoots_[kind].insertBack(reinterpret_cast<JS::PersistentRooted<void*>*>(this));
     }
 
-    js::RootLists& rootLists(js::PerThreadDataFriendFields* pt) { return pt->roots; }
-    js::RootLists& rootLists(JSRuntime* rt) {
-        return js::PerThreadDataFriendFields::getMainThread(rt)->roots;
+    js::RootLists& rootLists(JSContext* cx) {
+        return rootLists(JS::RootingContext::get(cx));
     }
-    js::RootLists& rootLists(JSContext* cx) { return rootLists(js::GetRuntime(cx)); }
-    js::RootLists& rootLists(js::ContextFriendFields* cx) {
-        return rootLists(reinterpret_cast<JSContext*>(cx));
+    js::RootLists& rootLists(JS::RootingContext* cx) {
+        MOZ_ASSERT(cx->isJSContext);
+        return cx->roots;
     }
 
+    // Disallow ExclusiveContext*.
+    js::RootLists& rootLists(js::ContextFriendFields* cx) = delete;
+
   public:
-    PersistentRooted() : ptr(js::GCPolicy<T>::initial()) {}
+    PersistentRooted() : ptr(GCPolicy<T>::initial()) {}
 
     template <typename RootingContext>
     explicit PersistentRooted(const RootingContext& cx)
-      : ptr(js::GCPolicy<T>::initial())
+      : ptr(GCPolicy<T>::initial())
     {
         registerWithRootLists(rootLists(cx));
     }
@@ -1006,7 +1035,7 @@ class PersistentRooted : public js::PersistentRootedBase<T>,
 
     template <typename RootingContext>
     void init(const RootingContext& cx) {
-        init(cx, js::GCPolicy<T>::initial());
+        init(cx, GCPolicy<T>::initial());
     }
 
     template <typename RootingContext, typename U>
@@ -1017,7 +1046,7 @@ class PersistentRooted : public js::PersistentRootedBase<T>,
 
     void reset() {
         if (initialized()) {
-            set(js::GCPolicy<T>::initial());
+            set(GCPolicy<T>::initial());
             ListBase::remove();
         }
     }
@@ -1051,9 +1080,8 @@ class PersistentRooted : public js::PersistentRootedBase<T>,
         MapTypeToRootKind<T>::kind == JS::RootKind::Traceable,
         js::DispatchWrapper<T>,
         T>::Type;
-
     MaybeWrapped ptr;
-};
+} JS_HAZ_ROOTED;
 
 class JS_PUBLIC_API(ObjectPtr)
 {
@@ -1067,17 +1095,14 @@ class JS_PUBLIC_API(ObjectPtr)
     /* Always call finalize before the destructor. */
     ~ObjectPtr() { MOZ_ASSERT(!value); }
 
-    void finalize(JSRuntime* rt) {
-        if (IsIncrementalBarrierNeeded(rt))
-            IncrementalObjectBarrier(value);
-        value = nullptr;
-    }
+    void finalize(JSRuntime* rt);
+    void finalize(JSContext* cx);
 
     void init(JSObject* obj) { value = obj; }
 
     JSObject* get() const { return value; }
 
-    void writeBarrierPre(JSRuntime* rt) {
+    void writeBarrierPre(JSContext* cx) {
         IncrementalObjectBarrier(value);
     }
 
@@ -1099,6 +1124,45 @@ class JS_PUBLIC_API(ObjectPtr)
 } /* namespace JS */
 
 namespace js {
+
+template <typename Outer, typename T, typename D>
+class UniquePtrOperations
+{
+    const UniquePtr<T, D>& uniquePtr() const { return static_cast<const Outer*>(this)->get(); }
+
+  public:
+    explicit operator bool() const { return !!uniquePtr(); }
+};
+
+template <typename Outer, typename T, typename D>
+class MutableUniquePtrOperations : public UniquePtrOperations<Outer, T, D>
+{
+    UniquePtr<T, D>& uniquePtr() { return static_cast<Outer*>(this)->get(); }
+
+  public:
+    MOZ_MUST_USE typename UniquePtr<T, D>::Pointer release() { return uniquePtr().release(); }
+};
+
+template <typename T, typename D>
+class RootedBase<UniquePtr<T, D>>
+  : public MutableUniquePtrOperations<JS::Rooted<UniquePtr<T, D>>, T, D>
+{ };
+
+template <typename T, typename D>
+class MutableHandleBase<UniquePtr<T, D>>
+  : public MutableUniquePtrOperations<JS::MutableHandle<UniquePtr<T, D>>, T, D>
+{ };
+
+template <typename T, typename D>
+class HandleBase<UniquePtr<T, D>>
+  : public UniquePtrOperations<JS::Handle<UniquePtr<T, D>>, T, D>
+{ };
+
+template <typename T, typename D>
+class PersistentRootedBase<UniquePtr<T, D>>
+  : public MutableUniquePtrOperations<JS::PersistentRooted<UniquePtr<T, D>>, T, D>
+{ };
+
 namespace gc {
 
 template <typename T, typename TraceCallbacks>

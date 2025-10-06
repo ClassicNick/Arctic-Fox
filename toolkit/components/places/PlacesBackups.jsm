@@ -112,7 +112,7 @@ this.PlacesBackups = {
     if (!bookmarksBackupDir.exists()) {
       bookmarksBackupDir.create(Ci.nsIFile.DIRECTORY_TYPE, parseInt("0700", 8));
       if (!bookmarksBackupDir.exists())
-        throw("Unable to create bookmarks backup folder");
+        throw ("Unable to create bookmarks backup folder");
     }
     delete this._folder;
     return this._folder = bookmarksBackupDir;
@@ -173,7 +173,7 @@ this.PlacesBackups = {
     this._entries.sort((a, b) => {
       let aDate = this.getDateForFile(a);
       let bDate = this.getDateForFile(b);
-      return aDate < bDate ? 1 : aDate > bDate ? -1 : 0;
+      return bDate - aDate;
     });
     return this._entries;
   },
@@ -205,17 +205,18 @@ this.PlacesBackups = {
           let filePath = aEntry.path;
           if (this.getDateForFile(filePath) > new Date()) {
             return OS.File.remove(filePath);
-          } else {
-            this._backupFiles.push(filePath);
           }
+          this._backupFiles.push(filePath);
         }
+
+        return undefined;
       }.bind(this));
       iterator.close();
 
       this._backupFiles.sort((a, b) => {
         let aDate = this.getDateForFile(a);
         let bDate = this.getDateForFile(b);
-        return aDate < bDate ? 1 : aDate > bDate ? -1 : 0;
+        return bDate - aDate;
       });
 
       return this._backupFiles;
@@ -272,7 +273,7 @@ this.PlacesBackups = {
                                                        : OS.Path.basename(aBackupFile);
     let matches = filename.match(filenamesRegex);
     if (!matches)
-      throw("Invalid backup file name: " + filename);
+      throw ("Invalid backup file name: " + filename);
     return new Date(matches[1].replace(/-/g, "/"));
   },
 

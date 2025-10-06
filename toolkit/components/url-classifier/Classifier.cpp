@@ -16,8 +16,8 @@
 #include "mozilla/Telemetry.h"
 #include "mozilla/Logging.h"
 
-// NSPR_LOG_MODULES=UrlClassifierDbService:5
-extern PRLogModuleInfo *gUrlClassifierDbServiceLog;
+// MOZ_LOG=UrlClassifierDbService:5
+extern mozilla::LazyLogModule gUrlClassifierDbServiceLog;
 #define LOG(args) MOZ_LOG(gUrlClassifierDbServiceLog, mozilla::LogLevel::Debug, args)
 #define LOG_ENABLED() MOZ_LOG_TEST(gUrlClassifierDbServiceLog, mozilla::LogLevel::Debug)
 

@@ -31,7 +31,7 @@ public:
     virtual bool SetupCairoFont(DrawTarget* aDrawTarget) override;
 
     /* override Measure to add padding for antialiasing */
-    virtual RunMetrics Measure(gfxTextRun *aTextRun,
+    virtual RunMetrics Measure(const gfxTextRun *aTextRun,
                                uint32_t aStart, uint32_t aEnd,
                                BoundingBoxType aBoundingBoxType,
                                DrawTarget *aDrawTargetForTightBoundingBox,
@@ -71,7 +71,7 @@ protected:
                            const char16_t *aText,
                            uint32_t        aOffset,
                            uint32_t        aLength,
-                           int32_t         aScript,
+                           Script          aScript,
                            bool            aVertical,
                            gfxShapedText  *aShapedText) override;
 
@@ -93,7 +93,7 @@ protected:
 
     cairo_font_face_t    *mFontFace;
 
-    nsAutoPtr<gfxFontShaper> mCoreTextShaper;
+    mozilla::UniquePtr<gfxFontShaper> mCoreTextShaper;
 
     Metrics               mMetrics;
     uint32_t              mSpaceGlyph;

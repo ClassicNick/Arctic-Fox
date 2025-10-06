@@ -62,17 +62,24 @@ public:
 
   nsresult Allocate(const dom::MediaTrackConstraints &aConstraints,
                     const MediaEnginePrefs &aPrefs,
-                    const nsString& aDeviceId) override;
-  nsresult Deallocate() override;
-  nsresult Start(SourceMediaStream* aStream, TrackID aID) override;
+                    const nsString& aDeviceId,
+                    const nsACString& aOrigin,
+                    AllocationHandle** aOutHandle,
+                    const char** aOutBadConstraint) override;
+  nsresult Deallocate(AllocationHandle* aHandle) override;
+  nsresult Start(SourceMediaStream* aStream, TrackID aID,
+                 const PrincipalHandle& aPrincipalHandle) override;
   nsresult Stop(SourceMediaStream* aSource, TrackID aID) override;
-  nsresult Restart(const dom::MediaTrackConstraints& aConstraints,
+  nsresult Restart(AllocationHandle* aHandle,
+                   const dom::MediaTrackConstraints& aConstraints,
                    const MediaEnginePrefs &aPrefs,
-                   const nsString& aDeviceId) override;
+                   const nsString& aDeviceId,
+                   const char** aOutBadConstraint) override;
   void NotifyPull(MediaStreamGraph* aGraph,
                   SourceMediaStream* aSource,
                   TrackID aId,
-                  StreamTime aDesiredTime) override;
+                  StreamTime aDesiredTime,
+                  const PrincipalHandle& aPrincipalHandle) override;
   dom::MediaSourceEnum GetMediaSource() const override {
     return dom::MediaSourceEnum::Camera;
   }
@@ -91,7 +98,7 @@ public:
   void RotateImage(layers::Image* aImage, uint32_t aWidth, uint32_t aHeight);
   void Notify(const mozilla::hal::ScreenConfiguration& aConfiguration);
 
-  nsresult TakePhoto(PhotoCallback* aCallback) override;
+  nsresult TakePhoto(MediaEnginePhotoCallback* aCallback) override;
 
   // It sets the correct photo orientation via camera parameter according to
   // current screen orientation.
@@ -111,7 +118,7 @@ protected:
   // Initialize the needed Video engine interfaces.
   void Init();
   void Shutdown();
-  size_t NumCapabilities() override;
+  size_t NumCapabilities() const override;
   // Initialize the recording frame (MediaBuffer) callback and Gonk camera.
   // MediaBuffer will transfers to MediaStreamGraph via AppendToTrack.
   nsresult InitDirectMediaBuffer();
@@ -124,7 +131,7 @@ protected:
   android::sp<android::GonkCameraSource> mCameraSource;
 
   // These are protected by mMonitor in parent class
-  nsTArray<RefPtr<PhotoCallback>> mPhotoCallbacks;
+  nsTArray<RefPtr<MediaEnginePhotoCallback>> mPhotoCallbacks;
   int mRotation;
   int mCameraAngle; // See dom/base/ScreenOrientation.h
   bool mBackCamera;

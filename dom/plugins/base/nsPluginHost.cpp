@@ -73,7 +73,7 @@
 #include "nsIDOMWindow.h"
 
 #include "nsNetCID.h"
-#include "prprf.h"
+#include "mozilla/Sprintf.h"
 #include "nsThreadUtils.h"
 #include "nsIInputStreamTee.h"
 #include "nsQueryObject.h"
@@ -640,15 +640,19 @@ nsresult nsPluginHost::FindProxyForURL(const char* url, char* *result)
     return NS_ERROR_FAILURE;
   }
 
-  nsCOMPtr<nsIIOService> ioService = do_GetService(NS_IOSERVICE_CONTRACTID, &res);
-  if (NS_FAILED(res) || !ioService)
-    return res;
-
   // make a temporary channel from the argument url
+  nsCOMPtr<nsIURI> uri;
+  res = NS_NewURI(getter_AddRefs(uri), nsDependentCString(url));
+  NS_ENSURE_SUCCESS(res, res);
+
+  nsCOMPtr<nsIPrincipal> nullPrincipal = nsNullPrincipal::Create();
+  // The following channel is never openend, so it does not matter what
+  // securityFlags we pass; let's follow the principle of least privilege.
   nsCOMPtr<nsIChannel> tempChannel;
-  res = ioService->NewChannel(nsDependentCString(url), nullptr, nullptr, getter_AddRefs(tempChannel));
-  if (NS_FAILED(res))
-    return res;
+  res = NS_NewChannel(getter_AddRefs(tempChannel), uri, nullPrincipal,
+                      nsILoadInfo::SEC_REQUIRE_SAME_ORIGIN_DATA_IS_BLOCKED,
+                      nsIContentPolicy::TYPE_OTHER);
+  NS_ENSURE_SUCCESS(res, res);
 
   nsCOMPtr<nsIProxyInfo> pi;
 
@@ -1106,11 +1110,19 @@ nsPluginHost::GetPermissionStringForType(const nsACString &aMimeType,
   nsresult rv = GetPluginTagForType(aMimeType, aExcludeFlags,
                                     getter_AddRefs(tag));
   NS_ENSURE_SUCCESS(rv, rv);
-  NS_ENSURE_TRUE(tag, NS_ERROR_FAILURE);
+  return GetPermissionStringForTag(tag, aExcludeFlags, aPermissionString);
+}
+
+NS_IMETHODIMP
+nsPluginHost::GetPermissionStringForTag(nsIPluginTag* aTag,
+                                        uint32_t aExcludeFlags,
+                                        nsACString &aPermissionString)
+{
+  NS_ENSURE_TRUE(aTag, NS_ERROR_FAILURE);
 
   aPermissionString.Truncate();
   uint32_t blocklistState;
-  rv = tag->GetBlocklistState(&blocklistState);
+  nsresult rv = aTag->GetBlocklistState(&blocklistState);
   NS_ENSURE_SUCCESS(rv, rv);
 
   if (blocklistState == nsIBlocklistService::STATE_VULNERABLE_UPDATE_AVAILABLE ||
@@ -1122,7 +1134,7 @@ nsPluginHost::GetPermissionStringForType(const nsACString &aMimeType,
   }
 
   nsCString niceName;
-  rv = tag->GetNiceName(niceName);
+  rv = aTag->GetNiceName(niceName);
   NS_ENSURE_SUCCESS(rv, rv);
   NS_ENSURE_TRUE(!niceName.IsEmpty(), NS_ERROR_FAILURE);
 
@@ -1399,12 +1411,12 @@ nsPluginHost::GetPluginForContentProcess(uint32_t aPluginId, nsNPAPIPlugin** aPl
   return NS_ERROR_FAILURE;
 }
 
-class nsPluginUnloadRunnable : public nsRunnable
+class nsPluginUnloadRunnable : public Runnable
 {
 public:
   explicit nsPluginUnloadRunnable(uint32_t aPluginId) : mPluginId(aPluginId) {}
 
-  NS_IMETHOD Run()
+  NS_IMETHOD Run() override
   {
     RefPtr<nsPluginHost> host = nsPluginHost::GetInst();
     if (!host) {
@@ -1856,7 +1868,8 @@ nsPluginHost::GetSpecialType(const nsACString & aMIMEType)
   }
 
   if (aMIMEType.LowerCaseEqualsASCII("application/x-silverlight") ||
-      aMIMEType.LowerCaseEqualsASCII("application/x-silverlight-2")) {
+      aMIMEType.LowerCaseEqualsASCII("application/x-silverlight-2") ||
+      aMIMEType.LowerCaseEqualsASCII("application/x-silverlight-test")) {
     return eSpecialType_Silverlight;
   }
 
@@ -2011,7 +2024,7 @@ GetExtensionDirectories(nsCOMArray<nsIFile>& dirs)
     nsCOMPtr<nsIFile> file = do_QueryInterface(next);
     if (file) {
       file->Normalize();
-      dirs.AppendElement(file);
+      dirs.AppendElement(file.forget());
     }
   }
 }
@@ -2138,8 +2151,6 @@ nsresult nsPluginHost::ScanPluginsDirectory(nsIFile *pluginsDir,
   nsCOMArray<nsIFile> extensionDirs;
   GetExtensionDirectories(extensionDirs);
 
-  bool warnOutdated = false;
-
   for (int32_t i = (pluginFiles.Length() - 1); i >= 0; i--) {
     nsCOMPtr<nsIFile>& localfile = pluginFiles[i];
 
@@ -2239,13 +2250,8 @@ nsresult nsPluginHost::ScanPluginsDirectory(nsIFile *pluginsDir,
 
       // If the blocklist says it is risky and we have never seen this
       // plugin before, then disable it.
-      // If the blocklist says this is an outdated plugin, warn about
-      // outdated plugins.
       if (state == nsIBlocklistService::STATE_SOFTBLOCKED && !seenBefore) {
         pluginTag->SetEnabledState(nsIPluginTag::STATE_DISABLED);
-      }
-      if (state == nsIBlocklistService::STATE_OUTDATED && !seenBefore) {
-        warnOutdated = true;
       }
 
       // Plugin unloading is tag-based. If we created a new tag and loaded
@@ -2284,10 +2290,6 @@ nsresult nsPluginHost::ScanPluginsDirectory(nsIFile *pluginsDir,
     }
 
     AddPluginTag(pluginTag);
-  }
-
-  if (warnOutdated) {
-    Preferences::SetBool("plugins.update.notifyUser", true);
   }
 
   return NS_OK;
@@ -2459,6 +2461,7 @@ nsPluginHost::FindPluginsInContent(bool aCreatePluginList, bool* aPluginsChanged
                                                tag.isJavaPlugin(),
                                                tag.isFlashPlugin(),
                                                tag.supportsAsyncInit(),
+                                               tag.supportsAsyncRender(),
                                                tag.lastModifiedTime(),
                                                tag.isFromExtension(),
                                                tag.sandboxLevel());
@@ -2699,6 +2702,7 @@ nsPluginHost::FindPluginsForContent(uint32_t aPluginEpoch,
                                       tag->mIsJavaPlugin,
                                       tag->mIsFlashPlugin,
                                       tag->mSupportsAsyncInit,
+                                      tag->mSupportsAsyncRender,
                                       tag->FileName(),
                                       tag->Version(),
                                       tag->mLastModifiedTime,
@@ -3373,7 +3377,8 @@ nsresult nsPluginHost::NewPluginURLStream(const nsString& aURL,
   // in case aURL is relative
   RefPtr<nsPluginInstanceOwner> owner = aInstance->GetOwner();
   if (owner) {
-    rv = NS_MakeAbsoluteURI(absUrl, aURL, nsCOMPtr<nsIURI>(owner->GetBaseURI()));
+    nsCOMPtr<nsIURI> baseURI = owner->GetBaseURI();
+    rv = NS_MakeAbsoluteURI(absUrl, aURL, baseURI);
   }
 
   if (absUrl.IsEmpty())
@@ -3785,8 +3790,8 @@ nsPluginHost::ParsePostBufferToFixHeaders(const char *inPostData, uint32_t inPos
     newBufferLen = dataLen + l;
     if (!(*outPostData = p = (char*)moz_xmalloc(newBufferLen)))
       return NS_ERROR_OUT_OF_MEMORY;
-    headersLen = PR_snprintf(p, l,"%s: %ld%s", ContentLenHeader, dataLen, CRLFCRLF);
-    if (headersLen == l) { // if PR_snprintf has ate all extra space consider this as an error
+    headersLen = snprintf(p, l,"%s: %u%s", ContentLenHeader, dataLen, CRLFCRLF);
+    if (headersLen == l) { // if snprintf has ate all extra space consider this as an error
       free(p);
       *outPostData = 0;
       return NS_ERROR_FAILURE;
@@ -4174,7 +4179,7 @@ nsPluginHost::DestroyRunningInstances(nsPluginTag* aPluginTag)
 
 // Runnable that does an async destroy of a plugin.
 
-class nsPluginDestroyRunnable : public nsRunnable,
+class nsPluginDestroyRunnable : public Runnable,
                                 public PRCList
 {
 public:
@@ -4190,7 +4195,7 @@ public:
     PR_REMOVE_LINK(this);
   }
 
-  NS_IMETHOD Run()
+  NS_IMETHOD Run() override
   {
     RefPtr<nsNPAPIPluginInstance> instance;
 

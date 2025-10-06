@@ -6,7 +6,7 @@
 
 #include "ServiceWorkerManagerChild.h"
 #include "ServiceWorkerManager.h"
-#include "mozilla/unused.h"
+#include "mozilla/Unused.h"
 
 namespace mozilla {
 
@@ -62,7 +62,7 @@ ServiceWorkerManagerChild::RecvNotifyUnregister(const PrincipalInfo& aPrincipalI
     return true;
   }
 
-  nsresult rv = swm->Unregister(principal, nullptr, aScope);
+  nsresult rv = swm->NotifyUnregister(principal, aScope);
   Unused << NS_WARN_IF(NS_FAILED(rv));
   return true;
 }

@@ -63,8 +63,6 @@ nsChromeTreeOwner::InitGlobals()
 {
   NS_ASSERTION(gLiterals == nullptr, "already initialized");
   gLiterals = new nsChromeTreeOwnerLiterals();
-  if (!gLiterals)
-    return NS_ERROR_OUT_OF_MEMORY;
   return NS_OK;
 }
 
@@ -271,6 +269,38 @@ nsChromeTreeOwner::GetPrimaryTabParent(nsITabParent** aTab)
   return mXULWindow->GetPrimaryTabParent(aTab);
 }
 
+NS_IMETHODIMP
+nsChromeTreeOwner::GetPrimaryContentSize(int32_t* aWidth,
+                                         int32_t* aHeight)
+{
+  NS_ENSURE_STATE(mXULWindow);
+  return mXULWindow->GetPrimaryContentSize(aWidth, aHeight);
+}
+
+NS_IMETHODIMP
+nsChromeTreeOwner::SetPrimaryContentSize(int32_t aWidth,
+                                         int32_t aHeight)
+{
+  NS_ENSURE_STATE(mXULWindow);
+  return mXULWindow->SetPrimaryContentSize(aWidth, aHeight);
+}
+
+NS_IMETHODIMP
+nsChromeTreeOwner::GetRootShellSize(int32_t* aWidth,
+                                    int32_t* aHeight)
+{
+  NS_ENSURE_STATE(mXULWindow);
+  return mXULWindow->GetRootShellSize(aWidth, aHeight);
+}
+
+NS_IMETHODIMP
+nsChromeTreeOwner::SetRootShellSize(int32_t aWidth,
+                                    int32_t aHeight)
+{
+  NS_ENSURE_STATE(mXULWindow);
+  return mXULWindow->SetRootShellSize(aWidth, aHeight);
+}
+
 NS_IMETHODIMP nsChromeTreeOwner::SizeShellTo(nsIDocShellTreeItem* aShellItem,
    int32_t aCX, int32_t aCY)
 {
@@ -351,6 +381,13 @@ nsChromeTreeOwner::GetTargetableShellCount(uint32_t* aResult)
   return NS_OK;
 }
 
+NS_IMETHODIMP
+nsChromeTreeOwner::GetHasPrimaryContent(bool* aResult)
+{
+  NS_ENSURE_STATE(mXULWindow);
+  return mXULWindow->GetHasPrimaryContent(aResult);
+}
+
 //*****************************************************************************
 // nsChromeTreeOwner::nsIBaseWindow
 //*****************************************************************************   
@@ -359,7 +396,7 @@ NS_IMETHODIMP nsChromeTreeOwner::InitWindow(nativeWindow aParentNativeWindow,
    nsIWidget* parentWidget, int32_t x, int32_t y, int32_t cx, int32_t cy)   
 {
    // Ignore widget parents for now.  Don't think those are a vaild thing to call.
-   NS_ENSURE_SUCCESS(SetPositionAndSize(x, y, cx, cy, false), NS_ERROR_FAILURE);
+   NS_ENSURE_SUCCESS(SetPositionAndSize(x, y, cx, cy, 0), NS_ERROR_FAILURE);
 
    return NS_OK;
 }
@@ -419,10 +456,10 @@ NS_IMETHODIMP nsChromeTreeOwner::GetSize(int32_t* cx, int32_t* cy)
 }
 
 NS_IMETHODIMP nsChromeTreeOwner::SetPositionAndSize(int32_t x, int32_t y, int32_t cx,
-   int32_t cy, bool fRepaint)
+   int32_t cy, uint32_t aFlags)
 {
    NS_ENSURE_STATE(mXULWindow);
-   return mXULWindow->SetPositionAndSize(x, y, cx, cy, fRepaint);
+   return mXULWindow->SetPositionAndSize(x, y, cx, cy, aFlags);
 }
 
 NS_IMETHODIMP nsChromeTreeOwner::GetPositionAndSize(int32_t* x, int32_t* y, int32_t* cx,

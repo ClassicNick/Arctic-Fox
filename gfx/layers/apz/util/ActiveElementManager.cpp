@@ -6,6 +6,8 @@
 #include "ActiveElementManager.h"
 #include "mozilla/EventStateManager.h"
 #include "mozilla/EventStates.h"
+#include "mozilla/StyleSetHandle.h"
+#include "mozilla/StyleSetHandleInlines.h"
 #include "mozilla/Preferences.h"
 #include "base/message_loop.h"
 #include "base/task.h"
@@ -88,11 +90,16 @@ ActiveElementManager::TriggerElementActivation()
   if (!mCanBePan) {
     SetActive(mTarget);
   } else {
+    CancelTask();   // this is only needed because of bug 1169802. Fixing that
+                    // bug properly should make this unnecessary.
     MOZ_ASSERT(mSetActiveTask == nullptr);
-    mSetActiveTask = NewRunnableMethod(
-        this, &ActiveElementManager::SetActiveTask, mTarget);
-    MessageLoop::current()->PostDelayedTask(
-        FROM_HERE, mSetActiveTask, sActivationDelayMs);
+
+    RefPtr<CancelableRunnable> task =
+      NewCancelableRunnableMethod<nsCOMPtr<dom::Element>>(this,
+                                                          &ActiveElementManager::SetActiveTask,
+                                                          mTarget);
+    mSetActiveTask = task;
+    MessageLoop::current()->PostDelayedTask(task.forget(), sActivationDelayMs);
     AEM_LOG("Scheduling mSetActiveTask %p\n", mSetActiveTask);
   }
 }
@@ -159,7 +166,7 @@ ElementHasActiveStyle(dom::Element* aElement)
   if (!pc) {
     return false;
   }
-  nsStyleSet* styleSet = pc->StyleSet();
+  StyleSetHandle styleSet = pc->StyleSet();
   for (dom::Element* e = aElement; e; e = e->GetParentElement()) {
     if (styleSet->HasStateDependentStyle(e, NS_EVENT_STATE_ACTIVE)) {
       AEM_LOG("Element %p's style is dependent on the active state\n", e);
@@ -204,7 +211,7 @@ ActiveElementManager::ResetTouchBlockState()
 }
 
 void
-ActiveElementManager::SetActiveTask(dom::Element* aTarget)
+ActiveElementManager::SetActiveTask(const nsCOMPtr<dom::Element>& aTarget)
 {
   AEM_LOG("mSetActiveTask %p running\n", mSetActiveTask);
 

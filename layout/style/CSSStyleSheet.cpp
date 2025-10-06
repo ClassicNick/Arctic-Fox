@@ -12,7 +12,6 @@
 #include "nsCSSRuleProcessor.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/dom/Element.h"
-#include "mozilla/dom/ShadowRoot.h"
 #include "mozilla/dom/MediaListBinding.h"
 #include "mozilla/css/NameSpaceRule.h"
 #include "mozilla/css/GroupRule.h"
@@ -841,22 +840,10 @@ CSSStyleSheetInner::CSSStyleSheetInner(CSSStyleSheet* aPrimarySheet,
                                        CORSMode aCORSMode,
                                        ReferrerPolicy aReferrerPolicy,
                                        const SRIMetadata& aIntegrity)
-  : mSheets()
-  , mCORSMode(aCORSMode)
-  , mReferrerPolicy (aReferrerPolicy)
-  , mIntegrity(aIntegrity)
-  , mComplete(false)
-#ifdef DEBUG
-  , mPrincipalSet(false)
-#endif
+  : StyleSheetInfo(aCORSMode, aReferrerPolicy, aIntegrity)
 {
   MOZ_COUNT_CTOR(CSSStyleSheetInner);
   mSheets.AppendElement(aPrimarySheet);
-
-  mPrincipal = nsNullPrincipal::Create();
-  if (!mPrincipal) {
-    NS_RUNTIMEABORT("nsNullPrincipal::Init failed");
-  }
 }
 
 static bool SetStyleSheetReference(css::Rule* aRule, void* aSheet)
@@ -934,11 +921,13 @@ CSSStyleSheet::SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const
     n += aMallocSizeOf(s);
 
     // Each inner can be shared by multiple sheets.  So we only count the inner
-    // if this sheet is the first one in the list of those sharing it.  As a
-    // result, the first such sheet takes all the blame for the memory
+    // if this sheet is the last one in the list of those sharing it.  As a
+    // result, the last such sheet takes all the blame for the memory
     // consumption of the inner, which isn't ideal but it's better than
-    // double-counting the inner.
-    if (s->mInner->mSheets[0] == s) {
+    // double-counting the inner.  We use last instead of first since the first
+    // sheet may be held in the nsXULPrototypeCache and not used in a window at
+    // all.
+    if (s->mInner->mSheets.LastElement() == s) {
       n += s->mInner->SizeOfIncludingThis(aMallocSizeOf);
     }
 
@@ -959,18 +948,7 @@ CSSStyleSheet::SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const
 
 CSSStyleSheetInner::CSSStyleSheetInner(CSSStyleSheetInner& aCopy,
                                        CSSStyleSheet* aPrimarySheet)
-  : mSheets(),
-    mSheetURI(aCopy.mSheetURI),
-    mOriginalSheetURI(aCopy.mOriginalSheetURI),
-    mBaseURI(aCopy.mBaseURI),
-    mPrincipal(aCopy.mPrincipal),
-    mCORSMode(aCopy.mCORSMode),
-    mReferrerPolicy(aCopy.mReferrerPolicy),
-    mIntegrity(aCopy.mIntegrity),
-    mComplete(aCopy.mComplete)
-#ifdef DEBUG
-    , mPrincipalSet(aCopy.mPrincipalSet)
-#endif
+  : StyleSheetInfo(aCopy)
 {
   MOZ_COUNT_CTOR(CSSStyleSheetInner);
   AddSheet(aPrimarySheet);
@@ -1073,8 +1051,10 @@ size_t
 CSSStyleSheetInner::SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const
 {
   size_t n = aMallocSizeOf(this);
-  n += mOrderedRules.SizeOfExcludingThis(css::Rule::SizeOfCOMArrayElementIncludingThis,
-                                         aMallocSizeOf);
+  n += mOrderedRules.ShallowSizeOfExcludingThis(aMallocSizeOf);
+  for (size_t i = 0; i < mOrderedRules.Length(); i++) {
+    n += mOrderedRules[i]->SizeOfIncludingThis(aMallocSizeOf);
+  }
   n += mFirstChild ? mFirstChild->SizeOfIncludingThis(aMallocSizeOf) : 0;
 
   // Measurement of the following members may be added later if DMD finds it is
@@ -1095,16 +1075,14 @@ CSSStyleSheetInner::SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const
 // CSS Style Sheet
 //
 
-CSSStyleSheet::CSSStyleSheet(CORSMode aCORSMode, ReferrerPolicy aReferrerPolicy)
-  : mTitle(), 
+CSSStyleSheet::CSSStyleSheet(css::SheetParsingMode aParsingMode,
+                             CORSMode aCORSMode, ReferrerPolicy aReferrerPolicy)
+  : StyleSheet(StyleBackendType::Gecko, aParsingMode),
+    mTitle(),
     mParent(nullptr),
     mOwnerRule(nullptr),
-    mDocument(nullptr),
-    mOwningNode(nullptr),
-    mDisabled(false),
     mDirty(false),
     mInRuleProcessorCache(false),
-    mParsingMode(css::eUserSheetFeatures),
     mScopeElement(nullptr),
     mRuleProcessors(nullptr)
 {
@@ -1112,18 +1090,16 @@ CSSStyleSheet::CSSStyleSheet(CORSMode aCORSMode, ReferrerPolicy aReferrerPolicy)
                                   SRIMetadata());
 }
 
-CSSStyleSheet::CSSStyleSheet(CORSMode aCORSMode,
+CSSStyleSheet::CSSStyleSheet(css::SheetParsingMode aParsingMode,
+                             CORSMode aCORSMode,
                              ReferrerPolicy aReferrerPolicy,
                              const SRIMetadata& aIntegrity)
-  : mTitle(),
+  : StyleSheet(StyleBackendType::Gecko, aParsingMode),
+    mTitle(),
     mParent(nullptr),
     mOwnerRule(nullptr),
-    mDocument(nullptr),
-    mOwningNode(nullptr),
-    mDisabled(false),
     mDirty(false),
     mInRuleProcessorCache(false),
-    mParsingMode(css::eUserSheetFeatures),
     mScopeElement(nullptr),
     mRuleProcessors(nullptr)
 {
@@ -1136,15 +1112,12 @@ CSSStyleSheet::CSSStyleSheet(const CSSStyleSheet& aCopy,
                              css::ImportRule* aOwnerRuleToUse,
                              nsIDocument* aDocumentToUse,
                              nsINode* aOwningNodeToUse)
-  : mTitle(aCopy.mTitle),
+  : StyleSheet(aCopy, aDocumentToUse, aOwningNodeToUse),
+    mTitle(aCopy.mTitle),
     mParent(aParentToUse),
     mOwnerRule(aOwnerRuleToUse),
-    mDocument(aDocumentToUse),
-    mOwningNode(aOwningNodeToUse),
-    mDisabled(aCopy.mDisabled),
     mDirty(aCopy.mDirty),
     mInRuleProcessorCache(false),
-    mParsingMode(aCopy.mParsingMode),
     mScopeElement(nullptr),
     mInner(aCopy.mInner),
     mRuleProcessors(nullptr)
@@ -1190,22 +1163,6 @@ CSSStyleSheet::~CSSStyleSheet()
   if (mInRuleProcessorCache) {
     RuleProcessorCache::RemoveSheet(this);
   }
-}
-
-mozilla::dom::CSSStyleSheetParsingMode
-CSSStyleSheet::ParsingMode()
-{
-#define CHECK(X, Y) \
-  static_assert(static_cast<int>(X) == static_cast<int>(Y),             \
-                "mozilla::dom::CSSStyleSheetParsingMode and mozilla::css::SheetParsingMode should have identical values");
-
-  CHECK(mozilla::dom::CSSStyleSheetParsingMode::Agent, css::eAgentSheetFeatures);
-  CHECK(mozilla::dom::CSSStyleSheetParsingMode::User, css::eUserSheetFeatures);
-  CHECK(mozilla::dom::CSSStyleSheetParsingMode::Author, css::eAuthorSheetFeatures);
-
-#undef CHECK
-
-  return static_cast<mozilla::dom::CSSStyleSheetParsingMode>(mParsingMode);
 }
 
 void
@@ -1366,27 +1323,15 @@ void
 CSSStyleSheet::SetURIs(nsIURI* aSheetURI, nsIURI* aOriginalSheetURI,
                        nsIURI* aBaseURI)
 {
-  NS_PRECONDITION(aSheetURI && aBaseURI, "null ptr");
-
   NS_ASSERTION(mInner->mOrderedRules.Count() == 0 && !mInner->mComplete,
-               "Can't call SetURL on sheets that are complete or have rules");
-
-  mInner->mSheetURI = aSheetURI;
-  mInner->mOriginalSheetURI = aOriginalSheetURI;
-  mInner->mBaseURI = aBaseURI;
+               "Can't call SetURIs on sheets that are complete or have rules");
+  mInner->SetURIs(aSheetURI, aOriginalSheetURI, aBaseURI);
 }
 
 void
 CSSStyleSheet::SetPrincipal(nsIPrincipal* aPrincipal)
 {
-  NS_PRECONDITION(!mInner->mPrincipalSet,
-                  "Should have an inner whose principal has not yet been set");
-  if (aPrincipal) {
-    mInner->mPrincipal = aPrincipal;
-#ifdef DEBUG
-    mInner->mPrincipalSet = true;
-#endif
-  }
+  mInner->SetPrincipal(aPrincipal);
 }
 
 nsIURI*
@@ -1449,32 +1394,6 @@ CSSStyleSheet::SetEnabled(bool aEnabled)
     if (mDocument) {
       mDocument->SetStyleSheetApplicableState(this, !mDisabled);
     }
-  }
-}
-
-bool
-CSSStyleSheet::IsComplete() const
-{
-  return mInner->mComplete;
-}
-
-void
-CSSStyleSheet::SetComplete()
-{
-  NS_ASSERTION(!mDirty, "Can't set a dirty sheet complete!");
-  mInner->mComplete = true;
-  if (mDocument && !mDisabled) {
-    // Let the document know
-    mDocument->BeginUpdate(UPDATE_STYLE);
-    mDocument->SetStyleSheetApplicableState(this, true);
-    mDocument->EndUpdate(UPDATE_STYLE);
-  }
-
-  if (mOwningNode && !mDisabled &&
-      mOwningNode->HasFlag(NODE_IS_IN_SHADOW_TREE) &&
-      mOwningNode->IsContent()) {
-    ShadowRoot* shadowRoot = mOwningNode->AsContent()->GetContainingShadow();
-    shadowRoot->StyleSheetChanged();
   }
 }
 
@@ -2201,14 +2120,19 @@ CSSStyleSheet::InsertRuleIntoGroup(const nsAString & aRule,
 
 // nsICSSLoaderObserver implementation
 NS_IMETHODIMP
-CSSStyleSheet::StyleSheetLoaded(CSSStyleSheet* aSheet,
+CSSStyleSheet::StyleSheetLoaded(StyleSheetHandle aSheet,
                                 bool aWasAlternate,
                                 nsresult aStatus)
 {
-  if (aSheet->GetParentSheet() == nullptr) {
+  MOZ_ASSERT(aSheet->IsGecko(),
+             "why we were called back with a ServoStyleSheet?");
+
+  CSSStyleSheet* sheet = aSheet->AsGecko();
+
+  if (sheet->GetParentSheet() == nullptr) {
     return NS_OK; // ignore if sheet has been detached already (see parseSheet)
   }
-  NS_ASSERTION(this == aSheet->GetParentSheet(),
+  NS_ASSERTION(this == sheet->GetParentSheet(),
                "We are being notified of a sheet load for a sheet that is not our child!");
 
   if (mDocument && NS_SUCCEEDED(aStatus)) {
@@ -2216,7 +2140,7 @@ CSSStyleSheet::StyleSheetLoaded(CSSStyleSheet* aSheet,
 
     // XXXldb @import rules shouldn't even implement nsIStyleRule (but
     // they do)!
-    mDocument->StyleRuleAdded(this, aSheet->GetOwnerRule());
+    mDocument->StyleRuleAdded(this, sheet->GetOwnerRule());
   }
 
   return NS_OK;
@@ -2237,7 +2161,7 @@ CSSStyleSheet::ReparseSheet(const nsAString& aInput)
     loader = mDocument->CSSLoader();
     NS_ASSERTION(loader, "Document with no CSS loader!");
   } else {
-    loader = new css::Loader();
+    loader = new css::Loader(StyleBackendType::Gecko);
   }
 
   mozAutoDocUpdate updateBatch(mDocument, UPDATE_STYLE, true);
@@ -2290,8 +2214,7 @@ CSSStyleSheet::ReparseSheet(const nsAString& aInput)
 
   nsCSSParser parser(loader, this);
   nsresult rv = parser.ParseSheet(aInput, mInner->mSheetURI, mInner->mBaseURI,
-                                  mInner->mPrincipal, lineNumber,
-                                  mParsingMode, &reusableSheets);
+                                  mInner->mPrincipal, lineNumber, &reusableSheets);
   DidDirty(); // we are always 'dirty' here since we always remove rules first
   NS_ENSURE_SUCCESS(rv, rv);
 

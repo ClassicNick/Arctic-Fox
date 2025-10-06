@@ -12,9 +12,9 @@ const TEST_URI = `
   <p id='id2' style='width:100px;'>element 2</p>
 `;
 
-add_task(function*() {
+add_task(function* () {
   yield addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
-  let {inspector, view} = yield openRuleView();
+  let {inspector, view, testActor} = yield openRuleView();
 
   yield selectNode("#id1", inspector);
   yield modifyRuleViewWidth("300px", view, inspector);
@@ -25,7 +25,7 @@ add_task(function*() {
   yield modifyRuleViewWidth("50px", view, inspector);
   yield assertRuleAndMarkupViewWidth("id2", "50px", view, inspector);
 
-  yield reloadPage(inspector);
+  yield reloadPage(inspector, testActor);
 
   yield selectNode("#id1", inspector);
   yield assertRuleAndMarkupViewWidth("id1", "200px", view, inspector);
@@ -52,10 +52,10 @@ function* modifyRuleViewWidth(value, ruleView, inspector) {
   info("Pressing return and waiting for the field to blur and for the " +
     "markup-view to show the mutation");
   let onBlur = once(editor.input, "blur", true);
-  let onMutation = inspector.once("markupmutation");
+  let onStyleChanged = waitForStyleModification(inspector);
   EventUtils.sendKey("return");
   yield onBlur;
-  yield onMutation;
+  yield onStyleChanged;
 
   info("Escaping out of the new property field that has been created after " +
     "the value was edited");
@@ -75,6 +75,7 @@ function* getContainerStyleAttrValue(id, {walker, markup}) {
     }
     attrIndex++;
   }
+  return undefined;
 }
 
 function* assertRuleAndMarkupViewWidth(id, value, ruleView, inspector) {

@@ -7,17 +7,13 @@
 
 #include "base/task.h"                  // for NewRunnableFunction, etc
 #include "base/thread.h"                // for Thread
-#include "base/tracked.h"               // for FROM_HERE
 #include "mozilla/gfx/Logging.h"        // for gfxDebug
 #include "mozilla/layers/SharedBufferManagerChild.h"
 #include "mozilla/layers/SharedBufferManagerParent.h"
+#include "mozilla/Sprintf.h"            // for SprintfLiteral
 #include "mozilla/StaticPtr.h"          // for StaticRefPtr
 #include "mozilla/ReentrantMonitor.h"   // for ReentrantMonitor, etc
-#include "nsThreadUtils.h"              // fo NS_IsMainThread
-
-#ifdef MOZ_NUWA_PROCESS
-#include "ipc/Nuwa.h"
-#endif
+#include "nsThreadUtils.h"              // for NS_IsMainThread
 
 #ifdef MOZ_WIDGET_GONK
 #define LOG(args...) __android_log_print(ANDROID_LOG_INFO, "SBMChild", ## args)
@@ -104,15 +100,6 @@ ConnectSharedBufferManagerInChildProcess(mozilla::ipc::Transport* aTransport,
                                                                      XRE_GetIOMessageLoop(),
                                                                      ipc::ChildSide);
 
-#ifdef MOZ_NUWA_PROCESS
-  if (IsNuwaProcess()) {
-    SharedBufferManagerChild::sSharedBufferManagerChildThread
-      ->message_loop()->PostTask(FROM_HERE,
-                                 NewRunnableFunction(NuwaMarkCurrentThread,
-                                                     (void (*)(void *))nullptr,
-                                                     (void *)nullptr));
-  }
-#endif
 }
 
 PSharedBufferManagerChild*
@@ -128,7 +115,6 @@ SharedBufferManagerChild::StartUpInChildProcess(Transport* aTransport,
 
   sSharedBufferManagerChildSingleton = new SharedBufferManagerChild();
   sSharedBufferManagerChildSingleton->GetMessageLoop()->PostTask(
-    FROM_HERE,
     NewRunnableFunction(ConnectSharedBufferManagerInChildProcess,
                         aTransport, aOtherPid));
 
@@ -160,9 +146,9 @@ SharedBufferManagerChild::StartUpOnThread(base::Thread* aThread)
   }
   sSharedBufferManagerChildSingleton = new SharedBufferManagerChild();
   char thrname[128];
-  base::snprintf(thrname, 128, "BufMgrParent#%d", base::Process::Current().pid());
+  SprintfLiteral(thrname, "BufMgrParent#%d", base::Process::Current().pid());
   sSharedBufferManagerParentSingleton = new SharedBufferManagerParent(
-    nullptr, base::Process::Current().pid(), new base::Thread(thrname));
+    base::Process::Current().pid(), new base::Thread(thrname));
   sSharedBufferManagerChildSingleton->ConnectAsync(sSharedBufferManagerParentSingleton);
   return true;
 }
@@ -183,7 +169,7 @@ SharedBufferManagerChild::DestroyManager()
   ReentrantMonitorAutoEnter autoMon(barrier);
 
   bool done = false;
-  sSharedBufferManagerChildSingleton->GetMessageLoop()->PostTask(FROM_HERE,
+  sSharedBufferManagerChildSingleton->GetMessageLoop()->PostTask(
     NewRunnableFunction(&DeleteSharedBufferManagerSync, &barrier, &done));
   while (!done) {
     barrier.Wait();
@@ -202,8 +188,8 @@ SharedBufferManagerChild::GetMessageLoop() const
 void
 SharedBufferManagerChild::ConnectAsync(SharedBufferManagerParent* aParent)
 {
-  GetMessageLoop()->PostTask(FROM_HERE, NewRunnableFunction(&ConnectSharedBufferManager,
-                                                            this, aParent));
+  GetMessageLoop()->PostTask(NewRunnableFunction(&ConnectSharedBufferManager,
+                                                 this, aParent));
 }
 
 // dispatched function
@@ -250,7 +236,6 @@ SharedBufferManagerChild::AllocGrallocBuffer(const gfx::IntSize& aSize,
   bool done = false;
 
   GetMessageLoop()->PostTask(
-    FROM_HERE,
     NewRunnableFunction(&AllocGrallocBufferSync,
                         GrallocParam(aSize, aFormat, aUsage, aBuffer), &barrier, &done));
 
@@ -305,8 +290,7 @@ SharedBufferManagerChild::DeallocGrallocBuffer(const mozilla::layers::MaybeMagic
     return SharedBufferManagerChild::DeallocGrallocBufferNow(aBuffer);
   }
 
-  GetMessageLoop()->PostTask(FROM_HERE, NewRunnableFunction(&DeallocGrallocBufferSync,
-                                                            aBuffer));
+  GetMessageLoop()->PostTask(NewRunnableFunction(&DeallocGrallocBufferSync, aBuffer));
 }
 
 void

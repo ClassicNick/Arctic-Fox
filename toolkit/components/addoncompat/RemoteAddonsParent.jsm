@@ -86,6 +86,7 @@ var NotificationTracker = {
     if (msg.name == "Addons:GetNotifications") {
       return this._paths;
     }
+    return undefined;
   }
 };
 NotificationTracker.init();
@@ -136,6 +137,7 @@ var ContentPolicyParent = {
         return this.shouldLoad(aMessage.data, aMessage.objects);
         break;
     }
+    return undefined;
   },
 
   shouldLoad: function(aData, aObjects) {
@@ -233,6 +235,7 @@ var AboutProtocolParent = {
         return this.openChannel(msg);
         break;
     }
+    return undefined;
   },
 
   getURIFlags: function(msg) {
@@ -243,6 +246,7 @@ var AboutProtocolParent = {
       return module.getURIFlags(uri);
     } catch (e) {
       Cu.reportError(e);
+      return undefined;
     }
   },
 
@@ -273,7 +277,7 @@ var AboutProtocolParent = {
       } else {
         channel.loadGroup = null;
       }
-      let stream = channel.open();
+      let stream = channel.open2();
       let data = NetUtil.readInputStreamToString(stream, stream.available(), {});
       return {
         data: data,
@@ -281,6 +285,7 @@ var AboutProtocolParent = {
       };
     } catch (e) {
       Cu.reportError(e);
+      return undefined;
     }
   },
 };
@@ -582,15 +587,15 @@ EventTargetParent.init();
 var filteringListeners = new WeakMap();
 function makeFilteringListener(eventType, listener)
 {
-  if (filteringListeners.has(listener)) {
-    return filteringListeners.get(listener);
-  }
-
   // Some events are actually targeted at the <browser> element
   // itself, so we only handle the ones where know that won't happen.
   let eventTypes = ["mousedown", "mouseup", "click"];
   if (eventTypes.indexOf(eventType) == -1) {
     return listener;
+  }
+
+  if (filteringListeners.has(listener)) {
+    return filteringListeners.get(listener);
   }
 
   function filter(event) {
@@ -750,18 +755,16 @@ ComponentsUtilsInterposition.methods.Sandbox =
         array[i] = principals[i];
       }
       return SandboxParent.makeContentSandbox(addon, chromeGlobal, array, ...rest);
-    } else {
-      return Components.utils.Sandbox(principals, ...rest);
     }
+    return Components.utils.Sandbox(principals, ...rest);
   };
 
 ComponentsUtilsInterposition.methods.evalInSandbox =
   function(addon, target, code, sandbox, ...rest) {
     if (sandbox && Cu.isCrossProcessWrapper(sandbox)) {
       return SandboxParent.evalInSandbox(code, sandbox, ...rest);
-    } else {
-      return Components.utils.evalInSandbox(code, sandbox, ...rest);
     }
+    return Components.utils.evalInSandbox(code, sandbox, ...rest);
   };
 
 // This interposition handles cases where an add-on tries to import a
@@ -863,7 +866,7 @@ function getSessionHistory(browser) {
     // We may not have any messages from this tab yet.
     return null;
   }
-  return remoteChromeGlobal.docShell.sessionHistory;
+  return remoteChromeGlobal.docShell.QueryInterface(Ci.nsIWebNavigation).sessionHistory;
 }
 
 RemoteBrowserElementInterposition.getters.contentDocument = function(addon, target) {

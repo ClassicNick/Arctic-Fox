@@ -20,6 +20,7 @@ Cu.import("resource://gre/modules/Promise.jsm", this);
 Cu.import("resource://gre/modules/Preferences.jsm");
 
 const PING_FORMAT_VERSION = 4;
+const DELETION_PING_TYPE = "deletion";
 const TEST_PING_TYPE = "test-ping-type";
 
 const PLATFORM_VERSION = "1.9.2";
@@ -31,7 +32,6 @@ const PREF_ENABLED = PREF_BRANCH + "enabled";
 const PREF_ARCHIVE_ENABLED = PREF_BRANCH + "archive.enabled";
 const PREF_FHR_UPLOAD_ENABLED = "datareporting.healthreport.uploadEnabled";
 const PREF_UNIFIED = PREF_BRANCH + "unified";
-const PREF_OPTOUT_SAMPLE = PREF_BRANCH + "optoutSample";
 
 var gClientID = null;
 
@@ -55,9 +55,10 @@ function checkPingFormat(aPing, aType, aHasClientId, aHasEnvironment) {
   ];
 
   const APPLICATION_TEST_DATA = {
-    buildId: "2007010101",
+    buildId: gAppInfo.appBuildID,
     name: APP_NAME,
     version: APP_VERSION,
+    displayVersion: AppConstants.MOZ_APP_VERSION_DISPLAY,
     vendor: "Mozilla",
     platformVersion: PLATFORM_VERSION,
     xpcomAbi: "noarch-spidermonkey",
@@ -140,6 +141,64 @@ add_task(function* test_simplePing() {
   checkPingFormat(ping, TEST_PING_TYPE, false, false);
 });
 
+add_task(function* test_disableDataUpload() {
+  const isUnified = Preferences.get(PREF_UNIFIED, false);
+  if (!isUnified) {
+    // Skipping the test if unified telemetry is off, as no deletion ping will
+    // be generated.
+    return;
+  }
+
+  const PREF_TELEMETRY_SERVER = "toolkit.telemetry.server";
+
+  // Disable FHR upload: this should trigger a deletion ping.
+  Preferences.set(PREF_FHR_UPLOAD_ENABLED, false);
+
+  let ping = yield PingServer.promiseNextPing();
+  checkPingFormat(ping, DELETION_PING_TYPE, true, false);
+  // Wait on ping activity to settle.
+  yield TelemetrySend.testWaitOnOutgoingPings();
+
+  // Restore FHR Upload.
+  Preferences.set(PREF_FHR_UPLOAD_ENABLED, true);
+
+  // Simulate a failure in sending the deletion ping by disabling the HTTP server.
+  yield PingServer.stop();
+
+  // Try to send a ping. It will be saved as pending  and get deleted when disabling upload.
+  TelemetryController.submitExternalPing(TEST_PING_TYPE, {});
+
+  // Disable FHR upload to send a deletion ping again.
+  Preferences.set(PREF_FHR_UPLOAD_ENABLED, false);
+
+  // Wait on sending activity to settle, as |TelemetryController.reset()| doesn't do that.
+  yield TelemetrySend.testWaitOnOutgoingPings();
+  // Wait for the pending pings to be deleted. Resetting TelemetryController doesn't
+  // trigger the shutdown, so we need to call it ourselves.
+  yield TelemetryStorage.shutdown();
+  // Simulate a restart, and spin the send task.
+  yield TelemetryController.reset();
+
+  // Disabling Telemetry upload must clear out all the pending pings.
+  let pendingPings = yield TelemetryStorage.loadPendingPingList();
+  Assert.equal(pendingPings.length, 1,
+               "All the pending pings but the deletion ping should have been deleted");
+
+  // Enable the ping server again.
+  PingServer.start();
+  // We set the new server using the pref, otherwise it would get reset with
+  // |TelemetryController.reset|.
+  Preferences.set(PREF_TELEMETRY_SERVER, "http://localhost:" + PingServer.port);
+
+  // Reset the controller to spin the ping sending task.
+  yield TelemetryController.reset();
+  ping = yield PingServer.promiseNextPing();
+  checkPingFormat(ping, DELETION_PING_TYPE, true, false);
+
+  // Restore FHR Upload.
+  Preferences.set(PREF_FHR_UPLOAD_ENABLED, true);
+});
+
 add_task(function* test_pingHasClientId() {
   // Send a ping with a clientId.
   yield sendPing(true, false);
@@ -147,11 +206,7 @@ add_task(function* test_pingHasClientId() {
   let ping = yield PingServer.promiseNextPing();
   checkPingFormat(ping, TEST_PING_TYPE, true, false);
 
-  if (HAS_DATAREPORTINGSERVICE &&
-      Services.prefs.getBoolPref(PREF_FHR_UPLOAD_ENABLED)) {
-    Assert.equal(ping.clientId, gClientID,
-                 "The correct clientId must be reported.");
-  }
+  Assert.equal(ping.clientId, gClientID, "The correct clientId must be reported.");
 });
 
 add_task(function* test_pingHasEnvironment() {
@@ -173,11 +228,7 @@ add_task(function* test_pingHasEnvironmentAndClientId() {
   // Test a field in the environment build section.
   Assert.equal(ping.application.buildId, ping.environment.build.buildId);
   // Test that we have the correct clientId.
-  if (HAS_DATAREPORTINGSERVICE &&
-      Services.prefs.getBoolPref(PREF_FHR_UPLOAD_ENABLED)) {
-    Assert.equal(ping.clientId, gClientID,
-                 "The correct clientId must be reported.");
-  }
+  Assert.equal(ping.clientId, gClientID, "The correct clientId must be reported.");
 });
 
 add_task(function* test_archivePings() {
@@ -194,8 +245,15 @@ add_task(function* test_archivePings() {
   const uploadPref = isUnified ? PREF_FHR_UPLOAD_ENABLED : PREF_ENABLED;
   Preferences.set(uploadPref, false);
 
+  // If we're using unified telemetry, disabling ping upload will generate a "deletion"
+  // ping. Catch it.
+  if (isUnified) {
+    let ping = yield PingServer.promiseNextPing();
+    checkPingFormat(ping, DELETION_PING_TYPE, true, false);
+  }
+
   // Register a new Ping Handler that asserts if a ping is received, then send a ping.
-  registerPingHandler(() => Assert.ok(false, "Telemetry must not send pings if not allowed to."));
+  PingServer.registerPingHandler(() => Assert.ok(false, "Telemetry must not send pings if not allowed to."));
   let pingId = yield sendPing(true, true);
 
   // Check that the ping was archived, even with upload disabled.
@@ -215,7 +273,7 @@ add_task(function* test_archivePings() {
   Preferences.set(uploadPref, true);
   Preferences.set(PREF_ARCHIVE_ENABLED, true);
 
-  now = new Date(2014, 06, 18, 22, 0, 0);
+  now = new Date(2014, 6, 18, 22, 0, 0);
   fakeNow(now);
   // Restore the non asserting ping handler.
   PingServer.resetPingHandler();
@@ -233,7 +291,7 @@ add_task(function* test_archivePings() {
 add_task(function* test_midnightPingSendFuzzing() {
   const fuzzingDelay = 60 * 60 * 1000;
   fakeMidnightPingFuzzingDelay(fuzzingDelay);
-  let now = new Date(2030, 5, 1, 11, 00, 0);
+  let now = new Date(2030, 5, 1, 11, 0, 0);
   fakeNow(now);
 
   let waitForTimer = () => new Promise(resolve => {
@@ -245,21 +303,20 @@ add_task(function* test_midnightPingSendFuzzing() {
   PingServer.clearRequests();
   yield TelemetryController.reset();
 
-  // A ping just before the end of the fuzzing delay should not get sent.
-  now = new Date(2030, 5, 2, 0, 59, 59);
+  // A ping after midnight within the fuzzing delay should not get sent.
+  now = new Date(2030, 5, 2, 0, 40, 0);
   fakeNow(now);
   PingServer.registerPingHandler((req, res) => {
     Assert.ok(false, "No ping should be received yet.");
   });
   let timerPromise = waitForTimer();
   yield sendPing(true, true);
-
   let [timerCallback, timerTimeout] = yield timerPromise;
   Assert.ok(!!timerCallback);
   Assert.deepEqual(futureDate(now, timerTimeout), new Date(2030, 5, 2, 1, 0, 0));
 
-  // A ping after midnight within the fuzzing delay should also not get sent.
-  now = new Date(2030, 5, 2, 0, 40, 0);
+  // A ping just before the end of the fuzzing delay should not get sent.
+  now = new Date(2030, 5, 2, 0, 59, 59);
   fakeNow(now);
   timerPromise = waitForTimer();
   yield sendPing(true, true);
@@ -290,8 +347,7 @@ add_task(function* test_midnightPingSendFuzzing() {
   // Check that pings shortly before midnight are immediately sent.
   now = fakeNow(2030, 5, 3, 23, 59, 0);
   yield sendPing(true, true);
-  request = yield gRequestIterator.next();
-  ping = decodeRequestPayload(request);
+  ping = yield PingServer.promiseNextPing();
   checkPingFormat(ping, TEST_PING_TYPE, true, true);
   yield TelemetrySend.testWaitOnOutgoingPings();
 
@@ -300,65 +356,53 @@ add_task(function* test_midnightPingSendFuzzing() {
   fakePingSendTimer(() => {}, () => {});
 });
 
-add_task(function* test_optoutSampling() {
-  if (!Preferences.get(PREF_UNIFIED, false)) {
-    dump("Unified Telemetry is disabled, skipping.\n");
-    return;
-  }
+add_task(function* test_changePingAfterSubmission() {
+  // Submit a ping with a custom payload.
+  let payload = { canary: "test" };
+  let pingPromise = TelemetryController.submitExternalPing(TEST_PING_TYPE, payload, options);
 
-  const DATA = [
-    {uuid: null,                                   sampled: false}, // not to be sampled
-    {uuid: "3d38d821-14a4-3d45-ab0b-02a9fb5a7505", sampled: false}, // samples to 0
-    {uuid: "1331255e-7eb5-aa4f-b04e-494a0c6da282", sampled: false}, // samples to 41
-    {uuid: "35393e78-a363-ea4e-9fc9-9f9abbee2077", sampled: true }, // samples to 42
-    {uuid: "4dc81df6-db03-a34e-ba79-3e877afd22c4", sampled: true }, // samples to 43
-    {uuid: "79e15be6-4884-8d4f-98e5-f94790251e5f", sampled: true }, // samples to 44
-    {uuid: "c3841566-e39e-384d-826f-508ab6387b21", sampled: true }, // samples to 45
-    {uuid: "cc7498a4-2cde-da47-89b3-f3ce5dd7c6fc", sampled: true }, // samples to 46
-    {uuid: "0750d8ed-5969-3a4f-90ba-2e85f9074309", sampled: false}, // samples to 47
-    {uuid: "0dfcbce7-d82b-b144-8d77-eb15935c9a8e", sampled: false}, // samples to 99
-  ];
+  // Change the payload with a predefined value.
+  payload.canary = "changed";
 
-  // Test that the opt-out pref enables us sampling on 5% of release.
-  Preferences.set(PREF_ENABLED, false);
-  Preferences.set(PREF_OPTOUT_SAMPLE, true);
-  fakeIsUnifiedOptin(true);
+  // Wait for the ping to be archived.
+  const pingId = yield pingPromise;
 
-  for (let d of DATA) {
-    dump("Testing sampling for uuid: " + d.uuid + "\n");
-    fakeCachedClientId(d.uuid);
-    yield TelemetryController.reset();
-    Assert.equal(TelemetryController.isInOptoutSample, d.sampled,
-                 "Opt-out sampling should behave as expected");
-    Assert.equal(Telemetry.canRecordBase, d.sampled,
-                 "Base recording setting should be correct");
-  }
-
-  // If we disable opt-out sampling Telemetry, have the opt-in setting on and extended Telemetry off,
-  // we should not enable anything.
-  Preferences.set(PREF_OPTOUT_SAMPLE, false);
-  fakeIsUnifiedOptin(true);
-  for (let d of DATA) {
-    dump("Testing sampling for uuid: " + d.uuid + "\n");
-    fakeCachedClientId(d.uuid);
-    yield TelemetryController.reset();
-    Assert.equal(Telemetry.canRecordBase, false,
-                 "Sampling should not override the default opt-out behavior");
-  }
-
-  // If we fully enable opt-out Telemetry on release, the sampling should not override that.
-  Preferences.set(PREF_OPTOUT_SAMPLE, true);
-  fakeIsUnifiedOptin(false);
-  for (let d of DATA) {
-    dump("Testing sampling for uuid: " + d.uuid + "\n");
-    fakeCachedClientId(d.uuid);
-    yield TelemetryController.reset();
-    Assert.equal(Telemetry.canRecordBase, true,
-                 "Sampling should not override the default opt-out behavior");
-  }
+  // Make sure our changes didn't affect the submitted payload.
+  let archivedCopy = yield TelemetryArchive.promiseArchivedPingById(pingId);
+  Assert.equal(archivedCopy.payload.canary, "test",
+               "The payload must not be changed after being submitted.");
 });
 
-add_task(function* test_telemetryCleanFHRDatabase(){
+add_task(function* test_telemetryEnabledUnexpectedValue() {
+  // Remove the default value for toolkit.telemetry.enabled from the default prefs.
+  // Otherwise, we wouldn't be able to set the pref to a string.
+  let defaultPrefBranch = Services.prefs.getDefaultBranch(null);
+  defaultPrefBranch.deleteBranch(PREF_ENABLED);
+
+  // Set the preferences controlling the Telemetry status to a string.
+  Preferences.set(PREF_ENABLED, "false");
+  // Check that Telemetry is not enabled.
+  yield TelemetryController.reset();
+  Assert.equal(Telemetry.canRecordExtended, false,
+               "Invalid values must not enable Telemetry recording.");
+
+  // Delete the pref again.
+  defaultPrefBranch.deleteBranch(PREF_ENABLED);
+
+  // Make sure that flipping it to true works.
+  Preferences.set(PREF_ENABLED, true);
+  yield TelemetryController.reset();
+  Assert.equal(Telemetry.canRecordExtended, true,
+               "True must enable Telemetry recording.");
+
+  // Also check that the false works as well.
+  Preferences.set(PREF_ENABLED, false);
+  yield TelemetryController.reset();
+  Assert.equal(Telemetry.canRecordExtended, false,
+               "False must disable Telemetry recording.");
+});
+
+add_task(function* test_telemetryCleanFHRDatabase() {
   const FHR_DBNAME_PREF = "datareporting.healthreport.dbName";
   const CUSTOM_DB_NAME = "unlikely.to.be.used.sqlite";
   const DEFAULT_DB_NAME = "healthreport.sqlite";
@@ -406,7 +450,7 @@ add_task(function* test_telemetryCleanFHRDatabase(){
   }
 });
 
-add_task(function* stopServer(){
+add_task(function* stopServer() {
   yield PingServer.stop();
   do_test_finished();
 });

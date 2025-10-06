@@ -6,6 +6,7 @@
 
 #include "mozilla/dom/InternalHeaders.h"
 
+#include "mozilla/dom/FetchTypes.h"
 #include "mozilla/ErrorResult.h"
 
 #include "nsCharSeparatedTokenizer.h"
@@ -21,6 +22,27 @@ InternalHeaders::InternalHeaders(const nsTArray<Entry>&& aHeaders,
   : mGuard(aGuard)
   , mList(aHeaders)
 {
+}
+
+InternalHeaders::InternalHeaders(const nsTArray<HeadersEntry>& aHeadersEntryList,
+                                 HeadersGuardEnum aGuard)
+  : mGuard(aGuard)
+{
+  for (const HeadersEntry& headersEntry : aHeadersEntryList) {
+    mList.AppendElement(Entry(headersEntry.name(), headersEntry.value()));
+  }
+}
+
+void
+InternalHeaders::ToIPC(nsTArray<HeadersEntry>& aIPCHeaders,
+                       HeadersGuardEnum& aGuard)
+{
+  aGuard = mGuard;
+
+  aIPCHeaders.Clear();
+  for (Entry& entry : mList) {
+    aIPCHeaders.AppendElement(HeadersEntry(entry.mName, entry.mValue));
+  }
 }
 
 void
@@ -174,6 +196,17 @@ InternalHeaders::IsSimpleHeader(const nsACString& aName, const nsACString& aValu
           nsContentUtils::IsAllowedNonCorsContentType(aValue));
 }
 
+// static
+bool
+InternalHeaders::IsRevalidationHeader(const nsACString& aName)
+{
+  return aName.EqualsLiteral("if-modified-since") ||
+         aName.EqualsLiteral("if-none-match") ||
+         aName.EqualsLiteral("if-unmodified-since") ||
+         aName.EqualsLiteral("if-match") ||
+         aName.EqualsLiteral("if-range");
+}
+
 //static
 bool
 InternalHeaders::IsInvalidName(const nsACString& aName, ErrorResult& aRv)
@@ -281,6 +314,18 @@ InternalHeaders::HasOnlySimpleHeaders() const
   }
 
   return true;
+}
+
+bool
+InternalHeaders::HasRevalidationHeaders() const
+{
+  for (uint32_t i = 0; i < mList.Length(); ++i) {
+    if (IsRevalidationHeader(mList[i].mName)) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 // static

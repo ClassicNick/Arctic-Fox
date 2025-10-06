@@ -53,11 +53,11 @@ class IDBDatabase final
   typedef mozilla::dom::StorageType StorageType;
   typedef mozilla::dom::quota::PersistenceType PersistenceType;
 
-  class LogWarningRunnable;
-  friend class LogWarningRunnable;
-
   class Observer;
   friend class Observer;
+
+  friend class IDBObjectStore;
+  friend class IDBIndex;
 
   // The factory must be kept alive when IndexedDB is used in multiple
   // processes. If it dies then the entire actor tree will be destroyed with it
@@ -86,6 +86,7 @@ class IDBDatabase final
   const bool mFileHandleDisabled;
   bool mClosed;
   bool mInvalidated;
+  bool mQuotaExceeded;
 
 public:
   static already_AddRefed<IDBDatabase>
@@ -150,6 +151,12 @@ public:
     AssertIsOnOwningThread();
 
     return mInvalidated;
+  }
+
+  void
+  SetQuotaExceeded()
+  {
+    mQuotaExceeded = true;
   }
 
   void
@@ -225,13 +232,15 @@ public:
 
   // This will be called from the DOM.
   already_AddRefed<IDBTransaction>
-  Transaction(const StringOrStringSequence& aStoreNames,
+  Transaction(JSContext* aCx,
+              const StringOrStringSequence& aStoreNames,
               IDBTransactionMode aMode,
               ErrorResult& aRv);
 
   // This can be called from C++ to avoid JS exception.
   nsresult
-  Transaction(const StringOrStringSequence& aStoreNames,
+  Transaction(JSContext* aCx,
+              const StringOrStringSequence& aStoreNames,
               IDBTransactionMode aMode,
               IDBTransaction** aTransaction);
 
@@ -239,20 +248,23 @@ public:
   Storage() const;
 
   IMPL_EVENT_HANDLER(abort)
+  IMPL_EVENT_HANDLER(close)
   IMPL_EVENT_HANDLER(error)
   IMPL_EVENT_HANDLER(versionchange)
 
   already_AddRefed<IDBRequest>
-  CreateMutableFile(const nsAString& aName,
+  CreateMutableFile(JSContext* aCx,
+                    const nsAString& aName,
                     const Optional<nsAString>& aType,
                     ErrorResult& aRv);
 
   already_AddRefed<IDBRequest>
-  MozCreateFileHandle(const nsAString& aName,
+  MozCreateFileHandle(JSContext* aCx,
+                      const nsAString& aName,
                       const Optional<nsAString>& aType,
                       ErrorResult& aRv)
   {
-    return CreateMutableFile(aName, aType, aRv);
+    return CreateMutableFile(aCx, aName, aType, aRv);
   }
 
   void
@@ -319,6 +331,14 @@ private:
              const nsAString& aFilename,
              uint32_t aLineNumber,
              uint32_t aColumnNumber);
+
+  // Only accessed by IDBObjectStore.
+  nsresult
+  RenameObjectStore(int64_t aObjectStoreId, const nsAString& aName);
+
+  // Only accessed by IDBIndex.
+  nsresult
+  RenameIndex(int64_t aObjectStoreId, int64_t aIndexId, const nsAString& aName);
 };
 
 } // namespace dom

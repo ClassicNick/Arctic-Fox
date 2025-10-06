@@ -117,7 +117,7 @@ struct FloatingPoint : public SelectTrait<T>
 
 /** Determines whether a float/double is NaN. */
 template<typename T>
-static MOZ_ALWAYS_INLINE MOZ_CONSTEXPR bool
+static MOZ_ALWAYS_INLINE constexpr bool
 IsNaN(T aValue)
 {
   /*
@@ -245,20 +245,44 @@ NegativeInfinity()
 }
 
 
-/** Constructs a NaN value with the specified sign bit and significand bits. */
+/**
+ * Constructs a NaN value with the specified sign bit and significand bits.
+ *
+ * There is also a variant that returns the value directly.  In most cases, the
+ * two variants should be identical.  However, in the specific case of x86
+ * chips, the behavior differs: returning floating-point values directly is done
+ * through the x87 stack, and x87 loads and stores turn signaling NaNs into
+ * quiet NaNs... silently.  Returning floating-point values via outparam,
+ * however, is done entirely within the SSE registers when SSE2 floating-point
+ * is enabled in the compiler, which has semantics-preserving behavior you would
+ * expect.
+ *
+ * If preserving the distinction between signaling NaNs and quiet NaNs is
+ * important to you, you should use the outparam version.  In all other cases,
+ * you should use the direct return version.
+ */
 template<typename T>
-static MOZ_ALWAYS_INLINE T
-SpecificNaN(int signbit, typename FloatingPoint<T>::Bits significand)
+static MOZ_ALWAYS_INLINE void
+SpecificNaN(int signbit, typename FloatingPoint<T>::Bits significand, T* result)
 {
   typedef FloatingPoint<T> Traits;
   MOZ_ASSERT(signbit == 0 || signbit == 1);
   MOZ_ASSERT((significand & ~Traits::kSignificandBits) == 0);
   MOZ_ASSERT(significand & Traits::kSignificandBits);
 
-  T t = BitwiseCast<T>((signbit ? Traits::kSignBit : 0) |
-                       Traits::kExponentBits |
-                       significand);
-  MOZ_ASSERT(IsNaN(t));
+  BitwiseCast<T>((signbit ? Traits::kSignBit : 0) |
+                  Traits::kExponentBits |
+                  significand,
+                  result);
+  MOZ_ASSERT(IsNaN(*result));
+}
+
+template<typename T>
+static MOZ_ALWAYS_INLINE T
+SpecificNaN(int signbit, typename FloatingPoint<T>::Bits significand)
+{
+  T t;
+  SpecificNaN(signbit, significand, &t);
   return t;
 }
 
@@ -401,13 +425,6 @@ FuzzyEqualsMultiplicative(T aValue1, T aValue2,
                           T aEpsilon = detail::FuzzyEqualsEpsilon<T>::value())
 {
   static_assert(IsFloatingPoint<T>::value, "floating point type required");
-
-  // Short-circuit the common case in order to avoid the expensive operations
-  // below.
-  if (aValue1 == aValue2) {
-    return true;
-  }
-
   // can't use std::min because of bug 965340
   T smaller = Abs(aValue1) < Abs(aValue2) ? Abs(aValue1) : Abs(aValue2);
   return Abs(aValue1 - aValue2) <= aEpsilon * smaller;
@@ -421,7 +438,7 @@ FuzzyEqualsMultiplicative(T aValue1, T aValue2,
  *
  * This function isn't inlined to avoid buggy optimizations by MSVC.
  */
-MOZ_WARN_UNUSED_RESULT
+MOZ_MUST_USE
 extern MFBT_API bool
 IsFloat32Representable(double aFloat32);
 

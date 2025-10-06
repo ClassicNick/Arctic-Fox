@@ -39,7 +39,7 @@ bool
 nsIFrame::IsTableCaption() const
 {
   return StyleDisplay()->mDisplay == NS_STYLE_DISPLAY_TABLE_CAPTION &&
-    GetParent()->StyleContext()->GetPseudo() == nsCSSAnonBoxes::tableOuter;
+    GetParent()->StyleContext()->GetPseudo() == nsCSSAnonBoxes::tableWrapper;
 }
 
 bool
@@ -49,9 +49,15 @@ nsIFrame::IsFloating() const
 }
 
 bool
-nsIFrame::IsAbsPosContaininingBlock() const
+nsIFrame::IsAbsPosContainingBlock() const
 {
   return StyleDisplay()->IsAbsPosContainingBlock(this);
+}
+
+bool
+nsIFrame::IsFixedPosContainingBlock() const
+{
+  return StyleDisplay()->IsFixedPosContainingBlock(this);
 }
 
 bool

@@ -58,10 +58,9 @@ const Ci = Components.interfaces;
 const Cu = Components.utils;
 const Cr = Components.results;
 
+Cu.import("resource://gre/modules/Integration.jsm");
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 
-XPCOMUtils.defineLazyModuleGetter(this, "DownloadIntegration",
-                                  "resource://gre/modules/DownloadIntegration.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "FileUtils",
                                   "resource://gre/modules/FileUtils.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "NetUtil",
@@ -89,6 +88,9 @@ XPCOMUtils.defineLazyServiceGetter(this, "gExternalHelperAppService",
 XPCOMUtils.defineLazyServiceGetter(this, "gPrintSettingsService",
            "@mozilla.org/gfx/printsettings-service;1",
            Ci.nsIPrintSettingsService);
+
+Integration.downloads.defineModuleGetter(this, "DownloadIntegration",
+            "resource://gre/modules/DownloadIntegration.jsm");
 
 const BackgroundFileSaverStreamListener = Components.Constructor(
       "@mozilla.org/network/background-file-saver;1?mode=streamlistener",
@@ -420,10 +422,12 @@ this.Download.prototype = {
 
       let changeMade = false;
 
-      if ("contentType" in aOptions &&
-          this.contentType != aOptions.contentType) {
-        this.contentType = aOptions.contentType;
-        changeMade = true;
+      for (let property of ["contentType", "progress", "hasPartialData",
+                            "hasBlockedData"]) {
+        if (property in aOptions && this[property] != aOptions[property]) {
+          this[property] = aOptions[property];
+          changeMade = true;
+        }
       }
 
       if (changeMade) {
@@ -505,7 +509,12 @@ this.Download.prototype = {
         this.progress = 100;
         this.succeeded = true;
         this.hasPartialData = false;
-      } catch (ex) {
+      } catch (originalEx) {
+        // We may choose a different exception to propagate in the code below,
+        // or wrap the original one. We do this mutation in a different variable
+        // because of the "no-ex-assign" ESLint rule.
+        let ex = originalEx;
+
         // Fail with a generic status code on cancellation, so that the caller
         // is forced to actually check the status properties to see if the
         // download was canceled or failed because of other reasons.
@@ -1002,10 +1011,9 @@ this.Download.prototype = {
       // cancellation to be completed before resolving the promise it returns.
       this.cancel();
       return this.removePartialData();
-    } else {
-      // Just cancel the download, in case it is currently in progress.
-      return this.cancel();
     }
+    // Just cancel the download, in case it is currently in progress.
+    return this.cancel();
   },
 
   /**
@@ -1529,6 +1537,7 @@ this.DownloadError = function (aProperties)
   } else if (aProperties.becauseBlockedByReputationCheck) {
     this.becauseBlocked = true;
     this.becauseBlockedByReputationCheck = true;
+    this.reputationCheckVerdict = aProperties.reputationCheckVerdict || "";
   } else if (aProperties.becauseBlockedByRuntimePermissions) {
     this.becauseBlocked = true;
     this.becauseBlockedByRuntimePermissions = true;
@@ -1542,6 +1551,16 @@ this.DownloadError = function (aProperties)
 
   this.stack = new Error().stack;
 }
+
+/**
+ * These constants are used by the reputationCheckVerdict property and indicate
+ * the detailed reason why a download is blocked.
+ *
+ * @note These values should not be changed because they can be serialized.
+ */
+this.DownloadError.BLOCK_VERDICT_MALWARE = "Malware";
+this.DownloadError.BLOCK_VERDICT_POTENTIALLY_UNWANTED = "PotentiallyUnwanted";
+this.DownloadError.BLOCK_VERDICT_UNCOMMON = "Uncommon";
 
 this.DownloadError.prototype = {
   __proto__: Error.prototype,
@@ -1589,6 +1608,15 @@ this.DownloadError.prototype = {
   becauseBlockedByRuntimePermissions: false,
 
   /**
+   * If becauseBlockedByReputationCheck is true, indicates the detailed reason
+   * why the download was blocked, according to the "BLOCK_VERDICT_" constants.
+   *
+   * If the download was not blocked or the reason for the block is unknown,
+   * this will be an empty string.
+   */
+  reputationCheckVerdict: "",
+
+  /**
    * If this DownloadError was caused by an exception this property will
    * contain the original exception. This will not be serialized when saving
    * to the store.
@@ -1611,6 +1639,7 @@ this.DownloadError.prototype = {
       becauseBlockedByParentalControls: this.becauseBlockedByParentalControls,
       becauseBlockedByReputationCheck: this.becauseBlockedByReputationCheck,
       becauseBlockedByRuntimePermissions: this.becauseBlockedByRuntimePermissions,
+      reputationCheckVerdict: this.reputationCheckVerdict,
     };
 
     serializeUnknownProperties(this, serializable);
@@ -1636,7 +1665,8 @@ this.DownloadError.fromSerializable = function (aSerializable) {
     property != "becauseBlocked" &&
     property != "becauseBlockedByParentalControls" &&
     property != "becauseBlockedByReputationCheck" &&
-    property != "becauseBlockedByRuntimePermissions");
+    property != "becauseBlockedByRuntimePermissions" &&
+    property != "reputationCheckVerdict");
 
   return e;
 };
@@ -1733,7 +1763,7 @@ this.DownloadSaver.prototype = {
       gDownloadHistory.addDownload(sourceUri, referrerUri, startPRTime,
                                    targetUri);
     }
-    catch(ex) {
+    catch (ex) {
       if (!(ex instanceof Components.Exception) ||
           ex.result != Cr.NS_ERROR_NOT_AVAILABLE) {
         throw ex;
@@ -2111,7 +2141,7 @@ this.DownloadCopySaver.prototype = {
         // up the chain of objects for the download.
         yield deferSaveComplete.promise;
 
-        yield this._checkReputationAndMove();
+        yield this._checkReputationAndMove(aSetPropertiesFn);
       } catch (ex) {
         // Ensure we always remove the placeholder for the final target file on
         // failure, independently of which code path failed.  In some cases, the
@@ -2139,18 +2169,22 @@ this.DownloadCopySaver.prototype = {
    * will move it to the target path since reputation checking is the final
    * step in the saver.
    *
+   * @param aSetPropertiesFn
+   *        Function provided to the "execute" method.
+   *
    * @return {Promise}
    * @resolves When the reputation check and cleanup is complete.
    * @rejects DownloadError if the download should be blocked.
    */
-  _checkReputationAndMove: Task.async(function* () {
+  _checkReputationAndMove: Task.async(function* (aSetPropertiesFn) {
     let download = this.download;
     let targetPath = this.download.target.path;
     let partFilePath = this.download.target.partFilePath;
 
-    if (yield DownloadIntegration.shouldBlockForReputationCheck(download)) {
-      download.progress = 100;
-      download.hasPartialData = false;
+    let { shouldBlock, verdict } =
+        yield DownloadIntegration.shouldBlockForReputationCheck(download);
+    if (shouldBlock) {
+      let newProperties = { progress: 100, hasPartialData: false };
 
       // We will remove the potentially dangerous file if instructed by
       // DownloadIntegration. We will always remove the file when the
@@ -2163,10 +2197,15 @@ this.DownloadCopySaver.prototype = {
           Cu.reportError(ex);
         }
       } else {
-        download.hasBlockedData = true;
+        newProperties.hasBlockedData = true;
       }
 
-      throw new DownloadError({ becauseBlockedByReputationCheck: true });
+      aSetPropertiesFn(newProperties);
+
+      throw new DownloadError({
+        becauseBlockedByReputationCheck: true,
+        reputationCheckVerdict: verdict,
+      });
     }
 
     if (partFilePath) {
@@ -2446,7 +2485,7 @@ this.DownloadLegacySaver.prototype = {
   /**
    * Implements "DownloadSaver.execute".
    */
-  execute: function DLS_execute(aSetProgressBytesFn)
+  execute: function DLS_execute(aSetProgressBytesFn, aSetPropertiesFn)
   {
     // Check if this is not the first execution of the download.  The Download
     // object guarantees that this function is not re-entered during execution.
@@ -2502,7 +2541,7 @@ this.DownloadLegacySaver.prototype = {
           }
         }
 
-        yield this._checkReputationAndMove();
+        yield this._checkReputationAndMove(aSetPropertiesFn);
 
       } catch (ex) {
         // Ensure we always remove the final target file on failure,
@@ -2537,7 +2576,8 @@ this.DownloadLegacySaver.prototype = {
   },
 
   _checkReputationAndMove: function () {
-    return DownloadCopySaver.prototype._checkReputationAndMove.call(this);
+    return DownloadCopySaver.prototype._checkReputationAndMove
+                                      .apply(this, arguments);
   },
 
   /**

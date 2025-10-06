@@ -11,7 +11,7 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/css/Loader.h"
 
-#include "nsCSSProperty.h"
+#include "nsCSSPropertyID.h"
 #include "nsCSSScanner.h"
 #include "nsCOMPtr.h"
 #include "nsAutoPtr.h"
@@ -53,31 +53,20 @@ private:
   nsCSSParser& operator=(nsCSSParser const&) = delete;
 
 public:
-  // Set a style sheet for the parser to fill in. The style sheet must
-  // implement the CSSStyleSheet interface.  Null can be passed in to clear
-  // out an existing stylesheet reference.
-  nsresult SetStyleSheet(mozilla::CSSStyleSheet* aSheet);
-
-  // Set whether or not to emulate Nav quirks
-  nsresult SetQuirkMode(bool aQuirkMode);
-
-  // Set loader to use for child sheets
-  nsresult SetChildLoader(mozilla::css::Loader* aChildLoader);
-
   /**
-   * Parse aInput into the stylesheet that was previously set by calling
-   * SetStyleSheet.  Calling this method without calling SetStyleSheet first is
-   * an error.
+   * Parse aInput into the stylesheet that was previously passed to the
+   * constructor.  Calling this method on an nsCSSParser that had nullptr
+   * passed in as the style sheet is an error.
    *
    * @param aInput the data to parse
    * @param aSheetURL the URI to use as the sheet URI (for error reporting).
    *                  This must match the URI of the sheet passed to
-   *                  SetStyleSheet.
+   *                  the constructor.
    * @param aBaseURI the URI to use for relative URI resolution
    * @param aSheetPrincipal the principal of the stylesheet.  This must match
-   *                        the principal of the sheet passed to SetStyleSheet.
+   *                        the principal of the sheet passed to the
+   *                        constructor.
    * @param aLineNumber the line number of the first line of the sheet.
-   * @param aParsingMode  see SheetParsingMode in css/Loader.h
    * @param aReusableSheets style sheets that can be reused by an @import.
    *                        This can be nullptr.
    */
@@ -86,7 +75,6 @@ public:
                       nsIURI*          aBaseURI,
                       nsIPrincipal*    aSheetPrincipal,
                       uint32_t         aLineNumber,
-                      mozilla::css::SheetParsingMode aParsingMode,
                       mozilla::css::LoaderReusableStyleSheets* aReusableSheets =
                         nullptr);
 
@@ -125,7 +113,7 @@ public:
   // particular, units may be omitted from <length>.  The 'aIsSVGMode'
   // argument controls this quirk.  Note that this *only* applies to
   // mapped attributes, not inline styles or full style sheets in SVG.
-  void ParseProperty(const nsCSSProperty aPropID,
+  void ParseProperty(const nsCSSPropertyID aPropID,
                      const nsAString&    aPropValue,
                      nsIURI*             aSheetURL,
                      nsIURI*             aBaseURL,
@@ -138,7 +126,7 @@ public:
   // Same as ParseProperty but returns an nsCSSValue in aResult
   // rather than storing the property in a Declaration.  aPropID
   // must be a longhand property.
-  void ParseLonghandProperty(const nsCSSProperty aPropID,
+  void ParseLonghandProperty(const nsCSSPropertyID aPropID,
                              const nsAString&    aPropValue,
                              nsIURI*             aSheetURL,
                              nsIURI*             aBaseURL,
@@ -297,8 +285,8 @@ public:
    * respectively.
    */
   void ParsePropertyWithVariableReferences(
-                                   nsCSSProperty aPropertyID,
-                                   nsCSSProperty aShorthandPropertyID,
+                                   nsCSSPropertyID aPropertyID,
+                                   nsCSSPropertyID aShorthandPropertyID,
                                    const nsAString& aValue,
                                    const mozilla::CSSVariableValues* aVariables,
                                    nsRuleData* aRuleData,
@@ -328,7 +316,7 @@ public:
                                nsCSSValue& aValue);
 
   // Check whether a given value can be applied to a property.
-  bool IsValueValidForProperty(const nsCSSProperty aPropID,
+  bool IsValueValidForProperty(const nsCSSPropertyID aPropID,
                                const nsAString&    aPropValue);
 
   // Return the default value to be used for -moz-control-character-visibility,

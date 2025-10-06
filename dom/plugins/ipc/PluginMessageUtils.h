@@ -18,11 +18,13 @@
 #include "npapi.h"
 #include "npruntime.h"
 #include "npfunctions.h"
-#include "nsAutoPtr.h"
 #include "nsString.h"
 #include "nsTArray.h"
 #include "mozilla/Logging.h"
 #include "nsHashKeys.h"
+#ifdef MOZ_CRASHREPORTER
+#  include "nsExceptionHandler.h"
+#endif
 #ifdef XP_MACOSX
 #include "PluginInterposeOSX.h"
 #else
@@ -42,8 +44,8 @@ enum ScriptableObjectType
 };
 
 mozilla::ipc::RacyInterruptPolicy
-MediateRace(const mozilla::ipc::MessageChannel::Message& parent,
-            const mozilla::ipc::MessageChannel::Message& child);
+MediateRace(const mozilla::ipc::MessageChannel::MessageInfo& parent,
+            const mozilla::ipc::MessageChannel::MessageInfo& child);
 
 std::string
 MungePluginDsoPath(const std::string& path);
@@ -100,7 +102,7 @@ struct NPRemoteWindow
 typedef HWND NativeWindowHandle;
 #elif defined(MOZ_X11)
 typedef XID NativeWindowHandle;
-#elif defined(XP_MACOSX) || defined(ANDROID) || defined(MOZ_WIDGET_QT)
+#elif defined(XP_DARWIN) || defined(ANDROID)
 typedef intptr_t NativeWindowHandle; // never actually used, will always be 0
 #else
 #error Need NativeWindowHandle for this platform
@@ -195,7 +197,7 @@ inline bool IsPluginThread()
 
 inline void AssertPluginThread()
 {
-  NS_ASSERTION(IsPluginThread(), "Should be on the plugin's main thread!");
+  MOZ_RELEASE_ASSERT(IsPluginThread(), "Should be on the plugin's main thread!");
 }
 
 #define ENSURE_PLUGIN_THREAD(retval) \
@@ -277,7 +279,7 @@ struct ParamTraits<NPRect>
     WriteParam(aMsg, aParam.right);
   }
 
-  static bool Read(const Message* aMsg, void** aIter, paramType* aResult)
+  static bool Read(const Message* aMsg, PickleIterator* aIter, paramType* aResult)
   {
     uint16_t top, left, bottom, right;
     if (ReadParam(aMsg, aIter, &top) &&
@@ -310,7 +312,7 @@ struct ParamTraits<NPWindowType>
     aMsg->WriteInt16(int16_t(aParam));
   }
 
-  static bool Read(const Message* aMsg, void** aIter, paramType* aResult)
+  static bool Read(const Message* aMsg, PickleIterator* aIter, paramType* aResult)
   {
     int16_t result;
     if (aMsg->ReadInt16(aIter, &result)) {
@@ -349,7 +351,7 @@ struct ParamTraits<mozilla::plugins::NPRemoteWindow>
 #endif
   }
 
-  static bool Read(const Message* aMsg, void** aIter, paramType* aResult)
+  static bool Read(const Message* aMsg, PickleIterator* aIter, paramType* aResult)
   {
     uint64_t window;
     int32_t x, y;
@@ -405,44 +407,6 @@ struct ParamTraits<mozilla::plugins::NPRemoteWindow>
   }
 };
 
-template <>
-struct ParamTraits<NPString>
-{
-  typedef NPString paramType;
-
-  static void Write(Message* aMsg, const paramType& aParam)
-  {
-    WriteParam(aMsg, aParam.UTF8Length);
-    aMsg->WriteBytes(aParam.UTF8Characters,
-                     aParam.UTF8Length * sizeof(NPUTF8));
-  }
-
-  static bool Read(const Message* aMsg, void** aIter, paramType* aResult)
-  {
-    if (ReadParam(aMsg, aIter, &aResult->UTF8Length)) {
-      int byteCount = aResult->UTF8Length * sizeof(NPUTF8);
-      if (!byteCount) {
-        aResult->UTF8Characters = "\0";
-        return true;
-      }
-
-      const char* messageBuffer = nullptr;
-      mozilla::UniquePtr<char[]> newBuffer(new char[byteCount]);
-      if (newBuffer && aMsg->ReadBytes(aIter, &messageBuffer, byteCount )) {
-        memcpy((void*)messageBuffer, newBuffer.get(), byteCount);
-        aResult->UTF8Characters = newBuffer.release();
-        return true;
-      }
-    }
-    return false;
-  }
-
-  static void Log(const paramType& aParam, std::wstring* aLog)
-  {
-    aLog->append(StringPrintf(L"%s", aParam.UTF8Characters));
-  }
-};
-
 #ifdef XP_MACOSX
 template <>
 struct ParamTraits<NPNSString*>
@@ -478,7 +442,7 @@ struct ParamTraits<NPNSString*>
     }
   }
 
-  static bool Read(const Message* aMsg, void** aIter, paramType* aResult)
+  static bool Read(const Message* aMsg, PickleIterator* aIter, paramType* aResult)
   {
     bool haveString = false;
     if (!aMsg->ReadBool(aIter, &haveString)) {
@@ -494,15 +458,19 @@ struct ParamTraits<NPNSString*>
       return false;
     }
 
-    UniChar* buffer = nullptr;
+    // Avoid integer multiplication overflow.
+    if (length > INT_MAX / static_cast<long>(sizeof(UniChar))) {
+      return false;
+    }
+
+    auto chars = mozilla::MakeUnique<UniChar[]>(length);
     if (length != 0) {
-      if (!aMsg->ReadBytes(aIter, (const char**)&buffer, length * sizeof(UniChar)) ||
-          !buffer) {
+      if (!aMsg->ReadBytesInto(aIter, chars.get(), length * sizeof(UniChar))) {
         return false;
       }
     }
 
-    *aResult = (NPNSString*)::CFStringCreateWithBytes(kCFAllocatorDefault, (UInt8*)buffer,
+    *aResult = (NPNSString*)::CFStringCreateWithBytes(kCFAllocatorDefault, (UInt8*)chars.get(),
                                                       length * sizeof(UniChar),
                                                       kCFStringEncodingUTF16, false);
     if (!*aResult) {
@@ -542,7 +510,7 @@ struct ParamTraits<NSCursorInfo>
     free(buffer);
   }
 
-  static bool Read(const Message* aMsg, void** aIter, paramType* aResult)
+  static bool Read(const Message* aMsg, PickleIterator* aIter, paramType* aResult)
   {
     NSCursorInfo::Type type;
     if (!aMsg->ReadInt(aIter, (int*)&type)) {
@@ -560,16 +528,16 @@ struct ParamTraits<NSCursorInfo>
       return false;
     }
 
-    uint8_t* data = nullptr;
+    auto data = mozilla::MakeUnique<uint8_t[]>(dataLength);
     if (dataLength != 0) {
-      if (!aMsg->ReadBytes(aIter, (const char**)&data, dataLength) || !data) {
+      if (!aMsg->ReadBytesInto(aIter, data.get(), dataLength)) {
         return false;
       }
     }
 
     aResult->SetType(type);
     aResult->SetHotSpot(nsPoint(hotSpotX, hotSpotY));
-    aResult->SetCustomImageData(data, dataLength);
+    aResult->SetCustomImageData(data.get(), dataLength);
 
     return true;
   }
@@ -601,148 +569,12 @@ struct ParamTraits<NSCursorInfo>
   static void Write(Message* aMsg, const paramType& aParam) {
     NS_RUNTIMEABORT("NSCursorInfo isn't meaningful on this platform");
   }
-  static bool Read(const Message* aMsg, void** aIter, paramType* aResult) {
+  static bool Read(const Message* aMsg, PickleIterator* aIter, paramType* aResult) {
     NS_RUNTIMEABORT("NSCursorInfo isn't meaningful on this platform");
     return false;
   }
 };
 #endif // #ifdef XP_MACOSX
-
-template <>
-struct ParamTraits<NPVariant>
-{
-  typedef NPVariant paramType;
-
-  static void Write(Message* aMsg, const paramType& aParam)
-  {
-    if (NPVARIANT_IS_VOID(aParam)) {
-      aMsg->WriteInt(0);
-      return;
-    }
-
-    if (NPVARIANT_IS_NULL(aParam)) {
-      aMsg->WriteInt(1);
-      return;
-    }
-
-    if (NPVARIANT_IS_BOOLEAN(aParam)) {
-      aMsg->WriteInt(2);
-      WriteParam(aMsg, NPVARIANT_TO_BOOLEAN(aParam));
-      return;
-    }
-
-    if (NPVARIANT_IS_INT32(aParam)) {
-      aMsg->WriteInt(3);
-      WriteParam(aMsg, NPVARIANT_TO_INT32(aParam));
-      return;
-    }
-
-    if (NPVARIANT_IS_DOUBLE(aParam)) {
-      aMsg->WriteInt(4);
-      WriteParam(aMsg, NPVARIANT_TO_DOUBLE(aParam));
-      return;
-    }
-
-    if (NPVARIANT_IS_STRING(aParam)) {
-      aMsg->WriteInt(5);
-      WriteParam(aMsg, NPVARIANT_TO_STRING(aParam));
-      return;
-    }
-
-    NS_ERROR("Unsupported type!");
-  }
-
-  static bool Read(const Message* aMsg, void** aIter, paramType* aResult)
-  {
-    int type;
-    if (!aMsg->ReadInt(aIter, &type)) {
-      return false;
-    }
-
-    switch (type) {
-      case 0:
-        VOID_TO_NPVARIANT(*aResult);
-        return true;
-
-      case 1:
-        NULL_TO_NPVARIANT(*aResult);
-        return true;
-
-      case 2: {
-        bool value;
-        if (ReadParam(aMsg, aIter, &value)) {
-          BOOLEAN_TO_NPVARIANT(value, *aResult);
-          return true;
-        }
-      } break;
-
-      case 3: {
-        int32_t value;
-        if (ReadParam(aMsg, aIter, &value)) {
-          INT32_TO_NPVARIANT(value, *aResult);
-          return true;
-        }
-      } break;
-
-      case 4: {
-        double value;
-        if (ReadParam(aMsg, aIter, &value)) {
-          DOUBLE_TO_NPVARIANT(value, *aResult);
-          return true;
-        }
-      } break;
-
-      case 5: {
-        NPString value;
-        if (ReadParam(aMsg, aIter, &value)) {
-          STRINGN_TO_NPVARIANT(value.UTF8Characters, value.UTF8Length,
-                               *aResult);
-          return true;
-        }
-      } break;
-
-      default:
-        NS_ERROR("Unsupported type!");
-    }
-
-    return false;
-  }
-
-  static void Log(const paramType& aParam, std::wstring* aLog)
-  {
-    if (NPVARIANT_IS_VOID(aParam)) {
-      aLog->append(L"[void]");
-      return;
-    }
-
-    if (NPVARIANT_IS_NULL(aParam)) {
-      aLog->append(L"[null]");
-      return;
-    }
-
-    if (NPVARIANT_IS_BOOLEAN(aParam)) {
-      LogParam(NPVARIANT_TO_BOOLEAN(aParam), aLog);
-      return;
-    }
-
-    if (NPVARIANT_IS_INT32(aParam)) {
-      LogParam(NPVARIANT_TO_INT32(aParam), aLog);
-      return;
-    }
-
-    if (NPVARIANT_IS_DOUBLE(aParam)) {
-      LogParam(NPVARIANT_TO_DOUBLE(aParam), aLog);
-      return;
-    }
-
-    if (NPVARIANT_IS_STRING(aParam)) {
-      LogParam(NPVARIANT_TO_STRING(aParam), aLog);
-      return;
-    }
-
-    NS_ERROR("Unsupported type!");
-  }
-};
 
 template <>
 struct ParamTraits<mozilla::plugins::IPCByteRange>
@@ -755,7 +587,7 @@ struct ParamTraits<mozilla::plugins::IPCByteRange>
     WriteParam(aMsg, aParam.length);
   }
 
-  static bool Read(const Message* aMsg, void** aIter, paramType* aResult)
+  static bool Read(const Message* aMsg, PickleIterator* aIter, paramType* aResult)
   {
     paramType p;
     if (ReadParam(aMsg, aIter, &p.offset) &&
@@ -777,7 +609,7 @@ struct ParamTraits<NPNVariable>
     WriteParam(aMsg, int(aParam));
   }
 
-  static bool Read(const Message* aMsg, void** aIter, paramType* aResult)
+  static bool Read(const Message* aMsg, PickleIterator* aIter, paramType* aResult)
   {
     int intval;
     if (ReadParam(aMsg, aIter, &intval)) {
@@ -798,7 +630,7 @@ struct ParamTraits<NPNURLVariable>
     WriteParam(aMsg, int(aParam));
   }
 
-  static bool Read(const Message* aMsg, void** aIter, paramType* aResult)
+  static bool Read(const Message* aMsg, PickleIterator* aIter, paramType* aResult)
   {
     int intval;
     if (ReadParam(aMsg, aIter, &intval)) {
@@ -824,7 +656,7 @@ struct ParamTraits<NPCoordinateSpace>
     WriteParam(aMsg, int32_t(aParam));
   }
 
-  static bool Read(const Message* aMsg, void** aIter, paramType* aResult)
+  static bool Read(const Message* aMsg, PickleIterator* aIter, paramType* aResult)
   {
     int32_t intval;
     if (ReadParam(aMsg, aIter, &intval)) {

@@ -39,7 +39,7 @@ SharedSurface_EGLImage::Create(GLContext* prodGL,
         return Move(ret);
     }
 
-    EGLClientBuffer buffer = reinterpret_cast<EGLClientBuffer>(prodTex);
+    EGLClientBuffer buffer = reinterpret_cast<EGLClientBuffer>(uintptr_t(prodTex));
     EGLImage image = egl->fCreateImage(egl->Display(), context,
                                        LOCAL_EGL_GL_TEXTURE_2D, buffer,
                                        nullptr);
@@ -58,7 +58,8 @@ SharedSurface_EGLImage::HasExtensions(GLLibraryEGL* egl, GLContext* gl)
 {
     return egl->HasKHRImageBase() &&
            egl->IsExtensionSupported(GLLibraryEGL::KHR_gl_texture_2D_image) &&
-           gl->IsExtensionSupported(GLContext::OES_EGL_image_external);
+           (gl->IsExtensionSupported(GLContext::OES_EGL_image_external) ||
+            gl->IsExtensionSupported(GLContext::OES_EGL_image));
 }
 
 SharedSurface_EGLImage::SharedSurface_EGLImage(GLContext* gl,
@@ -79,8 +80,6 @@ SharedSurface_EGLImage::SharedSurface_EGLImage(GLContext* gl,
     , mFormats(formats)
     , mProdTex(prodTex)
     , mImage(image)
-    , mCurConsGL(nullptr)
-    , mConsTex(0)
     , mSync(0)
 {}
 
@@ -88,22 +87,18 @@ SharedSurface_EGLImage::~SharedSurface_EGLImage()
 {
     mEGL->fDestroyImage(Display(), mImage);
 
-    mGL->MakeCurrent();
-    mGL->fDeleteTextures(1, &mProdTex);
-    mProdTex = 0;
-
-    if (mConsTex) {
-        MOZ_ASSERT(mGarbageBin);
-        mGarbageBin->Trash(mConsTex);
-        mConsTex = 0;
-    }
-
     if (mSync) {
         // We can't call this unless we have the ext, but we will always have
         // the ext if we have something to destroy.
         mEGL->fDestroySync(Display(), mSync);
         mSync = 0;
     }
+
+    if (!mGL->MakeCurrent())
+        return;
+
+    mGL->fDeleteTextures(1, &mProdTex);
+    mProdTex = 0;
 }
 
 layers::TextureFlags
@@ -122,7 +117,7 @@ SharedSurface_EGLImage::ProducerReleaseImpl()
         mGL->IsExtensionSupported(GLContext::OES_EGL_sync))
     {
         if (mSync) {
-            MOZ_RELEASE_ASSERT(false, "Non-recycleable should not Fence twice.");
+            MOZ_RELEASE_ASSERT(false, "GFX: Non-recycleable should not Fence twice.");
             MOZ_ALWAYS_TRUE( mEGL->fDestroySync(Display(), mSync) );
             mSync = 0;
         }
@@ -140,32 +135,19 @@ SharedSurface_EGLImage::ProducerReleaseImpl()
     mGL->fFinish();
 }
 
+void
+SharedSurface_EGLImage::ProducerReadAcquireImpl()
+{
+    // Wait on the fence, because presumably we're going to want to read this surface
+    if (mSync) {
+        mEGL->fClientWaitSync(Display(), mSync, 0, LOCAL_EGL_FOREVER);
+    }
+}
+
 EGLDisplay
 SharedSurface_EGLImage::Display() const
 {
     return mEGL->Display();
-}
-
-void
-SharedSurface_EGLImage::AcquireConsumerTexture(GLContext* consGL, GLuint* out_texture, GLuint* out_target)
-{
-    MutexAutoLock lock(mMutex);
-    MOZ_ASSERT(!mCurConsGL || consGL == mCurConsGL);
-
-    if (!mConsTex) {
-        consGL->fGenTextures(1, &mConsTex);
-        MOZ_ASSERT(mConsTex);
-
-        ScopedBindTexture autoTex(consGL, mConsTex, LOCAL_GL_TEXTURE_EXTERNAL);
-        consGL->fEGLImageTargetTexture2D(LOCAL_GL_TEXTURE_EXTERNAL, mImage);
-
-        mCurConsGL = consGL;
-        mGarbageBin = consGL->TexGarbageBin();
-    }
-
-    MOZ_ASSERT(consGL == mCurConsGL);
-    *out_texture = mConsTex;
-    *out_target = LOCAL_GL_TEXTURE_EXTERNAL;
 }
 
 bool
@@ -188,7 +170,7 @@ SharedSurface_EGLImage::ReadbackBySharedHandle(gfx::DataSourceSurface* out_surfa
 
 /*static*/ UniquePtr<SurfaceFactory_EGLImage>
 SurfaceFactory_EGLImage::Create(GLContext* prodGL, const SurfaceCaps& caps,
-                                const RefPtr<layers::ISurfaceAllocator>& allocator,
+                                const RefPtr<layers::ClientIPCAllocator>& allocator,
                                 const layers::TextureFlags& flags)
 {
     EGLContext context = GLContextEGL::Cast(prodGL)->mContext;

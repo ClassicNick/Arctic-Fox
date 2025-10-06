@@ -26,8 +26,8 @@ namespace mozilla {
 #define ENCODER_CONFIG_FRAME_RATE 30 // fps
 #define GET_ENCODED_VIDEO_FRAME_TIMEOUT 100000 // microseconds
 
-OmxVideoTrackEncoder::OmxVideoTrackEncoder()
-  : VideoTrackEncoder()
+OmxVideoTrackEncoder::OmxVideoTrackEncoder(TrackRate aTrackRate)
+  : VideoTrackEncoder(aTrackRate)
 {}
 
 OmxVideoTrackEncoder::~OmxVideoTrackEncoder()
@@ -35,11 +35,10 @@ OmxVideoTrackEncoder::~OmxVideoTrackEncoder()
 
 nsresult
 OmxVideoTrackEncoder::Init(int aWidth, int aHeight, int aDisplayWidth,
-                           int aDisplayHeight, TrackRate aTrackRate)
+                           int aDisplayHeight)
 {
   mFrameWidth = aWidth;
   mFrameHeight = aHeight;
-  mTrackRate = aTrackRate;
   mDisplayWidth = aDisplayWidth;
   mDisplayHeight = aDisplayHeight;
 
@@ -113,16 +112,12 @@ OmxVideoTrackEncoder::GetEncodedTrack(EncodedFrameContainer& aData)
   while (!iter.IsEnded()) {
     VideoChunk chunk = *iter;
 
-    // Send only the unique video frames to OMXCodecWrapper.
-    if (mLastFrame != chunk.mFrame) {
-      uint64_t totalDurationUs = mTotalFrameDuration * USECS_PER_S / mTrackRate;
-      layers::Image* img = (chunk.IsNull() || chunk.mFrame.GetForceBlack()) ?
-                           nullptr : chunk.mFrame.GetImage();
-      rv = mEncoder->Encode(img, mFrameWidth, mFrameHeight, totalDurationUs);
-      NS_ENSURE_SUCCESS(rv, rv);
-    }
+    uint64_t totalDurationUs = mTotalFrameDuration * USECS_PER_S / mTrackRate;
+    layers::Image* img = (chunk.IsNull() || chunk.mFrame.GetForceBlack()) ?
+                         nullptr : chunk.mFrame.GetImage();
+    rv = mEncoder->Encode(img, mFrameWidth, mFrameHeight, totalDurationUs);
+    NS_ENSURE_SUCCESS(rv, rv);
 
-    mLastFrame.TakeFrom(&chunk.mFrame);
     mTotalFrameDuration += chunk.GetDuration();
 
     iter.Next();

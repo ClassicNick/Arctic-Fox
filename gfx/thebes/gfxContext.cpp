@@ -17,7 +17,6 @@
 #include "gfxASurface.h"
 #include "gfxPattern.h"
 #include "gfxPlatform.h"
-#include "gfxTeeSurface.h"
 #include "gfxPrefs.h"
 #include "GeckoProfiler.h"
 #include "gfx2DGlue.h"
@@ -27,6 +26,7 @@
 
 #if XP_WIN
 #include "gfxWindowsPlatform.h"
+#include "mozilla/gfx/DeviceManagerDx.h"
 #endif
 
 using namespace mozilla;
@@ -72,7 +72,9 @@ gfxContext::gfxContext(DrawTarget *aTarget, const Point& aDeviceOffset)
   , mTransformChanged(false)
   , mDT(aTarget)
 {
-  MOZ_ASSERT(aTarget, "Don't create a gfxContext without a DrawTarget");
+  if (!aTarget) {
+    gfxCriticalError() << "Don't create a gfxContext without a DrawTarget";
+  }
 
   MOZ_COUNT_CTOR(gfxContext);
 
@@ -83,10 +85,23 @@ gfxContext::gfxContext(DrawTarget *aTarget, const Point& aDeviceOffset)
 }
 
 /* static */ already_AddRefed<gfxContext>
-gfxContext::ContextForDrawTarget(DrawTarget* aTarget)
+gfxContext::CreateOrNull(DrawTarget* aTarget,
+                         const mozilla::gfx::Point& aDeviceOffset)
 {
   if (!aTarget || !aTarget->IsValid()) {
-    gfxWarning() << "Invalid target in gfxContext::ContextForDrawTarget";
+    gfxCriticalNote << "Invalid target in gfxContext::CreateOrNull " << hexa(aTarget);
+    return nullptr;
+  }
+
+  RefPtr<gfxContext> result = new gfxContext(aTarget, aDeviceOffset);
+  return result.forget();
+}
+
+/* static */ already_AddRefed<gfxContext>
+gfxContext::CreatePreservingTransformOrNull(DrawTarget* aTarget)
+{
+  if (!aTarget || !aTarget->IsValid()) {
+    gfxCriticalNote << "Invalid target in gfxContext::CreatePreservingTransformOrNull " << hexa(aTarget);
     return nullptr;
   }
 
@@ -105,24 +120,6 @@ gfxContext::~gfxContext()
   }
   mDT->Flush();
   MOZ_COUNT_DTOR(gfxContext);
-}
-
-already_AddRefed<gfxASurface>
-gfxContext::CurrentSurface()
-{
-  if (mDT->GetBackendType() == BackendType::CAIRO) {
-    cairo_t* ctx = static_cast<cairo_t*>
-      (mDT->GetNativeSurface(NativeSurfaceType::CAIRO_CONTEXT));
-    if (ctx) {
-      cairo_surface_t* s = cairo_get_group_target(ctx);
-      if (s) {
-        return gfxASurface::Wrap(s);
-      }
-    }
-  }
-
-  // An Azure context doesn't have a surface backing it.
-  return nullptr;
 }
 
 void
@@ -736,25 +733,6 @@ gfxContext::Mask(SourceSurface* aSurface, Float aAlpha, const Matrix& aTransform
 }
 
 void
-gfxContext::Mask(gfxASurface *surface, const gfxPoint& offset)
-{
-  PROFILER_LABEL("gfxContext", "Mask",
-    js::ProfileEntry::Category::GRAPHICS);
-
-  // Lifetime needs to be limited here as we may simply wrap surface's data.
-  RefPtr<SourceSurface> sourceSurf =
-  gfxPlatform::GetPlatform()->GetSourceSurfaceForSurface(mDT, surface);
-
-  if (!sourceSurf) {
-    return;
-  }
-
-  gfxPoint pt = surface->GetDeviceOffset();
-
-  Mask(sourceSurf, 1.0f, Point(offset.x - pt.x, offset.y - pt.y));
-}
-
-void
 gfxContext::Mask(SourceSurface *surface, float alpha, const Point& offset)
 {
   // We clip here to bind to the mask surface bounds, see above.
@@ -818,7 +796,9 @@ gfxContext::PushGroupForBlendBack(gfxContentType content, Float aOpacity, Source
 
     CurrentState().mBlendOpacity = aOpacity;
     CurrentState().mBlendMask = aMask;
+#ifdef DEBUG
     CurrentState().mWasPushedForBlendBack = true;
+#endif
     CurrentState().mBlendMaskTransform = aMaskTransform;
   }
 }
@@ -870,7 +850,9 @@ gfxContext::PushGroupAndCopyBackground(gfxContentType content, Float aOpacity, S
 
       CurrentState().mBlendOpacity = aOpacity;
       CurrentState().mBlendMask = aMask;
+#ifdef DEBUG
       CurrentState().mWasPushedForBlendBack = true;
+#endif
       CurrentState().mBlendMaskTransform = aMaskTransform;
 
       Point offset = CurrentState().deviceOffset - oldDeviceOffset;
@@ -918,7 +900,9 @@ gfxContext::PushGroupAndCopyBackground(gfxContentType content, Float aOpacity, S
     mDT->SetTransform(GetDTTransform());
     CurrentState().mBlendOpacity = aOpacity;
     CurrentState().mBlendMask = aMask;
+#ifdef DEBUG
     CurrentState().mWasPushedForBlendBack = true;
+#endif
     CurrentState().mBlendMaskTransform = aMaskTransform;
   }
 }
@@ -1060,6 +1044,9 @@ gfxContext::EnsurePathBuilder()
     Matrix toNewUS = mPathTransform * invTransform;
 
     RefPtr<Path> path = mPathBuilder->Finish();
+    if (!path) {
+      gfxCriticalError() << "gfxContext::EnsurePathBuilder failed in PathBuilder::Finish";
+    }
     mPathBuilder = path->TransformedCopyToBuilder(toNewUS);
   }
 
@@ -1256,7 +1243,8 @@ gfxContext::PushNewDT(gfxContentType content)
     if (!newDT) {
       if (!gfxPlatform::GetPlatform()->DidRenderingDeviceReset()
 #ifdef XP_WIN
-          && !(mDT->GetBackendType() == BackendType::DIRECT2D1_1 && !gfxWindowsPlatform::GetPlatform()->GetD3D11ContentDevice())
+          && !(mDT->GetBackendType() == BackendType::DIRECT2D1_1 &&
+               !DeviceManagerDx::Get()->GetContentDevice())
 #endif
           ) {
         // If even this fails.. we're most likely just out of memory!

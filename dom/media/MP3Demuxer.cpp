@@ -10,23 +10,25 @@
 #include <algorithm>
 
 #include "mozilla/Assertions.h"
-#include "mozilla/Endian.h"
+#include "mozilla/EndianUtils.h"
+#include "nsAutoPtr.h"
 #include "VideoUtils.h"
 #include "TimeUnits.h"
 #include "prenv.h"
 
 #ifdef PR_LOGGING
-mozilla::LazyLogModule gMP3DemuxerLog("MP3Demuxer");
+extern mozilla::LazyLogModule gMediaDemuxerLog;
 #define MP3LOG(msg, ...) \
-  MOZ_LOG(gMP3DemuxerLog, LogLevel::Debug, ("MP3Demuxer " msg, ##__VA_ARGS__))
+  MOZ_LOG(gMediaDemuxerLog, LogLevel::Debug, ("MP3Demuxer " msg, ##__VA_ARGS__))
 #define MP3LOGV(msg, ...) \
-  MOZ_LOG(gMP3DemuxerLog, LogLevel::Verbose, ("MP3Demuxer " msg, ##__VA_ARGS__))
+  MOZ_LOG(gMediaDemuxerLog, LogLevel::Verbose, ("MP3Demuxer " msg, ##__VA_ARGS__))
 #else
 #define MP3LOG(msg, ...)
 #define MP3LOGV(msg, ...)
 #endif
 
 using mozilla::media::TimeUnit;
+using mozilla::media::TimeInterval;
 using mozilla::media::TimeIntervals;
 using mp4_demuxer::ByteReader;
 
@@ -148,6 +150,15 @@ MP3TrackDemuxer::Init() {
   return mSamplesPerSecond && mChannels;
 }
 
+media::TimeUnit
+MP3TrackDemuxer::SeekPosition() const {
+  TimeUnit pos = Duration(mFrameIndex);
+  if (Duration() > TimeUnit()) {
+    pos = std::min(Duration(), pos);
+  }
+  return pos;
+}
+
 const FrameParser::Frame&
 MP3TrackDemuxer::LastFrame() const {
   return mParser.PrevFrame();
@@ -156,15 +167,6 @@ MP3TrackDemuxer::LastFrame() const {
 RefPtr<MediaRawData>
 MP3TrackDemuxer::DemuxSample() {
   return GetNextFrame(FindNextFrame());
-}
-
-media::TimeUnit
-MP3TrackDemuxer::SeekPosition() const {
-  TimeUnit pos = Duration(mFrameIndex);
-  if (Duration() > TimeUnit()) {
-    pos = std::min(Duration(), pos);
-  }
-  return pos;
 }
 
 const ID3Parser::ID3Header&
@@ -203,7 +205,7 @@ MP3TrackDemuxer::FastSeek(const TimeUnit& aTime) {
   if (!aTime.ToMicroseconds()) {
     // Quick seek to the beginning of the stream.
     mFrameIndex = 0;
-    } else if (vbr.IsTOCPresent() && Duration().ToMicroseconds() > 0) {
+  } else if (vbr.IsTOCPresent() && Duration().ToMicroseconds() > 0) {
     // Use TOC for more precise seeking.
     const float durationFrac = static_cast<float>(aTime.ToMicroseconds()) /
                                                   Duration().ToMicroseconds();
@@ -325,13 +327,33 @@ MP3TrackDemuxer::GetResourceOffset() const {
 
 TimeIntervals
 MP3TrackDemuxer::GetBuffered() {
-  TimeUnit duration = Duration();
-
-  if (duration <= TimeUnit()) {
-    return TimeIntervals();
-  }
   AutoPinned<MediaResource> stream(mSource.GetResource());
-  return GetEstimatedBufferedTimeRanges(stream, duration.ToMicroseconds());
+  TimeIntervals buffered;
+
+  if (Duration() > TimeUnit() && stream->IsDataCachedToEndOfResource(0)) {
+    // Special case completely cached files. This also handles local files.
+    buffered += TimeInterval(TimeUnit(), Duration());
+    MP3LOGV("buffered = [[%" PRId64 ", %" PRId64 "]]",
+            TimeUnit().ToMicroseconds(), Duration().ToMicroseconds());
+    return buffered;
+  }
+
+  MediaByteRangeSet ranges;
+  nsresult rv = stream->GetCachedRanges(ranges);
+  NS_ENSURE_SUCCESS(rv, buffered);
+
+  for (const auto& range: ranges) {
+    if (range.IsEmpty()) {
+      continue;
+    }
+    TimeUnit start = Duration(FrameIndexFromOffset(range.mStart));
+    TimeUnit end = Duration(FrameIndexFromOffset(range.mEnd));
+    MP3LOGV("buffered += [%" PRId64 ", %" PRId64 "]",
+            start.ToMicroseconds(), end.ToMicroseconds());
+    buffered += TimeInterval(start, end);
+  }
+
+  return buffered;
 }
 
 int64_t
@@ -1064,7 +1086,7 @@ FrameParser::VBRHeader::ParseXing(ByteReader* aReader) {
     // Skip across the VBR header ID tag.
     aReader->ReadU32();
     mType = XING;
-    }
+  }
   uint32_t flags = 0;
   if (aReader->CanRead32()) {
     flags = aReader->ReadU32();

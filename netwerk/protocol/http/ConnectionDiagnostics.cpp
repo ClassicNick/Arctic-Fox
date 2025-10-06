@@ -9,7 +9,6 @@
 
 #include "nsHttpConnectionMgr.h"
 #include "nsHttpConnection.h"
-#include "SpdySession31.h"
 #include "Http2Session.h"
 #include "nsHttpHandler.h"
 #include "nsIConsoleService.h"
@@ -61,8 +60,8 @@ nsHttpConnectionMgr::OnMsgPrintDiagnostics(int32_t, ARefBase *)
                           ent->mHalfOpens.Length());
     mLogData.AppendPrintf("   Coalescing Keys Length = %u\n",
                           ent->mCoalescingKeys.Length());
-    mLogData.AppendPrintf("   Spdy using = %d, tested = %d, preferred = %d\n",
-                          ent->mUsingSpdy, ent->mTestedSpdy, ent->mInPreferredHash);
+    mLogData.AppendPrintf("   Spdy using = %d, preferred = %d\n",
+                          ent->mUsingSpdy, ent->mInPreferredHash);
     mLogData.AppendPrintf("   pipelinestate = %d penalty = %d\n",
                           ent->mPipelineState, ent->mPipeliningPenalty);
 
@@ -158,43 +157,6 @@ nsHttpConnection::PrintDiagnostics(nsCString &log)
 }
 
 void
-SpdySession31::PrintDiagnostics(nsCString &log)
-{
-  log.AppendPrintf("     ::: SPDY VERSION 3.1\n");
-  log.AppendPrintf("     shouldgoaway = %d mClosed = %d CanReuse = %d nextID=0x%X\n",
-                   mShouldGoAway, mClosed, CanReuse(), mNextStreamID);
-
-  log.AppendPrintf("     concurrent = %d maxconcurrent = %d\n",
-                   mConcurrent, mMaxConcurrent);
-
-  log.AppendPrintf("     roomformorestreams = %d roomformoreconcurrent = %d\n",
-                   RoomForMoreStreams(), RoomForMoreConcurrent());
-
-  log.AppendPrintf("     transactionHashCount = %d streamIDHashCount = %d\n",
-                   mStreamTransactionHash.Count(),
-                   mStreamIDHash.Count());
-
-  log.AppendPrintf("     Queued Stream Size = %d\n", mQueuedStreams.GetSize());
-
-  PRIntervalTime now = PR_IntervalNow();
-  log.AppendPrintf("     Ping Threshold = %ums next ping id = 0x%X\n",
-                   PR_IntervalToMilliseconds(mPingThreshold),
-                   mNextPingID);
-  log.AppendPrintf("     Ping Timeout = %ums\n",
-                   PR_IntervalToMilliseconds(gHttpHandler->SpdyPingTimeout()));
-  log.AppendPrintf("     Idle for Any Activity (ping) = %ums\n",
-                   PR_IntervalToMilliseconds(now - mLastReadEpoch));
-  log.AppendPrintf("     Idle for Data Activity = %ums\n",
-                   PR_IntervalToMilliseconds(now - mLastDataReadEpoch));
-  if (mPingSentEpoch)
-    log.AppendPrintf("     Ping Outstanding (ping) = %ums, expired = %d\n",
-                     PR_IntervalToMilliseconds(now - mPingSentEpoch),
-                     now - mPingSentEpoch >= gHttpHandler->SpdyPingTimeout());
-  else
-    log.AppendPrintf("     No Ping Outstanding\n");
-}
-
-void
 Http2Session::PrintDiagnostics(nsCString &log)
 {
   log.AppendPrintf("     ::: HTTP2\n");
@@ -236,8 +198,9 @@ nsHttpTransaction::PrintDiagnostics(nsCString &log)
   if (!mRequestHead)
     return;
 
-  log.AppendPrintf("     ::: uri = %s\n",
-                   nsAutoCString(mRequestHead->RequestURI()).get());
+  nsAutoCString requestURI;
+  mRequestHead->RequestURI(requestURI);
+  log.AppendPrintf("     ::: uri = %s\n", requestURI.get());
   log.AppendPrintf("     caps = 0x%x\n", mCaps);
   log.AppendPrintf("     priority = %d\n", mPriority);
   log.AppendPrintf("     restart count = %u\n", mRestartCount);

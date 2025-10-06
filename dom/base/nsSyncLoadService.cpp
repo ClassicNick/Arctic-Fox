@@ -13,6 +13,8 @@
 #include "nsIChannelEventSink.h"
 #include "nsIAsyncVerifyRedirectCallback.h"
 #include "nsIInterfaceRequestor.h"
+#include "nsIStreamListener.h"
+#include "nsIURI.h"
 #include "nsString.h"
 #include "nsWeakReference.h"
 #include "nsIDocument.h"
@@ -21,7 +23,6 @@
 #include "nsContentUtils.h" // for kLoadAsData
 #include "nsThreadUtils.h"
 #include "nsNetUtil.h"
-#include "nsAutoPtr.h"
 #include "nsStreamUtils.h"
 #include <algorithm>
 
@@ -323,9 +324,11 @@ nsSyncLoadService::LoadDocument(nsIURI *aURI,
     }
 
     bool isChrome = false, isResource = false;
+    // if the load needs to enforce CORS, then force the load to be async
     bool isSync =
-      (NS_SUCCEEDED(aURI->SchemeIs("chrome", &isChrome)) && isChrome) ||
-      (NS_SUCCEEDED(aURI->SchemeIs("resource", &isResource)) && isResource);
+      !(aSecurityFlags & nsILoadInfo::SEC_REQUIRE_CORS_DATA_INHERITS) &&
+      ((NS_SUCCEEDED(aURI->SchemeIs("chrome", &isChrome)) && isChrome) ||
+       (NS_SUCCEEDED(aURI->SchemeIs("resource", &isResource)) && isResource));
     RefPtr<nsSyncLoader> loader = new nsSyncLoader();
     return loader->LoadDocument(channel, isSync, aForceToXML,
                                 aReferrerPolicy, aResult);

@@ -80,6 +80,8 @@ class MozconfigLoader(object):
         'CC', 'CXX', 'CFLAGS', 'CXXFLAGS', 'LDFLAGS', 'MOZ_OBJDIR',
     }
 
+    AUTODETECT = object()
+
     def __init__(self, topsrcdir):
         self.topsrcdir = topsrcdir
 
@@ -108,7 +110,7 @@ class MozconfigLoader(object):
         if 'MOZ_MYCONFIG' in env:
             raise MozconfigFindException(MOZ_MYCONFIG_ERROR)
 
-        env_path = env.get('MOZCONFIG', None)
+        env_path = env.get('MOZCONFIG', None) or None
         if env_path is not None:
             if not os.path.isabs(env_path):
                 potential_roots = [self.topsrcdir, os.getcwd()]
@@ -190,8 +192,8 @@ class MozconfigLoader(object):
     def read_mozconfig(self, path=None, moz_build_app=None):
         """Read the contents of a mozconfig into a data structure.
 
-        This takes the path to a mozconfig to load. If it is not defined, we
-        will try to find a mozconfig from the environment using
+        This takes the path to a mozconfig to load. If the given path is
+        AUTODETECT, will try to find a mozconfig from the environment using
         find_mozconfig().
 
         mozconfig files are shell scripts. So, we can't just parse them.
@@ -199,7 +201,7 @@ class MozconfigLoader(object):
         state from execution. Thus, the output from a mozconfig is a friendly
         static data structure.
         """
-        if path is None:
+        if path is self.AUTODETECT:
             path = self.find_mozconfig()
 
         result = {
@@ -358,7 +360,8 @@ class MozconfigLoader(object):
             # XXX This is an ugly hack. Data may be lost from things
             # like environment variable values.
             # See https://bugzilla.mozilla.org/show_bug.cgi?id=831381
-            line = line.decode('utf-8', 'ignore')
+            line = line.decode('mbcs' if sys.platform == 'win32' else 'utf-8',
+                               'ignore')
 
             if not line:
                 continue

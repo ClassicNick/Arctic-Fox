@@ -13,7 +13,7 @@
 #include "mozilla/IntegerPrintfMacros.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/Services.h"
-#include "mozilla/unused.h"
+#include "mozilla/Unused.h"
 #include "AudioChannelService.h"
 #include "mozilla/Logging.h"
 #include "nsPrintfCString.h"
@@ -526,13 +526,6 @@ already_AddRefed<ParticularProcessPriorityManager>
 ProcessPriorityManagerImpl::GetParticularProcessPriorityManager(
   ContentParent* aContentParent)
 {
-#ifdef MOZ_NUWA_PROCESS
-  // Do not attempt to change the priority of the Nuwa process
-  if (aContentParent->IsNuwaProcess()) {
-    return nullptr;
-  }
-#endif
-
   RefPtr<ParticularProcessPriorityManager> pppm;
   uint64_t cpId = aContentParent->ChildID();
   mParticularManagers.Get(cpId, &pppm);
@@ -869,9 +862,9 @@ ParticularProcessPriorityManager::OnRemoteBrowserFrameShown(nsISupports* aSubjec
   }
 
   // Ignore notifications that aren't from a BrowserOrApp
-  bool isBrowserOrApp;
-  fl->GetOwnerIsBrowserOrAppFrame(&isBrowserOrApp);
-  if (isBrowserOrApp) {
+  bool isMozBrowserOrApp;
+  fl->GetOwnerIsMozBrowserOrAppFrame(&isMozBrowserOrApp);
+  if (isMozBrowserOrApp) {
     ResetPriority();
   }
 
@@ -1044,10 +1037,6 @@ ParticularProcessPriorityManager::IsExpectingSystemMessage()
     nsCOMPtr<nsIMozBrowserFrame> bf = do_QueryInterface(tp->GetOwnerElement());
     if (!bf) {
       continue;
-    }
-
-    if (bf->GetIsExpectingSystemMessage()) {
-      return true;
     }
   }
 

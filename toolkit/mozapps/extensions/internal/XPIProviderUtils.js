@@ -8,7 +8,7 @@
 /*globals ADDON_SIGNING, SIGNED_TYPES, BOOTSTRAP_REASONS, DB_SCHEMA,
           AddonInternal, XPIProvider, XPIStates, syncLoadManifestFromFile,
           isUsableAddon, recordAddonTelemetry, applyBlocklistChanges,
-          flushStartupCache, canRunInSafeMode*/
+          flushChromeCaches, canRunInSafeMode*/
 
 var Cc = Components.classes;
 var Ci = Components.interfaces;
@@ -167,7 +167,7 @@ function makeSafe(aCallback) {
     try {
       aCallback(...aArgs);
     }
-    catch(ex) {
+    catch (ex) {
       logger.warn("XPI Database callback failed", ex);
     }
   }
@@ -591,7 +591,7 @@ this.XPIDatabase = {
         readTimer.done();
         this.parseDB(data, aRebuildOnError);
       }
-      catch(e) {
+      catch (e) {
         logger.error("Failed to load XPI JSON data from profile", e);
         let rebuildTimer = AddonManagerPrivate.simpleTimer("XPIDB_rebuildReadFailed_MS");
         this.rebuildDatabase(aRebuildOnError);
@@ -679,7 +679,7 @@ this.XPIDatabase = {
       logger.debug("Successfully read XPI database");
       this.initialized = true;
     }
-    catch(e) {
+    catch (e) {
       // If we catch and log a SyntaxError from the JSON
       // parser, the xpcshell test harness fails the test for us: bug 870828
       parseTimer.done();
@@ -715,7 +715,7 @@ this.XPIDatabase = {
         AddonManagerPrivate.recordSimpleMeasure("XPIDB_startupError", "dbMissing");
       }
     }
-    catch(e) {
+    catch (e) {
       // No schema version pref means either a really old upgrade (RDF) or
       // a new profile
       this.migrateData = this.getMigrateDataFromRDF();
@@ -2117,7 +2117,7 @@ this.XPIDatabaseReconcile = {
           }
 
           // Make sure to flush the cache when an old add-on has gone away
-          flushStartupCache();
+          flushChromeCaches();
 
           if (currentAddon.bootstrap) {
             // Visible bootstrapped add-ons need to have their install method called
@@ -2174,7 +2174,7 @@ this.XPIDatabaseReconcile = {
       AddonManagerPrivate.addStartupChange(AddonManager.STARTUP_CHANGE_UNINSTALLED, id);
 
       // Make sure to flush the cache when an old add-on has gone away
-      flushStartupCache();
+      flushChromeCaches();
     }
 
     // Make sure add-ons from hidden locations are marked invisible and inactive

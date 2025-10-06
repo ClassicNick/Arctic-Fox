@@ -18,7 +18,6 @@
 #include "nsPoint.h"
 #include "nsSize.h"
 #include "nsIURI.h"
-#include "nsAutoPtr.h"
 #include "nsFrameMessageManager.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/Attributes.h"
@@ -39,6 +38,9 @@ class nsIDocShellTreeOwner;
 class mozIApplication;
 
 namespace mozilla {
+
+class DocShellOriginAttributes;
+
 namespace dom {
 class ContentParent;
 class PBrowserParent;
@@ -144,7 +146,7 @@ public:
     return mOwnerContent ? mOwnerContent->GetPrimaryFrame() : nullptr;
   }
 
-  /** 
+  /**
    * Return the document that owns this, or null if we don't have
    * an owner.
    */
@@ -195,7 +197,7 @@ public:
    * otherwise we'll discard the old presentation and set the detached
    * subdoc nsIFrame to null. aContainerDoc is the document containing the
    * the subdoc frame. This enables us to detect when the containing
-   * document has changed during reframe, so we can discard the presentation 
+   * document has changed during reframe, so we can discard the presentation
    * in that case.
    */
   void SetDetachedSubdocFrame(nsIFrame* aDetachedFrame,
@@ -222,6 +224,8 @@ public:
   // Properly retrieves documentSize of any subdocument type.
   nsresult GetWindowDimensions(nsIntRect& aRect);
 
+  virtual nsIMessageSender* GetProcessMessageManager() const override;
+
   // public because a callback needs these.
   RefPtr<nsFrameMessageManager> mMessageManager;
   nsCOMPtr<nsIInProcessContentFrameMessageManager> mChildMessageManager;
@@ -243,8 +247,9 @@ private:
    * Is this a frameloader for a bona fide <iframe mozbrowser> or
    * <iframe mozapp>?  (I.e., does the frame return true for
    * nsIMozBrowserFrame::GetReallyIsBrowserOrApp()?)
+   * <xul:browser> is not a mozbrowser or app, so this is false for that case.
    */
-  bool OwnerIsBrowserOrAppFrame();
+  bool OwnerIsMozBrowserOrAppFrame();
 
   /**
    * Is this a frameloader for a bona fide <iframe mozwidget>?  (I.e., does the
@@ -260,8 +265,18 @@ private:
 
   /**
    * Is this a frame loader for a bona fide <iframe mozbrowser>?
+   * <xul:browser> is not a mozbrowser, so this is false for that case.
    */
-  bool OwnerIsBrowserFrame();
+  bool OwnerIsMozBrowserFrame();
+
+  /**
+   * Is this a frame loader for an isolated <iframe mozbrowser>?
+   *
+   * By default, mozbrowser frames are isolated.  Isolation can be disabled by
+   * setting the frame's noisolation attribute.  Disabling isolation is
+   * only allowed if the containing document is chrome.
+   */
+  bool OwnerIsIsolatedMozBrowserFrame();
 
   /**
    * Get our owning element's app manifest URL, or return the empty string if
@@ -329,6 +344,9 @@ private:
   };
   void MaybeUpdatePrimaryTabParent(TabParentChange aChange);
 
+  nsresult
+  PopulateUserContextIdFromAttribute(mozilla::DocShellOriginAttributes& aAttr);
+
   nsCOMPtr<nsIDocShell> mDocShell;
   nsCOMPtr<nsIURI> mURIToLoad;
   mozilla::dom::Element* mOwnerContent; // WEAK
@@ -341,7 +359,6 @@ private:
   // Note: this variable must be modified only by ResetPermissionManagerStatus()
   uint32_t mAppIdSentToPermissionManager;
 
-private:
   // Stores the root frame of the subdocument while the subdocument is being
   // reframed. Used to restore the presentation after reframing.
   nsWeakFrame mDetachedSubdocFrame;
@@ -358,6 +375,9 @@ private:
   // See nsIFrameLoader.idl. EVENT_MODE_NORMAL_DISPATCH automatically
   // forwards some input events to out-of-process content.
   uint32_t mEventMode;
+
+  // Holds the last known size of the frame.
+  mozilla::ScreenIntSize mLazySize;
 
   bool mIsPrerendered : 1;
   bool mDepthTooGreat : 1;

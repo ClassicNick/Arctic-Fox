@@ -10,6 +10,7 @@
 #include "mozilla/Attributes.h"
 #include "npapi.h"
 #include "nsCOMPtr.h"
+#include "nsIKeyEventInPluginCallback.h"
 #include "nsIPluginInstanceOwner.h"
 #include "nsIPrivacyTransitionObserver.h"
 #include "nsIDOMEventListener.h"
@@ -45,17 +46,14 @@ class PuppetWidget;
 using mozilla::widget::PuppetWidget;
 
 #ifdef MOZ_X11
-#ifdef MOZ_WIDGET_QT
-#include "gfxQtNativeRenderer.h"
-#else
 #include "gfxXlibNativeRenderer.h"
 #endif
-#endif
 
-class nsPluginInstanceOwner final : public nsIPluginInstanceOwner,
-                                    public nsIDOMEventListener,
-                                    public nsIPrivacyTransitionObserver,
-                                    public nsSupportsWeakReference
+class nsPluginInstanceOwner final : public nsIPluginInstanceOwner
+                                  , public nsIDOMEventListener
+                                  , public nsIPrivacyTransitionObserver
+                                  , public nsIKeyEventInPluginCallback
+                                  , public nsSupportsWeakReference
 {
 public:
   typedef mozilla::gfx::DrawTarget DrawTarget;
@@ -138,7 +136,6 @@ public:
   enum { ePluginPaintEnable, ePluginPaintDisable };
 
   void WindowFocusMayHaveChanged();
-  void ResolutionMayHaveChanged();
 
   bool WindowIsActive();
   void SendWindowFocusChanged(bool aIsActive);
@@ -160,6 +157,7 @@ public:
   void UpdateWindowVisibility(bool aVisible);
 #endif // XP_MACOSX
 
+  void ResolutionMayHaveChanged();
   void UpdateDocumentActiveState(bool aIsActive);
 
   void SetFrame(nsPluginFrame *aFrame);
@@ -228,6 +226,9 @@ public:
 
   // Returns the image container that has our currently displayed image.
   already_AddRefed<mozilla::layers::ImageContainer> GetImageContainer();
+  // Returns true if this is windowed plugin that can return static captures
+  // for scroll operations.
+  bool NeedsScrollImageLayer();
 
   void DidComposite();
 
@@ -255,6 +256,7 @@ public:
   already_AddRefed<mozilla::layers::ImageContainer> GetImageContainerForVideo(nsNPAPIPluginInstance::VideoInfo* aVideoInfo);
 
   void Invalidate();
+  void Recomposite();
 
   void RequestFullScreen();
   void ExitFullScreen();
@@ -273,6 +275,22 @@ public:
            const mozilla::widget::CandidateWindowPosition& aPosition);
   bool RequestCommitOrCancel(bool aCommitted);
 
+  // See nsIKeyEventInPluginCallback
+  virtual void HandledWindowedPluginKeyEvent(
+                 const mozilla::NativeEventData& aKeyEventData,
+                 bool aIsConsumed) override;
+
+  /**
+   * OnWindowedPluginKeyEvent() is called when the plugin process receives
+   * native key event directly.
+   *
+   * @param aNativeKeyData      The key event which was received by the
+   *                            plugin process directly.
+   */
+  void OnWindowedPluginKeyEvent(
+         const mozilla::NativeEventData& aNativeKeyData);
+
+  void GetCSSZoomFactor(float *result);
 private:
   virtual ~nsPluginInstanceOwner();
 
@@ -323,7 +341,7 @@ private:
   // True if, the next time the window is activated, we should blur ourselves.
   bool                                      mShouldBlurOnActivate;
 #endif
-
+  double                                    mLastCSSZoomFactor;
   // Initially, the event loop nesting level we were created on, it's updated
   // if we detect the appshell is on a lower level as long as we're not stopped.
   // We delay DoStopPlugin() until the appshell reaches this level or lower.
@@ -372,12 +390,7 @@ private:
   int mLastMouseDownButtonType;
 
 #ifdef MOZ_X11
-  class Renderer
-#if defined(MOZ_WIDGET_QT)
-  : public gfxQtNativeRenderer
-#else
-  : public gfxXlibNativeRenderer
-#endif
+  class Renderer : public gfxXlibNativeRenderer
   {
   public:
     Renderer(NPWindow* aWindow, nsPluginInstanceOwner* aInstanceOwner,

@@ -55,13 +55,14 @@ Scheme0Scope(DOMStorageCacheBridge* aCache)
 
   PrincipalOriginAttributes oa;
   if (!suffix.IsEmpty()) {
-    oa.PopulateFromSuffix(suffix);
+    DebugOnly<bool> success = oa.PopulateFromSuffix(suffix);
+    MOZ_ASSERT(success);
   }
 
-  if (oa.mAppId != nsIScriptSecurityManager::NO_APP_ID || oa.mInBrowser) {
+  if (oa.mAppId != nsIScriptSecurityManager::NO_APP_ID || oa.mInIsolatedMozBrowser) {
     result.AppendInt(oa.mAppId);
     result.Append(':');
-    result.Append(oa.mInBrowser ? 't' : 'f');
+    result.Append(oa.mInIsolatedMozBrowser ? 't' : 'f');
     result.Append(':');
   }
 
@@ -72,7 +73,7 @@ Scheme0Scope(DOMStorageCacheBridge* aCache)
   // schema 1 and 0 always works in both ways.
   nsAutoCString remaining;
   oa.mAppId = 0;
-  oa.mInBrowser = false;
+  oa.mInIsolatedMozBrowser = false;
   oa.CreateSuffix(remaining);
   if (!remaining.IsEmpty()) {
     MOZ_ASSERT(!suffix.IsEmpty());
@@ -489,8 +490,6 @@ DOMStorageDBThread::OpenAndUpdateDatabase()
 nsresult
 DOMStorageDBThread::InitDatabase()
 {
-  Telemetry::AutoTimer<Telemetry::LOCALDOMSTORAGE_INIT_DATABASE_MS> timer;
-
   nsresult rv;
 
   // Here we are on the worker thread. This opens the worker connection.
@@ -721,7 +720,7 @@ DOMStorageDBThread::NotifyFlushCompletion()
 #ifdef DOM_STORAGE_TESTS
   if (!NS_IsMainThread()) {
     RefPtr<nsRunnableMethod<DOMStorageDBThread, void, false> > event =
-      NS_NewNonOwningRunnableMethod(this, &DOMStorageDBThread::NotifyFlushCompletion);
+      NewNonOwningRunnableMethod(this, &DOMStorageDBThread::NotifyFlushCompletion);
     NS_DispatchToMainThread(event);
     return;
   }
@@ -765,7 +764,8 @@ OriginAttrsPatternMatchSQLFunction::OnFunctionCall(
   NS_ENSURE_SUCCESS(rv, rv);
 
   PrincipalOriginAttributes oa;
-  oa.PopulateFromSuffix(suffix);
+  bool success = oa.PopulateFromSuffix(suffix);
+  NS_ENSURE_TRUE(success, NS_ERROR_FAILURE);
   bool result = mPattern.Matches(oa);
 
   RefPtr<nsVariant> outVar(new nsVariant());

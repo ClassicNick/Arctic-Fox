@@ -228,7 +228,7 @@ var DirectoryLinksProvider = {
           enhanced = false;
         }
       }
-      catch(ex) {}
+      catch (ex) {}
       Services.prefs.setBoolPref(PREF_NEWTAB_ENHANCED, enhanced);
     }
   },
@@ -609,7 +609,7 @@ var DirectoryLinksProvider = {
       // URIs without base domains will be allowed
       base = Services.eTLD.getBaseDomain(uri);
     }
-    catch(ex) {}
+    catch (ex) {}
     // Require a scheme match and the base only if desired
     return allowed.has(scheme) && (!checkBase || ALLOWED_URL_BASE.has(base));
   },
@@ -643,8 +643,10 @@ var DirectoryLinksProvider = {
       let validityFilter = function(link) {
         // Make sure the link url is allowed and images too if they exist
         return this.isURLAllowed(link.url, ALLOWED_LINK_SCHEMES, false) &&
-               this.isURLAllowed(link.imageURI, ALLOWED_IMAGE_SCHEMES, checkBase) &&
-               this.isURLAllowed(link.enhancedImageURI, ALLOWED_IMAGE_SCHEMES, checkBase);
+               (!link.imageURI ||
+                this.isURLAllowed(link.imageURI, ALLOWED_IMAGE_SCHEMES, checkBase)) &&
+               (!link.enhancedImageURI ||
+                this.isURLAllowed(link.enhancedImageURI, ALLOWED_IMAGE_SCHEMES, checkBase));
       }.bind(this);
 
       rawLinks.suggested.filter(validityFilter).forEach((link, position) => {

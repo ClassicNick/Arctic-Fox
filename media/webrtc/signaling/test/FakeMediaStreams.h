@@ -8,6 +8,7 @@
 #include <set>
 #include <string>
 #include <sstream>
+#include <vector>
 
 #include "nsNetCID.h"
 #include "nsITimer.h"
@@ -21,7 +22,8 @@
 #include "mozilla/Mutex.h"
 #include "AudioSegment.h"
 #include "MediaSegment.h"
-#include "StreamBuffer.h"
+#include "StreamTracks.h"
+#include "VideoSegment.h"
 #include "nsTArray.h"
 #include "nsIRunnable.h"
 #include "nsISupportsImpl.h"
@@ -31,6 +33,9 @@ class nsPIDOMWindowInner;
 namespace mozilla {
    class MediaStreamGraphImpl;
    class MediaSegment;
+   class PeerConnectionImpl;
+   class PeerConnectionMedia;
+   class RemoteSourceStreamInfo;
 };
 
 
@@ -45,6 +50,9 @@ struct AudioChannel {
     Normal
   };
 };
+
+enum MediaStreamGraphEvent : uint32_t;
+enum TrackEventCommand : uint32_t;
 
 class MediaStreamGraph {
 public:
@@ -85,25 +93,80 @@ protected:
 public:
   virtual void NotifyQueuedTrackChanges(mozilla::MediaStreamGraph* aGraph, mozilla::TrackID aID,
                                         mozilla::StreamTime aTrackOffset,
-                                        uint32_t aTrackEvents,
+                                        mozilla::TrackEventCommand  aTrackEvents,
                                         const mozilla::MediaSegment& aQueuedMedia,
                                         Fake_MediaStream* aInputStream,
-                                        mozilla::TrackID aInputTrackID) = 0;
+                                        mozilla::TrackID aInputTrackID) {}
   virtual void NotifyPull(mozilla::MediaStreamGraph* aGraph, mozilla::StreamTime aDesiredTime) = 0;
+  virtual void NotifyQueuedAudioData(mozilla::MediaStreamGraph* aGraph, mozilla::TrackID aID,
+                                       mozilla::StreamTime aTrackOffset,
+                                       const mozilla::AudioSegment& aQueuedMedia,
+                                       Fake_MediaStream* aInputStream,
+                                       mozilla::TrackID aInputTrackID) {}
 
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(Fake_MediaStreamListener)
 };
 
-class Fake_MediaStreamDirectListener : public Fake_MediaStreamListener
+class Fake_DirectMediaStreamListener : public Fake_MediaStreamListener
 {
 protected:
-  virtual ~Fake_MediaStreamDirectListener() {}
+  virtual ~Fake_DirectMediaStreamListener() {}
 
 public:
   virtual void NotifyRealtimeData(mozilla::MediaStreamGraph* graph, mozilla::TrackID tid,
                                   mozilla::StreamTime offset,
-                                  uint32_t events,
                                   const mozilla::MediaSegment& media) = 0;
+};
+
+class Fake_MediaStreamTrackListener
+{
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(Fake_MediaStreamTrackListener)
+
+protected:
+  virtual ~Fake_MediaStreamTrackListener() {}
+
+public:
+  virtual void NotifyQueuedChanges(mozilla::MediaStreamGraph* aGraph,
+                                   mozilla::StreamTime aTrackOffset,
+                                   const mozilla::MediaSegment& aQueuedMedia) = 0;
+};
+
+class Fake_DirectMediaStreamTrackListener : public Fake_MediaStreamTrackListener
+{
+protected:
+  virtual ~Fake_DirectMediaStreamTrackListener() {}
+
+public:
+  virtual void NotifyRealtimeTrackData(mozilla::MediaStreamGraph* aGraph,
+                                       mozilla::StreamTime aTrackOffset,
+                                       const mozilla::MediaSegment& aMedia) = 0;
+  enum class InstallationResult {
+    STREAM_NOT_SUPPORTED,
+    SUCCESS
+  };
+  virtual void NotifyDirectListenerInstalled(InstallationResult aResult) = 0;
+  virtual void NotifyDirectListenerUninstalled() = 0;
+};
+
+class Fake_MediaStreamVideoSink : public Fake_DirectMediaStreamTrackListener{
+public:
+  Fake_MediaStreamVideoSink() {}
+
+  void NotifyQueuedChanges(mozilla::MediaStreamGraph* aGraph,
+                           mozilla::StreamTime aTrackOffset,
+                           const mozilla::MediaSegment& aQueuedMedia) override {}
+
+  void NotifyRealtimeTrackData(mozilla::MediaStreamGraph* aGraph,
+                               mozilla::StreamTime aTrackOffset,
+                               const mozilla::MediaSegment& aMedia) override {}
+  void NotifyDirectListenerInstalled(InstallationResult aResult) override {}
+  void NotifyDirectListenerUninstalled() override {}
+
+  virtual void SetCurrentFrames(const mozilla::VideoSegment& aSegment) {};
+  virtual void ClearFrames() {};
+
+protected:
+  virtual ~Fake_MediaStreamVideoSink() {}
 };
 
 // Note: only one listener supported
@@ -111,8 +174,17 @@ class Fake_MediaStream {
  protected:
   virtual ~Fake_MediaStream() { Stop(); }
 
+  struct BoundTrackListener
+  {
+    BoundTrackListener(Fake_MediaStreamTrackListener* aListener,
+                       mozilla::TrackID aTrackID)
+      : mListener(aListener), mTrackID(aTrackID) {}
+    RefPtr<Fake_MediaStreamTrackListener> mListener;
+    mozilla::TrackID mTrackID;
+  };
+
  public:
-  Fake_MediaStream () : mListeners(), mMutex("Fake MediaStream") {}
+  Fake_MediaStream () : mListeners(), mTrackListeners(), mMutex("Fake MediaStream") {}
 
   static uint32_t GraphRate() { return 16000; }
 
@@ -126,11 +198,29 @@ class Fake_MediaStream {
     mListeners.erase(aListener);
   }
 
+  void AddTrackListener(Fake_MediaStreamTrackListener *aListener,
+                        mozilla::TrackID aTrackID) {
+    mozilla::MutexAutoLock lock(mMutex);
+    mTrackListeners.push_back(BoundTrackListener(aListener, aTrackID));
+  }
+
+  void RemoveTrackListener(Fake_MediaStreamTrackListener *aListener,
+                           mozilla::TrackID aTrackID) {
+    mozilla::MutexAutoLock lock(mMutex);
+    for (std::vector<BoundTrackListener>::iterator it = mTrackListeners.begin();
+         it != mTrackListeners.end(); ++it) {
+      if (it->mListener == aListener && it->mTrackID == aTrackID) {
+        mTrackListeners.erase(it);
+        return;
+      }
+    }
+  }
+
   void NotifyPull(mozilla::MediaStreamGraph* graph,
                   mozilla::StreamTime aDesiredTime) {
 
     mozilla::MutexAutoLock lock(mMutex);
-    std::set<Fake_MediaStreamListener *>::iterator it;
+    std::set<RefPtr<Fake_MediaStreamListener>>::iterator it;
     for (it = mListeners.begin(); it != mListeners.end(); ++it) {
       (*it)->NotifyPull(graph, aDesiredTime);
     }
@@ -152,7 +242,8 @@ class Fake_MediaStream {
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(Fake_MediaStream);
 
  protected:
-  std::set<Fake_MediaStreamListener *> mListeners;
+  std::set<RefPtr<Fake_MediaStreamListener>> mListeners;
+  std::vector<BoundTrackListener> mTrackListeners;
   mozilla::Mutex mMutex;  // Lock to prevent the listener list from being modified while
                           // executing Periodic().
 };
@@ -286,14 +377,26 @@ class Fake_SourceMediaStream : public Fake_MediaStream {
 
 class Fake_DOMMediaStream;
 
+class Fake_MediaStreamTrackSource
+{
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(Fake_MediaStreamTrackSource)
+
+protected:
+  virtual ~Fake_MediaStreamTrackSource() {}
+};
+
 class Fake_MediaStreamTrack
 {
+  friend class mozilla::PeerConnectionImpl;
+  friend class mozilla::PeerConnectionMedia;
+  friend class mozilla::RemoteSourceStreamInfo;
 public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(Fake_MediaStreamTrack)
 
-  Fake_MediaStreamTrack(bool aIsVideo, Fake_DOMMediaStream* aStream) :
+  Fake_MediaStreamTrack(bool aIsVideo, Fake_DOMMediaStream* aOwningStream) :
     mIsVideo (aIsVideo),
-    mStream (aStream)
+    mOwningStream (aOwningStream),
+    mTrackID(mIsVideo ? 1 : 0)
   {
     static size_t counter = 0;
     std::ostringstream os;
@@ -301,10 +404,9 @@ public:
     mID = os.str();
   }
 
-  mozilla::TrackID GetTrackID() { return mIsVideo ? 1 : 0; }
   std::string GetId() const { return mID; }
   void AssignId(const std::string& id) { mID = id; }
-  Fake_DOMMediaStream *GetStream() { return mStream; }
+  mozilla::MediaStreamGraphImpl* GraphImpl() { return nullptr; }
   const Fake_MediaStreamTrack* AsVideoStreamTrack() const
   {
     return mIsVideo? this : nullptr;
@@ -321,16 +423,39 @@ public:
   {
     return "Fake_MediaStreamTrack";
   }
+  void AddListener(Fake_MediaStreamTrackListener *aListener);
+  void RemoveListener(Fake_MediaStreamTrackListener *aListener);
+  void AddDirectListener(Fake_DirectMediaStreamTrackListener *aListener)
+  {
+    AddListener(aListener);
+    aListener->NotifyDirectListenerInstalled(
+      Fake_DirectMediaStreamTrackListener::InstallationResult::STREAM_NOT_SUPPORTED);
+  }
+  void RemoveDirectListener(Fake_DirectMediaStreamTrackListener *aListener)
+  {
+    RemoveListener(aListener);
+  }
+
+  class PrincipalChangeObserver
+  {
+  public:
+    virtual void PrincipalChanged(Fake_MediaStreamTrack* aMediaStreamTrack) = 0;
+  };
+  void AddPrincipalChangeObserver(void* ignoredObserver) {}
+  void RemovePrincipalChangeObserver(void* ignoredObserver) {}
+
 private:
   ~Fake_MediaStreamTrack() {}
 
   const bool mIsVideo;
-  Fake_DOMMediaStream* mStream;
+  Fake_DOMMediaStream* mOwningStream;
+  mozilla::TrackID mTrackID;
   std::string mID;
 };
 
 class Fake_DOMMediaStream : public nsISupports
 {
+  friend class mozilla::PeerConnectionMedia;
 protected:
   virtual ~Fake_DOMMediaStream() {
     // Note: memory leak
@@ -352,9 +477,9 @@ public:
   NS_DECL_THREADSAFE_ISUPPORTS
 
   static already_AddRefed<Fake_DOMMediaStream>
-  CreateSourceStream(nsPIDOMWindowInner* aWindow,
-		     mozilla::MediaStreamGraph* aGraph,
-		     uint32_t aHintContents = 0) {
+  CreateSourceStreamAsInput(nsPIDOMWindowInner* aWindow,
+                            mozilla::MediaStreamGraph* aGraph,
+                            uint32_t aHintContents = 0) {
     Fake_SourceMediaStream *source = new Fake_SourceMediaStream();
 
     RefPtr<Fake_DOMMediaStream> ds = new Fake_DOMMediaStream(source);
@@ -374,6 +499,24 @@ public:
   Fake_MediaStream *GetStream() { return mMediaStream; }
   std::string GetId() const { return mID; }
   void AssignId(const std::string& id) { mID = id; }
+  Fake_MediaStreamTrack* GetTrackById(const std::string& aId)
+  {
+    if (mHintContents & HINT_CONTENTS_AUDIO) {
+      if (mAudioTrack && mAudioTrack->GetId() == aId) {
+        return mAudioTrack;
+      }
+    }
+    if (mHintContents & HINT_CONTENTS_VIDEO) {
+      if (mVideoTrack && mVideoTrack->GetId() == aId) {
+        return mVideoTrack;
+      }
+    }
+    return nullptr;
+  }
+  Fake_MediaStreamTrack* GetOwnedTrackById(const std::string& aId)
+  {
+    return GetTrackById(aId);
+  }
 
   // Hints to tell the SDP generator about whether this
   // MediaStream probably has audio and/or video
@@ -414,10 +557,17 @@ public:
            ((mHintContents & HINT_CONTENTS_VIDEO) && aTrack.AsVideoStreamTrack());
   }
 
+  bool
+  OwnsTrack(const Fake_MediaStreamTrack& aTrack) const
+  {
+    return HasTrack(aTrack);
+  }
+
   void SetTrackEnabled(mozilla::TrackID aTrackID, bool aEnabled) {}
 
   Fake_MediaStreamTrack*
-  CreateOwnDOMTrack(mozilla::TrackID aTrackID, mozilla::MediaSegment::Type aType)
+  CreateDOMTrack(mozilla::TrackID aTrackID, mozilla::MediaSegment::Type aType,
+                 Fake_MediaStreamTrackSource* aSource)
   {
     switch(aType) {
       case mozilla::MediaSegment::AUDIO: {
@@ -431,14 +581,6 @@ public:
       }
     }
   }
-
-  class PrincipalChangeObserver
-  {
-  public:
-    virtual void PrincipalChanged(Fake_DOMMediaStream* aMediaStream) = 0;
-  };
-  void AddPrincipalChangeObserver(void* ignoredObserver) {}
-  void RemovePrincipalChangeObserver(void* ignoredObserver) {}
 
 private:
   RefPtr<Fake_MediaStream> mMediaStream;
@@ -494,9 +636,17 @@ namespace mozilla {
 typedef Fake_MediaStream MediaStream;
 typedef Fake_SourceMediaStream SourceMediaStream;
 typedef Fake_MediaStreamListener MediaStreamListener;
-typedef Fake_MediaStreamDirectListener MediaStreamDirectListener;
+typedef Fake_DirectMediaStreamListener DirectMediaStreamListener;
+typedef Fake_MediaStreamTrackListener MediaStreamTrackListener;
+typedef Fake_DirectMediaStreamTrackListener DirectMediaStreamTrackListener;
 typedef Fake_DOMMediaStream DOMMediaStream;
 typedef Fake_DOMMediaStream DOMLocalMediaStream;
+typedef Fake_MediaStreamVideoSink MediaStreamVideoSink;
+
+namespace dom {
+typedef Fake_MediaStreamTrack MediaStreamTrack;
+typedef Fake_MediaStreamTrackSource MediaStreamTrackSource;
+}
 }
 
 #endif

@@ -1,4 +1,4 @@
-# -*- Mode: python; c-basic-offset: 4; indent-tabs-mode: nil; tab-width: 40 -*-
+# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
 # vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -275,9 +275,11 @@ with Files('view-source/**'):
     BUG_COMPONENT = ('Core', 'HTML: Parser')
 with Files('w3c-css/**'):
     BUG_COMPONENT = ('Core', 'Layout')
-with Files('w3c-css/received/css3-conditional/**'):
+with Files('w3c-css/received/css-conditional-3/**'):
     BUG_COMPONENT = ('Core', 'CSS Parsing and Computation')
-with Files('w3c-css/received/css3-namespace/**'):
+with Files('w3c-css/received/css-namespaces-3/**'):
+    BUG_COMPONENT = ('Core', 'CSS Parsing and Computation')
+with Files('w3c-css/received/css-values-3/**'):
     BUG_COMPONENT = ('Core', 'CSS Parsing and Computation')
 with Files('w3c-css/submitted/conditional3/**'):
     BUG_COMPONENT = ('Core', 'CSS Parsing and Computation')

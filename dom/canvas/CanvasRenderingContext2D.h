@@ -54,6 +54,7 @@ template<typename T> class Optional;
 struct CanvasBidiProcessor;
 class CanvasRenderingContext2DUserData;
 class CanvasDrawObserver;
+class CanvasShutdownObserver;
 
 /**
  ** CanvasRenderingContext2D
@@ -409,8 +410,6 @@ public:
 		  double aW, double aH,
                   const nsAString& aBgColor, uint32_t aFlags,
                   mozilla::ErrorResult& aError);
-  void DrawWidgetAsOnScreen(nsGlobalWindow& aWindow,
-			    mozilla::ErrorResult& aError);
   void AsyncDrawXULElement(nsXULElement& aElem, double aX, double aY, double aW,
                            double aH, const nsAString& aBgColor, uint32_t aFlags,
                            mozilla::ErrorResult& aError);
@@ -445,7 +444,8 @@ public:
     return nullptr;
   }
   NS_IMETHOD SetDimensions(int32_t aWidth, int32_t aHeight) override;
-  NS_IMETHOD InitializeWithSurface(nsIDocShell* aShell, gfxASurface* aSurface, int32_t aWidth, int32_t aHeight) override;
+  NS_IMETHOD InitializeWithDrawTarget(nsIDocShell* aShell,
+                                      NotNull<gfx::DrawTarget*> aTarget) override;
 
   NS_IMETHOD GetInputStream(const char* aMimeType,
                             const char16_t* aEncoderOptions,
@@ -466,7 +466,8 @@ public:
   mozilla::layers::PersistentBufferProvider* GetBufferProvider(mozilla::layers::LayerManager* aManager);
   already_AddRefed<Layer> GetCanvasLayer(nsDisplayListBuilder* aBuilder,
                                          Layer* aOldLayer,
-                                         LayerManager* aManager) override;
+                                         LayerManager* aManager,
+                                         bool aMirror = false) override;
   virtual bool ShouldForceInactiveLayer(LayerManager* aManager) override;
   void MarkContextClean() override;
   void MarkContextCleanForFrameCapture() override;
@@ -546,6 +547,7 @@ public:
   // return true and fills in the bound rect if element has a hit region.
   bool GetHitRegionRect(Element* aElement, nsRect& aRect) override;
 
+  void OnShutdown();
 protected:
   nsresult GetImageDataArray(JSContext* aCx, int32_t aX, int32_t aY,
                              uint32_t aWidth, uint32_t aHeight,
@@ -581,6 +583,8 @@ protected:
   static uint8_t (*sPremultiplyTable)[256];
 
   static mozilla::gfx::DrawTarget* sErrorTarget;
+
+  void SetTransformInternal(const mozilla::gfx::Matrix& aTransform);
 
   // Some helpers.  Doesn't modify a color on failure.
   void SetStyleFromUnion(const StringOrCanvasGradientOrCanvasPattern& aValue,
@@ -646,7 +650,21 @@ protected:
    *
    * Returns the actual rendering mode being used by the created target.
    */
-  RenderingMode EnsureTarget(RenderingMode aRenderMode = RenderingMode::DefaultBackendMode);
+  RenderingMode EnsureTarget(const gfx::Rect* aCoveredRect = nullptr,
+                             RenderingMode aRenderMode = RenderingMode::DefaultBackendMode);
+
+  /**
+   * This method is run at the end of the event-loop spin where
+   * ScheduleStableStateCallback was called.
+   *
+   * We use it to unlock resources that need to be locked while drawing.
+   */
+  void OnStableState();
+
+  /**
+   * Cf. OnStableState.
+   */
+  void ScheduleStableStateCallback();
 
   /**
    * Disposes an old target and prepares to lazily create a new target.
@@ -660,7 +678,7 @@ protected:
    * Returns the target to the buffer provider. i.e. this will queue a frame for
    * rendering.
    */
-  void ReturnTarget();
+  void ReturnTarget(bool aForceReset = false);
 
   /**
    * Check if the target is valid after calling EnsureTarget.
@@ -674,6 +692,12 @@ protected:
     * into account mOpaque, platform requirements, etc.
     */
   mozilla::gfx::SurfaceFormat GetSurfaceFormat() const;
+
+  /**
+   * Returns true if we know for sure that the pattern for a given style is opaque.
+   * Usefull to know if we can discard the content below in certain situations.
+   */
+  bool PatternIsOpaque(Style aStyle) const;
 
   /**
    * Update CurrentState().filter with the filter description for
@@ -714,10 +738,6 @@ protected:
 
   RenderingMode mRenderingMode;
 
-  // Texture informations for fast video rendering
-  unsigned int mVideoTexture;
-  nsIntSize mCurrentVideoSize;
-
   // Member vars
   int32_t mWidth, mHeight;
 
@@ -735,6 +755,8 @@ protected:
   // True if the current DrawTarget is using skia-gl, used so we can avoid
   // requesting the DT from mBufferProvider to check.
   bool mIsSkiaGL;
+
+  bool mHasPendingStableStateCallback;
 
   nsTArray<CanvasRenderingContext2DUserData*> mUserDatas;
 
@@ -756,6 +778,10 @@ protected:
   CanvasDrawObserver* mDrawObserver;
   void RemoveDrawObserver();
 
+  RefPtr<CanvasShutdownObserver> mShutdownObserver;
+  void RemoveShutdownObserver();
+  bool AlreadyShutDown() const { return !mShutdownObserver; }
+
   /**
     * Flag to avoid duplicate calls to InvalidateFrame. Set to true whenever
     * Redraw is called, reset to false when Render is called.
@@ -774,10 +800,6 @@ protected:
    * but canvas capturing is still ongoing.
    */
   bool mIsCapturedFrameInvalid;
-
-  // This is stored after GetThebesSurface has been called once to avoid
-  // excessive ThebesSurface initialization overhead.
-  RefPtr<gfxASurface> mThebesSurface;
 
   /**
     * We also have a device space pathbuilder. The reason for this is as
@@ -910,6 +932,22 @@ protected:
 
   bool CheckSizeForSkiaGL(mozilla::gfx::IntSize aSize);
 
+  // A clip or a transform, recorded and restored in order.
+  struct ClipState {
+    explicit ClipState(mozilla::gfx::Path* aClip)
+      : clip(aClip)
+    {}
+
+    explicit ClipState(const mozilla::gfx::Matrix& aTransform)
+      : transform(aTransform)
+    {}
+
+    bool IsClip() const { return !!clip; }
+
+    RefPtr<mozilla::gfx::Path> clip;
+    mozilla::gfx::Matrix transform;
+  };
+
   // state stack handling
   class ContextState {
   public:
@@ -925,7 +963,8 @@ protected:
                      fillRule(mozilla::gfx::FillRule::FILL_WINDING),
                      lineCap(mozilla::gfx::CapStyle::BUTT),
                      lineJoin(mozilla::gfx::JoinStyle::MITER_OR_BEVEL),
-                     filterString(MOZ_UTF16("none")),
+                     filterString(u"none"),
+                     updateFilterOnWriteOnly(false),
                      imageSmoothingEnabled(true),
                      fontExplicitLanguage(false)
     { }
@@ -958,6 +997,7 @@ protected:
           filterChainObserver(aOther.filterChainObserver),
           filter(aOther.filter),
           filterAdditionalImages(aOther.filterAdditionalImages),
+          updateFilterOnWriteOnly(aOther.updateFilterOnWriteOnly),
           imageSmoothingEnabled(aOther.imageSmoothingEnabled),
           fontExplicitLanguage(aOther.fontExplicitLanguage)
     { }
@@ -1000,7 +1040,7 @@ protected:
       return std::min(SIGMA_MAX, shadowBlur / 2.0f);
     }
 
-    nsTArray<RefPtr<mozilla::gfx::Path> > clipsPushed;
+    nsTArray<ClipState> clipsAndTransforms;
 
     RefPtr<gfxFontGroup> fontGroup;
     nsCOMPtr<nsIAtom> fontLanguage;
@@ -1035,6 +1075,7 @@ protected:
     RefPtr<nsSVGFilterChainObserver> filterChainObserver;
     mozilla::gfx::FilterDescription filter;
     nsTArray<RefPtr<mozilla::gfx::SourceSurface>> filterAdditionalImages;
+    bool updateFilterOnWriteOnly;
 
     bool imageSmoothingEnabled;
     bool fontExplicitLanguage;

@@ -8,6 +8,7 @@
 interface nsIURI;
 interface nsIFaviconDataCallback;
 interface nsIPrincipal;
+interface mozIPlacesPendingOperation;
 
 [scriptable, uuid(a9c81797-9133-4823-b55f-3646e67cfd41)]
 interface mozIAsyncFavicons : nsISupports
@@ -51,18 +52,17 @@ interface mozIAsyncFavicons : nsISupports
    *        callback.
    * @param aLoadingPrincipal
    *        Principal of the page whose favicon is being set. If this argument
-   *        is omitted, the loadingPrincipal defaults to the systemPrincipal
-   *        and we cannot guarantee security checks anymore (see Bug 1227289)
+   *        is omitted, the loadingPrincipal defaults to the nullPrincipal.
    *
    * @see nsIFaviconDataCallback in nsIFaviconService.idl.
    */
-  void setAndFetchFaviconForPage(in nsIURI aPageURI,
-                                 in nsIURI aFaviconURI,
-                                 in boolean aForceReload,
-                                 in unsigned long aFaviconLoadType,
-                                 [optional] in nsIFaviconDataCallback aCallback,
-                                 [optional] in nsIPrincipal aLoadingPrincipal);
-
+  mozIPlacesPendingOperation setAndFetchFaviconForPage(
+    in nsIURI aPageURI,
+    in nsIURI aFaviconURI,
+    in boolean aForceReload,
+    in unsigned long aFaviconLoadType,
+    [optional] in nsIFaviconDataCallback aCallback,
+    [optional] in nsIPrincipal aLoadingPrincipal);
   /**
    * Sets the data for a given favicon URI either by replacing existing data in
    * the database or taking the place of otherwise fetched icon data when
@@ -125,8 +125,7 @@ interface mozIAsyncFavicons : nsISupports
    *        Until this time, we won't try to load it again.
    * @param aLoadingPrincipal
    *        Principal of the page whose favicon is being set. If this argument
-   *        is omitted, the loadingPrincipal defaults to the systemPrincipal
-   *        and we cannot guarantee security checks anymore (see Bug 1227289)
+   *        is omitted, the loadingPrincipal defaults to the nullPrincipal.
    * @throws NS_ERROR_FAILURE
    *         Thrown if the favicon is overbloated and won't be saved to the db.
    */

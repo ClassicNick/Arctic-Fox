@@ -140,8 +140,8 @@ GetBoxRectForFrame(nsIFrame** aFrame, CSSBoxType aType)
 {
   nsRect r;
   nsIFrame* f = nsSVGUtils::GetOuterSVGFrameAndCoveredRegion(*aFrame, &r);
-  if (f) {
-    // For SVG, the BoxType is ignored.
+  if (f && f != *aFrame) {
+    // For non-outer SVG frames, the BoxType is ignored.
     *aFrame = f;
     return r;
   }
@@ -187,7 +187,7 @@ public:
     nsIFrame* f = aFrame;
     if (mBoxType == CSSBoxType::Margin &&
         f->GetType() == nsGkAtoms::tableFrame) {
-      // Margin boxes for table frames should be taken from the outer table
+      // Margin boxes for table frames should be taken from the table wrapper
       // frame, since that has the margin.
       f = f->GetParent();
     }

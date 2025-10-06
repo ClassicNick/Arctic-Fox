@@ -300,7 +300,7 @@ nsMathMLmencloseFrame::BuildDisplayList(nsDisplayListBuilder*   aBuilder,
 
 /* virtual */ nsresult
 nsMathMLmencloseFrame::MeasureForWidth(DrawTarget* aDrawTarget,
-                                       nsHTMLReflowMetrics& aDesiredSize)
+                                       ReflowOutput& aDesiredSize)
 {
   return PlaceInternal(aDrawTarget, false, aDesiredSize, true);
 }
@@ -308,7 +308,7 @@ nsMathMLmencloseFrame::MeasureForWidth(DrawTarget* aDrawTarget,
 /* virtual */ nsresult
 nsMathMLmencloseFrame::Place(DrawTarget*          aDrawTarget,
                              bool                 aPlaceOrigin,
-                             nsHTMLReflowMetrics& aDesiredSize)
+                             ReflowOutput& aDesiredSize)
 {
   return PlaceInternal(aDrawTarget, aPlaceOrigin, aDesiredSize, false);
 }
@@ -316,13 +316,13 @@ nsMathMLmencloseFrame::Place(DrawTarget*          aDrawTarget,
 /* virtual */ nsresult
 nsMathMLmencloseFrame::PlaceInternal(DrawTarget*          aDrawTarget,
                                      bool                 aPlaceOrigin,
-                                     nsHTMLReflowMetrics& aDesiredSize,
+                                     ReflowOutput& aDesiredSize,
                                      bool                 aWidthOnly)
 {
   ///////////////
   // Measure the size of our content using the base class to format like an
   // inferred mrow.
-  nsHTMLReflowMetrics baseSize(aDesiredSize.GetWritingMode());
+  ReflowOutput baseSize(aDesiredSize.GetWritingMode());
   nsresult rv =
     nsMathMLContainerFrame::Place(aDrawTarget, false, baseSize);
 
@@ -344,9 +344,8 @@ nsMathMLmencloseFrame::PlaceInternal(DrawTarget*          aDrawTarget,
   nscoord onePixel = nsPresContext::CSSPixelsToAppUnits(1);
 
   float fontSizeInflation = nsLayoutUtils::FontSizeInflationFor(this);
-  RefPtr<nsFontMetrics> fm;
-  nsLayoutUtils::GetFontMetricsForFrame(this, getter_AddRefs(fm),
-                                        fontSizeInflation);
+  RefPtr<nsFontMetrics> fm =
+    nsLayoutUtils::GetFontMetricsForFrame(this, fontSizeInflation);
   GetRuleThickness(aDrawTarget, fm, mRuleThickness);
   if (mRuleThickness < onePixel) {
     mRuleThickness = onePixel;
@@ -690,7 +689,7 @@ nsMathMLmencloseFrame::PlaceInternal(DrawTarget*          aDrawTarget,
 }
 
 nscoord
-nsMathMLmencloseFrame::FixInterFrameSpacing(nsHTMLReflowMetrics& aDesiredSize)
+nsMathMLmencloseFrame::FixInterFrameSpacing(ReflowOutput& aDesiredSize)
 {
   nscoord gap = nsMathMLContainerFrame::FixInterFrameSpacing(aDesiredSize);
   if (!gap)
@@ -780,8 +779,9 @@ void nsDisplayNotation::Paint(nsDisplayListBuilder* aBuilder,
                            presContext->AppUnitsPerDevPixel());
   rect.Deflate(strokeWidth / 2.f);
 
+  nsCSSPropertyID colorProp = mFrame->StyleContext()->GetTextFillColorProp();
   ColorPattern color(ToDeviceColor(
-                       mFrame->GetVisitedDependentColor(eCSSProperty_color)));
+                                 mFrame->GetVisitedDependentColor(colorProp)));
 
   StrokeOptions strokeOptions(strokeWidth);
 

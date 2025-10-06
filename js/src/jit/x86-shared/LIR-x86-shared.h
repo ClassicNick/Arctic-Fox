@@ -161,6 +161,12 @@ class LUDivOrMod : public LBinaryMath<1>
             return mir_->toMod()->canBeDivideByZero();
         return mir_->toDiv()->canBeDivideByZero();
     }
+
+    bool trapOnError() const {
+        if (mir_->isMod())
+            return mir_->toMod()->trapOnError();
+        return mir_->toDiv()->trapOnError();
+    }
 };
 
 class LUDivOrModConstant : public LInstructionHelper<1, 1, 1>
@@ -191,6 +197,11 @@ class LUDivOrModConstant : public LInstructionHelper<1, 1, 1>
         if (mir_->isMod())
             return mir_->toMod()->canBeNegativeDividend();
         return mir_->toDiv()->canBeNegativeDividend();
+    }
+    bool trapOnError() const {
+        if (mir_->isMod())
+            return mir_->toMod()->trapOnError();
+        return mir_->toDiv()->trapOnError();
     }
 };
 
@@ -371,6 +382,20 @@ class LSimdValueFloat32x4 : public LInstructionHelper<1, 4, 1>
 
     MSimdValueX4* mir() const {
         return mir_->toSimdValueX4();
+    }
+};
+
+class LInt64ToFloatingPoint : public LInstructionHelper<1, INT64_PIECES, 0>
+{
+  public:
+    LIR_HEADER(Int64ToFloatingPoint);
+
+    explicit LInt64ToFloatingPoint(const LInt64Allocation& in) {
+        setInt64Operand(0, in);
+    }
+
+    MInt64ToFloatingPoint* mir() const {
+        return mir_->toInt64ToFloatingPoint();
     }
 };
 

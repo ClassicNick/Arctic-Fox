@@ -33,7 +33,7 @@ this.Utils = { // jshint ignore:line
   _buildAppMap: {
     '{3c2e2abc-06d4-11e1-ac3b-374f68613e61}': 'b2g',
     '{d1bfe7d9-c01e-4237-998b-7b5f960a4314}': 'graphene',
-    '{8de7fcbb-c55c-4fbe-bfc5-fc555c87dbc4}': 'browser',
+    '{ec8030f7-c20a-464f-9b0e-13a3a9e97384}': 'browser',
     '{aa3c5121-dab2-40e2-81ca-7ea25febc110}': 'mobile/android',
     '{a23983c0-fd0e-11dc-95ff-0800200c9a66}': 'mobile/xul'
   },
@@ -69,13 +69,13 @@ this.Utils = { // jshint ignore:line
       Ci.nsIDOMWindowUtils);
   },
 
-  get AccRetrieval() {
-    if (!this._AccRetrieval) {
-      this._AccRetrieval = Cc['@mozilla.org/accessibleRetrieval;1'].
-        getService(Ci.nsIAccessibleRetrieval);
+  get AccService() {
+    if (!this._AccService) {
+      this._AccService = Cc['@mozilla.org/accessibilityService;1'].
+        getService(Ci.nsIAccessibilityService);
     }
 
-    return this._AccRetrieval;
+    return this._AccService;
   },
 
   set MozBuildApp(value) {
@@ -295,7 +295,7 @@ this.Utils = { // jshint ignore:line
 
   getVirtualCursor: function getVirtualCursor(aDocument) {
     let doc = (aDocument instanceof Ci.nsIAccessible) ? aDocument :
-      this.AccRetrieval.getAccessibleFor(aDocument);
+      this.AccService.getAccessibleFor(aDocument);
 
     return doc.QueryInterface(Ci.nsIAccessibleDocument).virtualCursor;
   },
@@ -539,7 +539,7 @@ State.prototype = {
     return !!(this.base & other.base || this.extended & other.extended);
   },
   toString: function State_toString() {
-    let stateStrings = Utils.AccRetrieval.
+    let stateStrings = Utils.AccService.
       getStringStates(this.base, this.extended);
     let statesArray = new Array(stateStrings.length);
     for (let i = 0; i < statesArray.length; i++) {
@@ -640,7 +640,7 @@ this.Logger = { // jshint ignore:line
     }
 
     try {
-      return'[ ' + Utils.AccRetrieval.getStringRole(aAccessible.role) +
+      return'[ ' + Utils.AccService.getStringRole(aAccessible.role) +
         ' | ' + aAccessible.name + ' ]';
     } catch (x) {
       return '[ defunct ]';
@@ -648,12 +648,12 @@ this.Logger = { // jshint ignore:line
   },
 
   eventToString: function eventToString(aEvent) {
-    let str = Utils.AccRetrieval.getStringEventType(aEvent.eventType);
+    let str = Utils.AccService.getStringEventType(aEvent.eventType);
     if (aEvent.eventType == Events.STATE_CHANGE) {
       let event = aEvent.QueryInterface(Ci.nsIAccessibleStateChangeEvent);
       let stateStrings = event.isExtraState ?
-        Utils.AccRetrieval.getStringStates(0, event.state) :
-        Utils.AccRetrieval.getStringStates(event.state, 0);
+        Utils.AccService.getStringStates(0, event.state) :
+        Utils.AccService.getStringStates(event.state, 0);
       str += ' (' + stateStrings.item(0) + ')';
     }
 
@@ -887,7 +887,7 @@ PivotContext.prototype = {
         hints.push(hint);
       } else if (aAccessible.actionCount > 0) {
         hints.push({
-          string: Utils.AccRetrieval.getStringRole(
+          string: Utils.AccService.getStringRole(
             aAccessible.role).replace(/\s/g, '') + '-hint'
         });
       }

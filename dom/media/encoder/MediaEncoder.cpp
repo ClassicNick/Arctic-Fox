@@ -9,16 +9,13 @@
 #include "mozilla/Logging.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/StaticPtr.h"
+#include "mozilla/gfx/Point.h" // IntSize
 
 #include"GeckoProfiler.h"
 #include "OggWriter.h"
 #include "OpusTrackEncoder.h"
 
-#ifdef MOZ_VORBIS
-#include "VorbisTrackEncoder.h"
-#endif
 #ifdef MOZ_WEBM_ENCODER
-#include "VorbisTrackEncoder.h"
 #include "VP8TrackEncoder.h"
 #include "WebMWriter.h"
 #endif
@@ -37,31 +34,106 @@ mozilla::LazyLogModule gMediaEncoderLog("MediaEncoder");
 namespace mozilla {
 
 void
+MediaStreamVideoRecorderSink::SetCurrentFrames(const VideoSegment& aSegment)
+{
+  MOZ_ASSERT(mVideoEncoder);
+  mVideoEncoder->SetCurrentFrames(aSegment);
+}
+
+void
+MediaEncoder::SetDirectConnect(bool aConnected)
+{
+  mDirectConnected = aConnected;
+}
+
+void
+MediaEncoder::NotifyRealtimeData(MediaStreamGraph* aGraph,
+                                 TrackID aID,
+                                 StreamTime aTrackOffset,
+                                 uint32_t aTrackEvents,
+                                 const MediaSegment& aRealtimeMedia)
+{
+  if (mSuspended == RECORD_NOT_SUSPENDED) {
+    // Process the incoming raw track data from MediaStreamGraph, called on the
+    // thread of MediaStreamGraph.
+    if (mAudioEncoder && aRealtimeMedia.GetType() == MediaSegment::AUDIO) {
+      mAudioEncoder->NotifyQueuedTrackChanges(aGraph, aID,
+                                              aTrackOffset, aTrackEvents,
+                                              aRealtimeMedia);
+    } else if (mVideoEncoder &&
+               aRealtimeMedia.GetType() == MediaSegment::VIDEO &&
+               aTrackEvents != TrackEventCommand::TRACK_EVENT_NONE) {
+      mVideoEncoder->NotifyQueuedTrackChanges(aGraph, aID,
+                                              aTrackOffset, aTrackEvents,
+                                              aRealtimeMedia);
+    }
+  }
+}
+
+void
 MediaEncoder::NotifyQueuedTrackChanges(MediaStreamGraph* aGraph,
                                        TrackID aID,
                                        StreamTime aTrackOffset,
-                                       uint32_t aTrackEvents,
+                                       TrackEventCommand aTrackEvents,
                                        const MediaSegment& aQueuedMedia,
                                        MediaStream* aInputStream,
                                        TrackID aInputTrackID)
 {
-  // Process the incoming raw track data from MediaStreamGraph, called on the
-  // thread of MediaStreamGraph.
-  if (mAudioEncoder && aQueuedMedia.GetType() == MediaSegment::AUDIO) {
-    mAudioEncoder->NotifyQueuedTrackChanges(aGraph, aID,
-                                            aTrackOffset, aTrackEvents,
-                                            aQueuedMedia);
+  if (!mDirectConnected) {
+    NotifyRealtimeData(aGraph, aID, aTrackOffset, aTrackEvents, aQueuedMedia);
+  } else {
+    if (aTrackEvents != TrackEventCommand::TRACK_EVENT_NONE) {
+      // forward events (TRACK_EVENT_ENDED) but not the media
+      if (aQueuedMedia.GetType() == MediaSegment::VIDEO) {
+        VideoSegment segment;
+        NotifyRealtimeData(aGraph, aID, aTrackOffset, aTrackEvents, segment);
+      } else {
+        AudioSegment segment;
+        NotifyRealtimeData(aGraph, aID, aTrackOffset, aTrackEvents, segment);
+      }
+    }
+    if (mSuspended == RECORD_RESUMED) {
+      if (mVideoEncoder) {
+        if (aQueuedMedia.GetType() == MediaSegment::VIDEO) {
+          // insert a null frame of duration equal to the first segment passed
+          // after Resume(), so it'll get added to one of the DirectListener frames
+          VideoSegment segment;
+          gfx::IntSize size(0,0);
+          segment.AppendFrame(nullptr, aQueuedMedia.GetDuration(), size,
+                              PRINCIPAL_HANDLE_NONE);
+          mVideoEncoder->NotifyQueuedTrackChanges(aGraph, aID,
+                                                  aTrackOffset, aTrackEvents,
+                                                  segment);
+          mSuspended = RECORD_NOT_SUSPENDED;
+        }
+      } else {
+        mSuspended = RECORD_NOT_SUSPENDED; // no video
+      }
+    }
+  }
+}
 
-  } else if (mVideoEncoder && aQueuedMedia.GetType() == MediaSegment::VIDEO) {
-      mVideoEncoder->NotifyQueuedTrackChanges(aGraph, aID,
-                                              aTrackOffset, aTrackEvents,
-                                              aQueuedMedia);
+void
+MediaEncoder::NotifyQueuedAudioData(MediaStreamGraph* aGraph, TrackID aID,
+                                    StreamTime aTrackOffset,
+                                    const AudioSegment& aQueuedMedia,
+                                    MediaStream* aInputStream,
+                                    TrackID aInputTrackID)
+{
+  if (!mDirectConnected) {
+    NotifyRealtimeData(aGraph, aID, aTrackOffset, 0, aQueuedMedia);
+  } else {
+    if (mSuspended == RECORD_RESUMED) {
+      if (!mVideoEncoder) {
+        mSuspended = RECORD_NOT_SUSPENDED; // no video
+      }
+    }
   }
 }
 
 void
 MediaEncoder::NotifyEvent(MediaStreamGraph* aGraph,
-                          MediaStreamListener::MediaStreamGraphEvent event)
+                          MediaStreamGraphEvent event)
 {
   // In case that MediaEncoder does not receive a TRACK_EVENT_ENDED event.
   LOG(LogLevel::Debug, ("NotifyRemoved in [MediaEncoder]."));
@@ -77,7 +149,8 @@ MediaEncoder::NotifyEvent(MediaStreamGraph* aGraph,
 already_AddRefed<MediaEncoder>
 MediaEncoder::CreateEncoder(const nsAString& aMIMEType, uint32_t aAudioBitrate,
                             uint32_t aVideoBitrate, uint32_t aBitrate,
-                            uint8_t aTrackTypes)
+                            uint8_t aTrackTypes,
+                            TrackRate aTrackRate)
 {
   PROFILER_LABEL("MediaEncoder", "CreateEncoder",
     js::ProfileEntry::Category::OTHER);
@@ -95,11 +168,12 @@ MediaEncoder::CreateEncoder(const nsAString& aMIMEType, uint32_t aAudioBitrate,
   else if (MediaEncoder::IsWebMEncoderEnabled() &&
           (aMIMEType.EqualsLiteral(VIDEO_WEBM) ||
           (aTrackTypes & ContainerWriter::CREATE_VIDEO_TRACK))) {
-    if (aTrackTypes & ContainerWriter::CREATE_AUDIO_TRACK) {
-      audioEncoder = new VorbisTrackEncoder();
+    if (aTrackTypes & ContainerWriter::CREATE_AUDIO_TRACK
+        && MediaDecoder::IsOpusEnabled()) {
+      audioEncoder = new OpusTrackEncoder();
       NS_ENSURE_TRUE(audioEncoder, nullptr);
     }
-    videoEncoder = new VP8TrackEncoder();
+    videoEncoder = new VP8TrackEncoder(aTrackRate);
     writer = new WebMWriter(aTrackTypes);
     NS_ENSURE_TRUE(writer, nullptr);
     NS_ENSURE_TRUE(videoEncoder, nullptr);
@@ -114,7 +188,7 @@ MediaEncoder::CreateEncoder(const nsAString& aMIMEType, uint32_t aAudioBitrate,
       audioEncoder = new OmxAACAudioTrackEncoder();
       NS_ENSURE_TRUE(audioEncoder, nullptr);
     }
-    videoEncoder = new OmxVideoTrackEncoder();
+    videoEncoder = new OmxVideoTrackEncoder(aTrackRate);
     writer = new ISOMediaWriter(aTrackTypes);
     NS_ENSURE_TRUE(writer, nullptr);
     NS_ENSURE_TRUE(videoEncoder, nullptr);

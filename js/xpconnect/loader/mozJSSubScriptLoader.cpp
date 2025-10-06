@@ -30,7 +30,7 @@
 #include "mozilla/HoldDropJSObjects.h"
 #include "mozilla/scache/StartupCache.h"
 #include "mozilla/scache/StartupCacheUtils.h"
-#include "mozilla/unused.h"
+#include "mozilla/Unused.h"
 #include "nsContentUtils.h"
 #include "nsStringGlue.h"
 #include "nsCycleCollectionParticipant.h"
@@ -152,13 +152,13 @@ PrepareScript(nsIURI* uri,
             else
                 JS::CompileForNonSyntacticScope(cx, options, srcBuf, script);
         } else {
-            AutoObjectVector scopeChain(cx);
+            AutoObjectVector envChain(cx);
             if (!JS_IsGlobalObject(targetObj) &&
-                !scopeChain.append(targetObj)) {
+                !envChain.append(targetObj)) {
                 return NS_ERROR_OUT_OF_MEMORY;
             }
             // XXXbz do we really not care if the compile fails???
-            JS::CompileFunction(cx, scopeChain, options, nullptr, 0, nullptr,
+            JS::CompileFunction(cx, envChain, options, nullptr, 0, nullptr,
                                 srcBuf, function);
         }
     } else {
@@ -171,13 +171,13 @@ PrepareScript(nsIURI* uri,
             else
                 JS::CompileForNonSyntacticScope(cx, options, buf, len, script);
         } else {
-            AutoObjectVector scopeChain(cx);
+            AutoObjectVector envChain(cx);
             if (!JS_IsGlobalObject(targetObj) &&
-                !scopeChain.append(targetObj)) {
+                !envChain.append(targetObj)) {
                 return NS_ERROR_OUT_OF_MEMORY;
             }
             // XXXbz do we really not care if the compile fails???
-            JS::CompileFunction(cx, scopeChain, options, nullptr, 0, nullptr,
+            JS::CompileFunction(cx, envChain, options, nullptr, 0, nullptr,
                                 buf, len, function);
         }
     }
@@ -205,9 +205,9 @@ EvalScript(JSContext* cx,
         if (JS_IsGlobalObject(target_obj)) {
             ok = JS_ExecuteScript(cx, script, retval);
         } else {
-            JS::AutoObjectVector scopeChain(cx);
-            ok = scopeChain.append(target_obj) &&
-                 JS_ExecuteScript(cx, scopeChain, script, retval);
+            JS::AutoObjectVector envChain(cx);
+            ok = envChain.append(target_obj) &&
+                 JS_ExecuteScript(cx, envChain, script, retval);
         }
     }
 
@@ -395,7 +395,7 @@ mozJSSubScriptLoader::ReadScriptAsync(nsIURI* uri, JSObject* targetObjArg,
                                       nsIIOService* serv, bool reuseGlobal,
                                       bool cache, MutableHandleValue retval)
 {
-    RootedObject target_obj(nsContentUtils::RootingCx(), targetObjArg);
+    RootedObject target_obj(RootingCx(), targetObjArg);
 
     nsCOMPtr<nsIGlobalObject> globalObject = xpc::NativeGlobal(target_obj);
     ErrorResult result;
@@ -591,8 +591,6 @@ mozJSSubScriptLoader::DoLoadSubScriptWithOptions(const nsAString& url,
     if (targetObj != result_obj)
         principal = GetObjectPrincipal(targetObj);
 
-    JSAutoCompartment ac(cx, targetObj);
-
     /* load up the url.  From here on, failures are reflected as ``custom''
      * js exceptions */
     nsCOMPtr<nsIURI> uri;
@@ -600,11 +598,13 @@ mozJSSubScriptLoader::DoLoadSubScriptWithOptions(const nsAString& url,
     nsAutoCString scheme;
 
     // Figure out who's calling us
-    JS::UniqueChars filename;
+    JS::AutoFilename filename;
     if (!JS::DescribeScriptedCaller(cx, &filename)) {
         // No scripted frame means we don't know who's calling, bail.
         return NS_ERROR_FAILURE;
     }
+
+    JSAutoCompartment ac(cx, targetObj);
 
     // Suppress caching if we're compiling as content.
     StartupCache* cache = (principal == mSystemPrincipal)
@@ -656,8 +656,13 @@ mozJSSubScriptLoader::DoLoadSubScriptWithOptions(const nsAString& url,
 
     RootedFunction function(cx);
     RootedScript script(cx);
-    if (cache && !options.ignoreCache)
+    if (cache && !options.ignoreCache) {
         rv = ReadCachedScript(cache, cachePath, cx, mSystemPrincipal, &script);
+        if (NS_FAILED(rv)) {
+            // ReadCachedScript may have set a pending exception.
+            JS_ClearPendingException(cx);
+        }
+    }
 
     // If we are doing an async load, trigger it and bail out.
     if (!script && options.async) {
@@ -721,7 +726,7 @@ private:
 
 NS_IMPL_ISUPPORTS(ScriptPrecompiler, nsIIncrementalStreamLoaderObserver);
 
-class NotifyPrecompilationCompleteRunnable : public nsRunnable
+class NotifyPrecompilationCompleteRunnable : public Runnable
 {
 public:
     NS_DECL_NSIRUNNABLE
@@ -771,9 +776,9 @@ NotifyPrecompilationCompleteRunnable::Run(void)
     AutoSendObserverNotification notifier(mPrecompiler);
 
     if (mToken) {
-        JSRuntime* rt = XPCJSRuntime::Get()->Runtime();
-        NS_ENSURE_TRUE(rt, NS_ERROR_FAILURE);
-        JS::FinishOffThreadScript(nullptr, rt, mToken);
+        JSContext* cx = XPCJSRuntime::Get()->Context();
+        NS_ENSURE_TRUE(cx, NS_ERROR_FAILURE);
+        JS::CancelOffThreadScript(cx, mToken);
     }
 
     return NS_OK;

@@ -8,34 +8,40 @@
 // by NodeActor actor (see 'onNodeActorForm' method).
 
 const Events = require("sdk/event/core");
-const {ActorClass, Actor, FrontClass, Front, method} =
-  require("devtools/server/protocol");
+const {ActorClassWithSpec, Actor, FrontClassWithSpec, Front, generateActorSpec} =
+  require("devtools/shared/protocol");
 
-const {Cu} = require("chrome");
 const {NodeActor} = require("devtools/server/actors/inspector");
 
-const EventsFormActor = ActorClass({
+var eventsSpec = generateActorSpec({
   typeName: "eventsFormActor",
 
-  initialize: function() {
+  methods: {
+    attach: {
+      request: {},
+      response: {}
+    },
+    detach: {
+      request: {},
+      response: {}
+    }
+  }
+});
+
+var EventsFormActor = ActorClassWithSpec(eventsSpec, {
+  initialize: function () {
     Actor.prototype.initialize.apply(this, arguments);
   },
 
-  attach: method(function() {
+  attach: function () {
     Events.on(NodeActor, "form", this.onNodeActorForm);
-  }, {
-    request: {},
-    response: {}
-  }),
+  },
 
-  detach: method(function() {
+  detach: function () {
     Events.off(NodeActor, "form", this.onNodeActorForm);
-  }, {
-    request: {},
-    response: {}
-  }),
+  },
 
-  onNodeActorForm: function(event) {
+  onNodeActorForm: function (event) {
     let nodeActor = event.target;
     if (nodeActor.rawNode.id == "container") {
       let form = event.data;
@@ -44,8 +50,8 @@ const EventsFormActor = ActorClass({
   }
 });
 
-const EventsFormFront = FrontClass(EventsFormActor, {
-  initialize: function(client, form) {
+var EventsFormFront = FrontClassWithSpec(eventsSpec, {
+  initialize: function (client, form) {
     Front.prototype.initialize.apply(this, arguments);
 
     this.actorID = form[EventsFormActor.prototype.typeName];

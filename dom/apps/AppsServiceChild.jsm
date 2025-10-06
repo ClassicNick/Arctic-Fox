@@ -110,7 +110,6 @@ this.DOMApplicationRegistry = {
     // We need to prime the cache with the list of apps.
     let list = this.cpmm.sendSyncMessage("Webapps:GetList", { })[0];
     this.webapps = list ? list.webapps : { };
-
     // We need a fast mapping from localId -> app, so we add an index.
     // We also add the manifest to the app object.
     this.localIdIndex = { };
@@ -413,12 +412,12 @@ this.DOMApplicationRegistry = {
     return null;
   },
 
-  getAppInfo: function getAppInfo(aAppId) {
-    return AppsUtils.getAppInfo(this.webapps, aAppId);
+  areAnyAppsInstalled: function() {
+    return AppsUtils.areAnyAppsInstalled(this.webapps);
   },
 
-  updateDataStoreEntriesFromLocalId: function(aLocalId) {
-    debug("updateDataStoreEntriesFromLocalId() not yet supported on child!");
+  getAppInfo: function getAppInfo(aAppId) {
+    return AppsUtils.getAppInfo(this.webapps, aAppId);
   }
 }
 

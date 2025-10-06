@@ -9,7 +9,7 @@
 
 const TEST_URI = "<body style='color: red'>Test page for bug 1160720";
 
-add_task(function*() {
+add_task(function* () {
   yield addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
   let {view} = yield openRuleView();
 
@@ -17,7 +17,7 @@ add_task(function*() {
     .querySelector(".ruleview-colorswatch");
 
   let picker = yield openColorPickerForSwatch(cSwatch, view);
-  let spectrum = yield picker.spectrum;
+  let spectrum = picker.spectrum;
   let change = spectrum.once("changed");
 
   info("Pressing mouse down over color picker.");
@@ -44,7 +44,8 @@ add_task(function*() {
   info("Moving mouse over color picker without any buttons pressed.");
 
   EventUtils.synthesizeMouse(spectrum.dragger, 10, 10, {
-    button: -1, // -1 = no buttons are pressed down
+    // -1 = no buttons are pressed down
+    button: -1,
     type: "mousemove",
   }, spectrum.dragger.ownerDocument.defaultView);
 });
@@ -56,9 +57,9 @@ function* openColorPickerForSwatch(swatch, view) {
   let cPickerPanel = cPicker.tooltip.panel;
   ok(cPickerPanel, "The XUL panel for the color picker exists");
 
-  let onShown = cPicker.tooltip.once("shown");
+  let onColorPickerReady = cPicker.once("ready");
   swatch.click();
-  yield onShown;
+  yield onColorPickerReady;
 
   ok(true, "The color picker was shown on click of the color swatch");
 

@@ -13,7 +13,6 @@
 #include "I420ColorConverterHelper.h"
 #include "MediaCodecProxy.h"
 #include "GonkNativeWindow.h"
-#include "GonkNativeWindowClient.h"
 #include "mozilla/layers/FenceUtils.h"
 #include "mozilla/UniquePtr.h"
 #include <ui/Fence.h>
@@ -50,22 +49,23 @@ public:
 
   nsresult Shutdown() override;
 
-  // Bug 1199809: workaround to avoid sending the graphic buffer by making a
-  // copy of output buffer after calling flush(). Bug 1203859 was created to
-  // reimplementing Gonk PDM on top of OpenMax IL directly. Its buffer
-  // management will work better with Gecko and solve problems like this.
-  nsresult Flush() override
-  {
-    mNeedsCopyBuffer = true;
-    return GonkDecoderManager::Flush();
-  }
-
   const char* GetDescriptionName() const override
   {
     return "gonk video decoder";
   }
 
   static void RecycleCallback(TextureClient* aClient, void* aClosure);
+
+protected:
+  // Bug 1199809: workaround to avoid sending the graphic buffer by making a
+  // copy of output buffer after calling flush(). Bug 1203859 was created to
+  // reimplementing Gonk PDM on top of OpenMax IL directly. Its buffer
+  // management will work better with Gecko and solve problems like this.
+  void ProcessFlush() override
+  {
+    mNeedsCopyBuffer = true;
+    GonkDecoderManager::ProcessFlush();
+  }
 
 private:
   struct FrameInfo
@@ -101,17 +101,11 @@ private:
   void PostReleaseVideoBuffer(android::MediaBuffer *aBuffer,
                               layers::FenceHandle mReleaseFence);
 
-  uint32_t mVideoWidth;
-  uint32_t mVideoHeight;
-  uint32_t mDisplayWidth;
-  uint32_t mDisplayHeight;
-  nsIntRect mPicture;
-  nsIntSize mInitialFrame;
+  VideoInfo mConfig;
 
   RefPtr<layers::ImageContainer> mImageContainer;
   RefPtr<layers::TextureClientRecycleAllocator> mCopyAllocator;
 
-  MediaInfo mInfo;
   MozPromiseRequestHolder<android::MediaCodecProxy::CodecPromise> mVideoCodecRequest;
   FrameInfo mFrameInfo;
 
@@ -121,6 +115,10 @@ private:
   size_t mColorConverterBufferSize;
 
   android::sp<android::GonkNativeWindow> mNativeWindow;
+#if ANDROID_VERSION >= 21
+  android::sp<android::IGraphicBufferProducer> mGraphicBufferProducer;
+#endif
+
   enum {
     kNotifyPostReleaseBuffer = 'nprb',
   };

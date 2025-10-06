@@ -43,19 +43,20 @@ public:
       : gfxFontFamily(aName), mDWFamily(aFamily), mForceGDIClassic(false) {}
     virtual ~gfxDWriteFontFamily();
     
-    virtual void FindStyleVariations(FontInfoData *aFontInfoData = nullptr);
+    void FindStyleVariations(FontInfoData *aFontInfoData = nullptr) final;
 
-    virtual void LocalizedName(nsAString& aLocalizedName);
+    void LocalizedName(nsAString& aLocalizedName) final;
 
-    virtual void ReadFaceNames(gfxPlatformFontList *aPlatformFontList,
-                               bool aNeedFullnamePostscriptNames);
+    void ReadFaceNames(gfxPlatformFontList *aPlatformFontList,
+                       bool aNeedFullnamePostscriptNames,
+                       FontInfoData *aFontInfoData = nullptr) final;
 
     void SetForceGDIClassic(bool aForce) { mForceGDIClassic = aForce; }
 
-    virtual void AddSizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf,
-                                        FontListSizes* aSizes) const;
-    virtual void AddSizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf,
-                                        FontListSizes* aSizes) const;
+    void AddSizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf,
+                                FontListSizes* aSizes) const final;
+    void AddSizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf,
+                                FontListSizes* aSizes) const final;
 
     already_AddRefed<IDWriteFont> GetDefaultFont();
 protected:
@@ -378,9 +379,10 @@ public:
     IDWriteGdiInterop *GetGDIInterop() { return mGDIInterop; }
     bool UseGDIFontTableAccess() { return mGDIFontTableAccess; }
 
-    gfxFontFamily* FindFamily(const nsAString& aFamily,
-                              gfxFontStyle* aStyle = nullptr,
-                              gfxFloat aDevToCssSize = 1.0) override;
+    bool FindAndAddFamilies(const nsAString& aFamily,
+                            nsTArray<gfxFontFamily*>* aOutput,
+                            gfxFontStyle* aStyle = nullptr,
+                            gfxFloat aDevToCssSize = 1.0) override;
 
     gfxFloat GetForceGDIClassicMaxFontSize() { return mForceGDIClassicMaxFontSize; }
 
@@ -398,7 +400,7 @@ private:
 
     // search fonts system-wide for a given character, null otherwise
     virtual gfxFontEntry* GlobalFontFallback(const uint32_t aCh,
-                                             int32_t aRunScript,
+                                             Script aRunScript,
                                              const gfxFontStyle* aMatchStyle,
                                              uint32_t& aCmapCount,
                                              gfxFontFamily** aMatchedFamily);

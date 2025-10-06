@@ -62,7 +62,7 @@ const SkPixmap* SkARGB32_Blitter::justAnOpaqueColor(uint32_t* value) {
     return nullptr;
 }
 
-#if defined _WIN32 && _MSC_VER >= 1300  // disable warning : local variable used without having been initialized
+#if defined _WIN32  // disable warning : local variable used without having been initialized
 #pragma warning ( push )
 #pragma warning ( disable : 4701 )
 #endif
@@ -227,7 +227,11 @@ void SkARGB32_Blitter::blitV(int x, int y, int height, SkAlpha alpha) {
         color = SkAlphaMulQ(color, SkAlpha255To256(alpha));
     }
 
+#ifdef SK_SUPPORT_LEGACY_BROKEN_LERP
     unsigned dst_scale = 255 - SkGetPackedA32(color);
+#else
+    unsigned dst_scale = SkAlpha255To256(255 - SkGetPackedA32(color));
+#endif
     size_t rowBytes = fDevice.rowBytes();
     while (--height >= 0) {
         device[0] = color + SkAlphaMulQ(device[0], dst_scale);
@@ -252,7 +256,7 @@ void SkARGB32_Blitter::blitRect(int x, int y, int width, int height) {
     }
 }
 
-#if defined _WIN32 && _MSC_VER >= 1300
+#if defined _WIN32
 #pragma warning ( pop )
 #endif
 

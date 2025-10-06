@@ -37,24 +37,31 @@ nsReferencedElement::Reset(nsIContent* aFromContent, nsIURI* aURI,
   nsresult rv = nsContentUtils::ConvertStringFromEncoding(charset,
                                                           refPart,
                                                           ref);
-  if (NS_FAILED(rv)) {
-    // XXX Eww. If fallible malloc failed, using a conversion method that
-    // assumes UTF-8 and doesn't handle UTF-8 errors.
-    // https://bugzilla.mozilla.org/show_bug.cgi?id=951082
-    CopyUTF8toUTF16(refPart, ref);
-  }
-  if (ref.IsEmpty())
+  if (NS_FAILED(rv) || ref.IsEmpty()) {
     return;
+  }
 
   // Get the current document
-  nsIDocument *doc = aFromContent->GetComposedDoc();
+  nsIDocument *doc = aFromContent->OwnerDoc();
   if (!doc)
     return;
 
   nsIContent* bindingParent = aFromContent->GetBindingParent();
   if (bindingParent) {
     nsXBLBinding* binding = bindingParent->GetXBLBinding();
-    if (binding) {
+    if (!binding) {
+      // This happens, for example, if aFromContent is part of the content
+      // inserted by a call to nsIDocument::InsertAnonymousContent, which we
+      // also want to handle.  (It also happens for <use>'s anonymous
+      // content etc.)
+      Element* anonRoot =
+        doc->GetAnonRootIfInAnonymousContentContainer(aFromContent);
+      if (anonRoot) {
+        mElement = nsContentUtils::MatchElementId(anonRoot, ref);
+        // We don't have watching working yet for anonymous content, so bail out here.
+        return;
+      }
+    } else {
       bool isEqualExceptRef;
       rv = aURI->EqualsExceptRef(binding->PrototypeBinding()->DocURI(),
                                  &isEqualExceptRef);
@@ -109,7 +116,7 @@ nsReferencedElement::Reset(nsIContent* aFromContent, nsIURI* aURI,
   }
 
   if (aWatch) {
-    nsCOMPtr<nsIAtom> atom = do_GetAtom(ref);
+    nsCOMPtr<nsIAtom> atom = NS_Atomize(ref);
     if (!atom)
       return;
     atom.swap(mWatchID);
@@ -124,14 +131,14 @@ void
 nsReferencedElement::ResetWithID(nsIContent* aFromContent, const nsString& aID,
                                  bool aWatch)
 {
-  nsIDocument *doc = aFromContent->GetComposedDoc();
+  nsIDocument *doc = aFromContent->OwnerDoc();
   if (!doc)
     return;
 
   // XXX Need to take care of XBL/XBL2
 
   if (aWatch) {
-    nsCOMPtr<nsIAtom> atom = do_GetAtom(aID);
+    nsCOMPtr<nsIAtom> atom = NS_Atomize(aID);
     if (!atom)
       return;
     atom.swap(mWatchID);
@@ -215,7 +222,7 @@ nsReferencedElement::Observe(Element* aOldElement,
 }
 
 NS_IMPL_ISUPPORTS_INHERITED0(nsReferencedElement::ChangeNotification,
-                             nsRunnable)
+                             mozilla::Runnable)
 
 NS_IMPL_ISUPPORTS(nsReferencedElement::DocumentLoadNotification,
                   nsIObserver)

@@ -46,6 +46,8 @@ public:
                           const bool& aIsForApp,
                           const bool& aIsForBrowser) override;
 
+  FORWARD_SHMEM_ALLOCATOR_TO(PContentBridgeParent)
+
   jsipc::CPOWManager* GetCPOWManager() override;
 
   virtual ContentParentId ChildID() const override
@@ -59,6 +61,11 @@ public:
   virtual bool IsForBrowser() const override
   {
     return mIsForBrowser;
+  }
+  virtual int32_t Pid() const override
+  {
+    // XXX: do we need this for ContentBridgeParent?
+    return -1;
   }
 
 protected:
@@ -79,6 +86,12 @@ protected:
     mIsForBrowser = aIsForBrowser;
   }
 
+  void Close()
+  {
+    // Trick NewRunnableMethod
+    PContentBridgeParent::Close();
+  }
+
 protected:
   virtual bool
   RecvSyncMessage(const nsString& aMsg,
@@ -88,9 +101,9 @@ protected:
                   nsTArray<StructuredCloneData>* aRetvals) override;
 
   virtual bool RecvAsyncMessage(const nsString& aMsg,
-                                const ClonedMessageData& aData,
                                 InfallibleTArray<jsipc::CpowEntry>&& aCpows,
-                                const IPC::Principal& aPrincipal) override;
+                                const IPC::Principal& aPrincipal,
+                                const ClonedMessageData& aData) override;
 
   virtual jsipc::PJavaScriptParent* AllocPJavaScriptParent() override;
 

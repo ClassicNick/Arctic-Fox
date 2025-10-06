@@ -6,15 +6,15 @@
 
 // DisplayCGL.mm: CGL implementation of egl::Display
 
-#include "libANGLE/renderer/gl/CGL/DisplayCGL.h"
+#include "libANGLE/renderer/gl/cgl/DisplayCGL.h"
 
 #import <Cocoa/Cocoa.h>
 #include <dlfcn.h>
 #include <EGL/eglext.h>
 
 #include "common/debug.h"
-#include "libANGLE/renderer/gl/CGL/PbufferSurfaceCGL.h"
-#include "libANGLE/renderer/gl/CGL/WindowSurfaceCGL.h"
+#include "libANGLE/renderer/gl/cgl/PbufferSurfaceCGL.h"
+#include "libANGLE/renderer/gl/cgl/WindowSurfaceCGL.h"
 
 namespace
 {
@@ -33,7 +33,7 @@ class FunctionsGLCGL : public FunctionsGL
   public:
     FunctionsGLCGL(void *dylibHandle) : mDylibHandle(dylibHandle) {}
 
-    virtual ~FunctionsGLCGL() { dlclose(mDylibHandle); }
+    ~FunctionsGLCGL() override { dlclose(mDylibHandle); }
 
   private:
     void *loadProcAddress(const std::string &function) override
@@ -109,22 +109,25 @@ void DisplayCGL::terminate()
     SafeDelete(mFunctions);
 }
 
-SurfaceImpl *DisplayCGL::createWindowSurface(const egl::Config *configuration,
+SurfaceImpl *DisplayCGL::createWindowSurface(const egl::SurfaceState &state,
+                                             const egl::Config *configuration,
                                              EGLNativeWindowType window,
                                              const egl::AttributeMap &attribs)
 {
-    return new WindowSurfaceCGL(this->getRenderer(), window, mFunctions);
+    return new WindowSurfaceCGL(state, this->getRenderer(), window, mFunctions, mContext);
 }
 
-SurfaceImpl *DisplayCGL::createPbufferSurface(const egl::Config *configuration,
+SurfaceImpl *DisplayCGL::createPbufferSurface(const egl::SurfaceState &state,
+                                              const egl::Config *configuration,
                                               const egl::AttributeMap &attribs)
 {
-    EGLint width  = attribs.get(EGL_WIDTH, 0);
-    EGLint height = attribs.get(EGL_HEIGHT, 0);
-    return new PbufferSurfaceCGL(this->getRenderer(), width, height, mFunctions);
+    EGLint width  = static_cast<EGLint>(attribs.get(EGL_WIDTH, 0));
+    EGLint height = static_cast<EGLint>(attribs.get(EGL_HEIGHT, 0));
+    return new PbufferSurfaceCGL(state, this->getRenderer(), width, height, mFunctions);
 }
 
-SurfaceImpl* DisplayCGL::createPbufferFromClientBuffer(const egl::Config *configuration,
+SurfaceImpl *DisplayCGL::createPbufferFromClientBuffer(const egl::SurfaceState &state,
+                                                       const egl::Config *configuration,
                                                        EGLClientBuffer shareHandle,
                                                        const egl::AttributeMap &attribs)
 {
@@ -132,7 +135,8 @@ SurfaceImpl* DisplayCGL::createPbufferFromClientBuffer(const egl::Config *config
     return nullptr;
 }
 
-SurfaceImpl *DisplayCGL::createPixmapSurface(const egl::Config *configuration,
+SurfaceImpl *DisplayCGL::createPixmapSurface(const egl::SurfaceState &state,
+                                             const egl::Config *configuration,
                                              NativePixmapType nativePixmap,
                                              const egl::AttributeMap &attribs)
 {
@@ -146,7 +150,7 @@ egl::Error DisplayCGL::getDevice(DeviceImpl **device)
     return egl::Error(EGL_BAD_DISPLAY);
 }
 
-egl::ConfigSet DisplayCGL::generateConfigs() const
+egl::ConfigSet DisplayCGL::generateConfigs()
 {
     // TODO(cwallez): generate more config permutations
     egl::ConfigSet configs;
@@ -247,7 +251,6 @@ const FunctionsGL *DisplayCGL::getFunctionsGL() const
 
 void DisplayCGL::generateExtensions(egl::DisplayExtensions *outExtensions) const
 {
-    outExtensions->createContext = true;
 }
 
 void DisplayCGL::generateCaps(egl::Caps *outCaps) const
@@ -255,4 +258,23 @@ void DisplayCGL::generateCaps(egl::Caps *outCaps) const
     outCaps->textureNPOT = true;
 }
 
+egl::Error DisplayCGL::waitClient() const
+{
+    // TODO(cwallez) UNIMPLEMENTED()
+    return egl::Error(EGL_SUCCESS);
+}
+
+egl::Error DisplayCGL::waitNative(EGLint engine,
+                                  egl::Surface *drawSurface,
+                                  egl::Surface *readSurface) const
+{
+    // TODO(cwallez) UNIMPLEMENTED()
+    return egl::Error(EGL_SUCCESS);
+}
+
+egl::Error DisplayCGL::getDriverVersion(std::string *version) const
+{
+    *version = "";
+    return egl::Error(EGL_SUCCESS);
+}
 }

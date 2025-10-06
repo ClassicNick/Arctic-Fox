@@ -49,9 +49,12 @@ CreateDummyChannel(nsIURI* aHostURI, NeckoOriginAttributes& aAttrs, bool aIsPriv
       return;
   }
 
+  // The following channel is never openend, so it does not matter what
+  // securityFlags we pass; let's follow the principle of least privilege.
   nsCOMPtr<nsIChannel> dummyChannel;
   NS_NewChannel(getter_AddRefs(dummyChannel), dummyURI, principal,
-                nsILoadInfo::SEC_NORMAL, nsIContentPolicy::TYPE_INVALID);
+                nsILoadInfo::SEC_REQUIRE_SAME_ORIGIN_DATA_IS_BLOCKED,
+                nsIContentPolicy::TYPE_INVALID);
   nsCOMPtr<nsIPrivateBrowsingChannel> pbChannel = do_QueryInterface(dummyChannel);
   if (!pbChannel) {
     return;
@@ -67,7 +70,7 @@ CreateDummyChannel(nsIURI* aHostURI, NeckoOriginAttributes& aAttrs, bool aIsPriv
 namespace mozilla {
 namespace net {
 
-MOZ_WARN_UNUSED_RESULT
+MOZ_MUST_USE
 bool
 CookieServiceParent::GetOriginAttributesFromParams(const IPC::SerializedLoadContext &aLoadContext,
                                                    NeckoOriginAttributes& aAttrs,
@@ -113,7 +116,8 @@ CookieServiceParent::~CookieServiceParent()
 void
 CookieServiceParent::ActorDestroy(ActorDestroyReason aWhy)
 {
-  // Implement me! Bug 1005181
+  // Nothing needed here. Called right before destructor since this is a
+  // non-refcounted class.
 }
 
 bool

@@ -15,7 +15,7 @@
 #include "nsFrameManager.h"
 #include "nsIDocument.h"
 #include "nsStyleChangeList.h"
-#include "RestyleManager.h"
+#include "mozilla/RestyleManager.h"
 #include "RestyleTrackerInlines.h"
 #include "nsTransitionManager.h"
 #include "mozilla/RestyleTimelineMarker.h"
@@ -58,7 +58,7 @@ RestyleTracker::Document() const {
 
 struct RestyleEnumerateData : RestyleTracker::Hints {
   RefPtr<dom::Element> mElement;
-#if defined(MOZ_ENABLE_PROFILER_SPS) && !defined(MOZILLA_XPCOMRT_API)
+#if defined(MOZ_ENABLE_PROFILER_SPS)
   UniquePtr<ProfilerBacktrace> mBacktrace;
 #endif
 };
@@ -72,7 +72,7 @@ RestyleTracker::ProcessOneRestyle(Element* aElement,
   NS_PRECONDITION((aRestyleHint & eRestyle_LaterSiblings) == 0,
                   "Someone should have handled this before calling us");
   NS_PRECONDITION(Document(), "Must have a document");
-  NS_PRECONDITION(aElement->GetCrossShadowCurrentDoc() == Document(),
+  NS_PRECONDITION(aElement->GetComposedDoc() == Document(),
                   "Element has unexpected document");
 
   LOG_RESTYLE("aRestyleHint = %s, aChangeHint = %s",
@@ -123,8 +123,8 @@ RestyleTracker::DoProcessRestyles()
   bool isTimelineRecording = timelines && timelines->HasConsumer(docShell);
 
   // Create a AnimationsWithDestroyedFrame during restyling process to
-  // stop animations on elements that have no frame at the end of the
-  // restyling process.
+  // stop animations and transitions on elements that have no frame at the end
+  // of the restyling process.
   RestyleManager::AnimationsWithDestroyedFrame
     animationsWithDestroyedFrame(mRestyleManager);
 
@@ -168,11 +168,13 @@ RestyleTracker::DoProcessRestyles()
         AutoTArray<RefPtr<Element>, RESTYLE_ARRAY_STACKSIZE> laterSiblingArr;
         for (auto iter = mPendingRestyles.Iter(); !iter.Done(); iter.Next()) {
           auto element = static_cast<dom::Element*>(iter.Key());
+          MOZ_ASSERT(!element->IsStyledByServo(),
+                     "Should not have Servo-styled elements here");
           // Only collect the entries that actually need restyling by us (and
           // haven't, for example, already been restyled).
           // It's important to not mess with the flags on entries not in our
           // document.
-          if (element->GetCrossShadowCurrentDoc() == Document() &&
+          if (element->GetComposedDoc() == Document() &&
               element->HasFlag(RestyleBit()) &&
               (iter.Data()->mRestyleHint & eRestyle_LaterSiblings)) {
             laterSiblingArr.AppendElement(element);
@@ -180,6 +182,7 @@ RestyleTracker::DoProcessRestyles()
         }
         for (uint32_t i = 0; i < laterSiblingArr.Length(); ++i) {
           Element* element = laterSiblingArr[i];
+          MOZ_ASSERT(!element->IsStyledByServo());
           for (nsIContent* sibling = element->GetNextSibling();
                sibling;
                sibling = sibling->GetNextSibling()) {
@@ -189,7 +192,7 @@ RestyleTracker::DoProcessRestyles()
                           FrameTagToString(sibling->AsElement()).get(),
                           FrameTagToString(element->AsElement()).get());
               if (AddPendingRestyle(sibling->AsElement(), eRestyle_Subtree,
-                                    NS_STYLE_HINT_NONE)) {
+                                    nsChangeHint(0))) {
                   // Nothing else to do here; we'll handle the following
                   // siblings when we get to |sibling| in laterSiblingArr.
                 break;
@@ -234,7 +237,7 @@ RestyleTracker::DoProcessRestyles()
         // Do the document check before calling GetRestyleData, since we
         // don't want to do the sibling-processing GetRestyleData does if
         // the node is no longer relevant.
-        if (element->GetCrossShadowCurrentDoc() != Document()) {
+        if (element->GetComposedDoc() != Document()) {
           // Content node has been removed from our document; nothing else
           // to do here
           LOG_RESTYLE("skipping, no longer in the document");
@@ -253,7 +256,7 @@ RestyleTracker::DoProcessRestyles()
               data->mRestyleHint, MarkerTracingType::START)));
         }
 
-#if defined(MOZ_ENABLE_PROFILER_SPS) && !defined(MOZILLA_XPCOMRT_API)
+#if defined(MOZ_ENABLE_PROFILER_SPS)
         Maybe<GeckoProfilerTracingRAII> profilerRAII;
         if (profiler_feature_active("restyle")) {
           profilerRAII.emplace("Paint", "Styles", Move(data->mBacktrace));
@@ -296,7 +299,7 @@ RestyleTracker::DoProcessRestyles()
           // haven't, for example, already been restyled).
           // It's important to not mess with the flags on entries not in our
           // document.
-          if (element->GetCrossShadowCurrentDoc() != Document() ||
+          if (element->GetComposedDoc() != Document() ||
               !element->HasFlag(RestyleBit())) {
             LOG_RESTYLE("skipping pending restyle %s, already restyled or no "
                         "longer in the document",
@@ -310,7 +313,7 @@ RestyleTracker::DoProcessRestyles()
             (element->GetFlattenedTreeParent() &&
              (!element->GetFlattenedTreeParent()->GetPrimaryFrame() ||
               element->GetFlattenedTreeParent()->GetPrimaryFrame()->IsLeaf() ||
-              element->GetCrossShadowCurrentDoc()->GetShell()->FrameManager()
+              element->GetComposedDoc()->GetShell()->FrameManager()
                 ->GetDisplayContentsStyleFor(element))) ||
             // Or not reachable due to an async reinsert we have
             // pending?  If so, we'll have a reframe hint around.
@@ -333,7 +336,7 @@ RestyleTracker::DoProcessRestyles()
           // We can move data since we'll be clearing mPendingRestyles after
           // we finish enumerating it.
           restyle->mRestyleHintData = Move(data->mRestyleHintData);
-#if defined(MOZ_ENABLE_PROFILER_SPS) && !defined(MOZILLA_XPCOMRT_API)
+#if defined(MOZ_ENABLE_PROFILER_SPS)
           restyle->mBacktrace = Move(data->mBacktrace);
 #endif
 
@@ -361,7 +364,7 @@ RestyleTracker::DoProcessRestyles()
                       index++, count);
           LOG_RESTYLE_INDENT();
 
-#if defined(MOZ_ENABLE_PROFILER_SPS) && !defined(MOZILLA_XPCOMRT_API)
+#if defined(MOZ_ENABLE_PROFILER_SPS)
           Maybe<GeckoProfilerTracingRAII> profilerRAII;
           if (profiler_feature_active("restyle")) {
             profilerRAII.emplace("Paint", "Styles", Move(currentRestyle->mBacktrace));
@@ -397,7 +400,7 @@ RestyleTracker::DoProcessRestyles()
 bool
 RestyleTracker::GetRestyleData(Element* aElement, nsAutoPtr<RestyleData>& aData)
 {
-  NS_PRECONDITION(aElement->GetCrossShadowCurrentDoc() == Document(),
+  NS_PRECONDITION(aElement->GetComposedDoc() == Document(),
                   "Unexpected document; this will lead to incorrect behavior!");
 
   if (!aElement->HasFlag(RestyleBit())) {
@@ -413,8 +416,19 @@ RestyleTracker::GetRestyleData(Element* aElement, nsAutoPtr<RestyleData>& aData)
     // element.  Leave it around for now, but remove the other restyle
     // hints and the change hint for it.  Also unset its root bit,
     // since it's no longer a root with the new restyle data.
-    NS_ASSERTION(aData->mDescendants.IsEmpty(),
+
+    // During a normal restyle, we should have already processed the
+    // mDescendants array the last time we processed the restyle
+    // for this element.  But in RebuildAllStyleData, we don't initially
+    // expand out eRestyle_LaterSiblings, so we can get in here the
+    // first time we need to process a restyle for this element.  In that
+    // case, it's fine for us to have a non-empty mDescendants, since
+    // we know that RebuildAllStyleData adds eRestyle_ForceDescendants
+    // and we're guaranteed we'll restyle the entire tree.
+    NS_ASSERTION(mRestyleManager->InRebuildAllStyleData() ||
+                 aData->mDescendants.IsEmpty(),
                  "expected descendants to be handled by now");
+
     RestyleData* newData = new RestyleData;
     newData->mChangeHint = nsChangeHint(0);
     newData->mRestyleHint = eRestyle_LaterSiblings;
@@ -436,7 +450,7 @@ RestyleTracker::AddRestyleRootsIfAwaitingRestyle(
   // The RestyleData for a given element has stored in mDescendants
   // the list of descendants we need to end up restyling.  Since we
   // won't necessarily end up restyling them, due to the restyle
-  // process finishing early (see how eRestyleResult_Stop is handled
+  // process finishing early (see how RestyleResult::eStop is handled
   // in ElementRestyler::Restyle), we add them to the list of restyle
   // roots to handle the next time around the
   // RestyleTracker::DoProcessRestyles loop.

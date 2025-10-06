@@ -4,7 +4,10 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "ImageClient.h"
+
 #include <stdint.h>                     // for uint32_t
+
+#include "ClientLayerManager.h"         // for ClientLayer
 #include "ImageContainer.h"             // for Image, PlanarYCbCrImage, etc
 #include "ImageTypes.h"                 // for ImageFormat::PLANAR_YCBCR, etc
 #include "GLImages.h"                   // for SurfaceTextureImage::Data, etc
@@ -12,6 +15,7 @@
 #include "gfxPlatform.h"                // for gfxPlatform
 #include "mozilla/Assertions.h"         // for MOZ_ASSERT, etc
 #include "mozilla/RefPtr.h"             // for RefPtr, already_AddRefed
+#include "mozilla/gfx/2D.h"
 #include "mozilla/gfx/BaseSize.h"       // for BaseSize
 #include "mozilla/gfx/Point.h"          // for IntSize
 #include "mozilla/gfx/Types.h"          // for SurfaceFormat, etc
@@ -24,12 +28,11 @@
 #include "mozilla/layers/TextureClient.h"  // for TextureClient, etc
 #include "mozilla/layers/TextureClientOGL.h"  // for SurfaceTextureClient
 #include "mozilla/mozalloc.h"           // for operator delete, etc
-#include "nsAutoPtr.h"                  // for nsRefPtr
 #include "nsCOMPtr.h"                   // for already_AddRefed
 #include "nsDebug.h"                    // for NS_WARNING, NS_ASSERTION
 #include "nsISupportsImpl.h"            // for Image::Release, etc
 #include "nsRect.h"                     // for mozilla::gfx::IntRect
-#include "mozilla/gfx/2D.h"
+
 #ifdef MOZ_WIDGET_GONK
 #include "GrallocImages.h"
 #endif
@@ -74,24 +77,14 @@ void
 ImageClient::RemoveTextureWithWaiter(TextureClient* aTexture,
                                      AsyncTransactionWaiter* aAsyncTransactionWaiter)
 {
-  if ((aAsyncTransactionWaiter ||
-      GetForwarder()->IsImageBridgeChild())
-#ifndef MOZ_WIDGET_GONK
-      // If the texture client is taking part in recycling then we should make sure
-      // the host has finished with it before dropping the ref and triggering
-      // the recycle callback.
-      && aTexture->GetRecycleAllocator()
-#endif
-     ) {
+  if (aAsyncTransactionWaiter &&
+      GetForwarder()->UsesImageBridge()) {
     RefPtr<AsyncTransactionTracker> request =
       new RemoveTextureFromCompositableTracker(aAsyncTransactionWaiter);
-    // Hold TextureClient until the transaction complete to postpone
-    // the TextureClient recycle/delete.
-    request->SetTextureClient(aTexture);
     GetForwarder()->RemoveTextureFromCompositableAsync(request, this, aTexture);
     return;
   }
-
+  MOZ_ASSERT(!aAsyncTransactionWaiter);
   GetForwarder()->RemoveTextureFromCompositable(this, aTexture);
 }
 
@@ -110,6 +103,8 @@ TextureInfo ImageClientSingle::GetTextureInfo() const
 void
 ImageClientSingle::FlushAllImages(AsyncTransactionWaiter* aAsyncTransactionWaiter)
 {
+  MOZ_ASSERT(GetForwarder()->UsesImageBridge());
+
   for (auto& b : mBuffers) {
     RemoveTextureWithWaiter(b.mTextureClient, aAsyncTransactionWaiter);
   }
@@ -174,11 +169,12 @@ ImageClientSingle::UpdateImage(ImageContainer* aContainer, uint32_t aContentFlag
 #endif
 
     RefPtr<TextureClient> texture = image->GetTextureClient(this);
+    const bool hasTextureClient = !!texture;
 
     for (int32_t i = mBuffers.Length() - 1; i >= 0; --i) {
       if (mBuffers[i].mImageSerial == image->GetSerial()) {
-        if (texture) {
-          MOZ_ASSERT(texture == mBuffers[i].mTextureClient);
+        if (hasTextureClient) {
+          MOZ_ASSERT(image->GetTextureClient(this) == mBuffers[i].mTextureClient);
         } else {
           texture = mBuffers[i].mTextureClient;
         }

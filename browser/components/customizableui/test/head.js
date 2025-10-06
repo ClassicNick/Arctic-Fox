@@ -8,7 +8,8 @@
 var tmp = {};
 Cu.import("resource://gre/modules/Promise.jsm", tmp);
 Cu.import("resource:///modules/CustomizableUI.jsm", tmp);
-var {Promise, CustomizableUI} = tmp;
+Cu.import("resource://gre/modules/AppConstants.jsm", tmp);
+var {Promise, CustomizableUI, AppConstants} = tmp;
 
 var ChromeUtils = {};
 Services.scriptloader.loadSubScript("chrome://mochikit/content/tests/SimpleTest/ChromeUtils.js", ChromeUtils);
@@ -113,12 +114,8 @@ function resetCustomization() {
   return CustomizableUI.reset();
 }
 
-XPCOMUtils.defineLazyGetter(this, 'gDeveloperButtonInNavbar', function() {
-  return getAreaWidgetIds(CustomizableUI.AREA_NAVBAR).indexOf("developer-button") != -1;
-});
-
 function isInDevEdition() {
-  return gDeveloperButtonInNavbar;
+  return AppConstants.MOZ_DEV_EDITION;
 }
 
 function removeDeveloperButtonIfDevEdition(areaPanelPlacements) {
@@ -324,7 +321,7 @@ function isPanelUIOpen() {
 
 function subviewShown(aSubview) {
   let deferred = Promise.defer();
-  let win = aSubview.ownerDocument.defaultView;
+  let win = aSubview.ownerGlobal;
   let timeoutId = win.setTimeout(() => {
     deferred.reject("Subview (" + aSubview.id + ") did not show within 20 seconds.");
   }, 20000);
@@ -339,7 +336,7 @@ function subviewShown(aSubview) {
 
 function subviewHidden(aSubview) {
   let deferred = Promise.defer();
-  let win = aSubview.ownerDocument.defaultView;
+  let win = aSubview.ownerGlobal;
   let timeoutId = win.setTimeout(() => {
     deferred.reject("Subview (" + aSubview.id + ") did not hide within 20 seconds.");
   }, 20000);
@@ -499,7 +496,7 @@ function popupHidden(aPopup) {
  */
 function promisePopupEvent(aPopup, aEventSuffix) {
   let deferred = Promise.defer();
-  let win = aPopup.ownerDocument.defaultView;
+  let win = aPopup.ownerGlobal;
   let eventType = "popup" + aEventSuffix;
 
   function onPopupEvent(e) {

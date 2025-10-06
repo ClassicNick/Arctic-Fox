@@ -430,8 +430,6 @@ private:
   {
     bool ok = IDBObjectStore::DeserializeValue(aCx, *aCloneInfo, aResult);
 
-    aCloneInfo->mCloneBuffer.clear();
-
     if (NS_WARN_IF(!ok)) {
       return NS_ERROR_DOM_DATA_CLONE_ERR;
     }
@@ -742,11 +740,15 @@ DispatchErrorEvent(IDBRequest* aRequest,
 
   MOZ_ASSERT(!transaction || transaction->IsOpen() || transaction->IsAborted());
 
-  if (transaction && transaction->IsOpen()) {
+  // Do not abort the transaction here if this request is failed due to the
+  // abortion of its transaction to ensure that the correct error cause of
+  // the abort event be set in IDBTransaction::FireCompleteOrAbortEvents() later.
+  if (transaction && transaction->IsOpen() &&
+      aErrorCode != NS_ERROR_DOM_INDEXEDDB_ABORT_ERR) {
     WidgetEvent* internalEvent = aEvent->WidgetEventPtr();
     MOZ_ASSERT(internalEvent);
 
-    if (internalEvent->mFlags.mExceptionHasBeenRisen) {
+    if (internalEvent->mFlags.mExceptionWasRaised) {
       transaction->Abort(NS_ERROR_DOM_INDEXEDDB_ABORT_ERR);
     } else if (doDefault) {
       transaction->Abort(request);
@@ -821,7 +823,7 @@ DispatchSuccessEvent(ResultHelper* aResultHelper,
 
   if (transaction &&
       transaction->IsOpen() &&
-      internalEvent->mFlags.mExceptionHasBeenRisen) {
+      internalEvent->mFlags.mExceptionWasRaised) {
     transaction->Abort(NS_ERROR_DOM_INDEXEDDB_ABORT_ERR);
   }
 }
@@ -898,8 +900,7 @@ protected:
   Recv__delete__(const uint32_t& aPermission) override;
 };
 
-class WorkerPermissionChallenge final : public nsRunnable
-                                      , public WorkerFeature
+class WorkerPermissionChallenge final : public Runnable
 {
 public:
   WorkerPermissionChallenge(WorkerPrivate* aWorkerPrivate,
@@ -917,6 +918,22 @@ public:
     mWorkerPrivate->AssertIsOnWorkerThread();
   }
 
+  bool
+  Dispatch()
+  {
+    mWorkerPrivate->AssertIsOnWorkerThread();
+    if (NS_WARN_IF(!mWorkerPrivate->ModifyBusyCountFromWorker(true))) {
+      return false;
+    }
+
+    if (NS_WARN_IF(NS_FAILED(NS_DispatchToMainThread(this)))) {
+      mWorkerPrivate->ModifyBusyCountFromWorker(false);
+      return false;
+    }
+
+    return true;
+  }
+
   NS_IMETHOD
   Run() override
   {
@@ -928,14 +945,6 @@ public:
     return NS_OK;
   }
 
-  virtual bool
-  Notify(JSContext* aCx, workers::Status aStatus) override
-  {
-    // We don't care about the notification. We just want to keep the
-    // mWorkerPrivate alive.
-    return true;
-  }
-
   void
   OperationCompleted()
   {
@@ -943,7 +952,7 @@ public:
       RefPtr<WorkerPermissionOperationCompleted> runnable =
         new WorkerPermissionOperationCompleted(mWorkerPrivate, this);
 
-      MOZ_ALWAYS_TRUE(runnable->Dispatch(nullptr));
+      MOZ_ALWAYS_TRUE(runnable->Dispatch());
       return;
     }
 
@@ -959,8 +968,7 @@ public:
     mActor = nullptr;
 
     mWorkerPrivate->AssertIsOnWorkerThread();
-    JSContext* cx = mWorkerPrivate->GetJSContext();
-    mWorkerPrivate->RemoveFeature(cx, this);
+    mWorkerPrivate->ModifyBusyCountFromWorker(false);
   }
 
 private:
@@ -1411,16 +1419,7 @@ BackgroundFactoryRequestChild::RecvPermissionChallenge(
     RefPtr<WorkerPermissionChallenge> challenge =
       new WorkerPermissionChallenge(workerPrivate, this, mFactory,
                                     aPrincipalInfo);
-
-    JSContext* cx = workerPrivate->GetJSContext();
-    MOZ_ASSERT(cx);
-
-    if (NS_WARN_IF(!workerPrivate->AddFeature(cx, challenge))) {
-      return false;
-    }
-
-    MOZ_ALWAYS_TRUE(NS_SUCCEEDED(NS_DispatchToMainThread(challenge)));
-    return true;
+    return challenge->Dispatch();
   }
 
   nsresult rv;
@@ -1866,6 +1865,20 @@ BackgroundDatabaseChild::RecvInvalidate()
 
   if (mDatabase) {
     mDatabase->Invalidate();
+  }
+
+  return true;
+}
+
+bool
+BackgroundDatabaseChild::RecvCloseAfterInvalidationComplete()
+{
+  AssertIsOnOwningThread();
+
+  MaybeCollectGarbageOnIPCMessage();
+
+  if (mDatabase) {
+    mDatabase->DispatchTrustedEvent(nsDependentString(kCloseEventType));
   }
 
   return true;
@@ -2476,6 +2489,10 @@ BackgroundRequestChild::Recv__delete__(const RequestResponse& aResponse)
         HandleResponse(aResponse.get_ObjectStoreGetResponse().cloneInfo());
         break;
 
+      case RequestResponse::TObjectStoreGetKeyResponse:
+        HandleResponse(aResponse.get_ObjectStoreGetKeyResponse().key());
+        break;
+
       case RequestResponse::TObjectStoreGetAllResponse:
         HandleResponse(aResponse.get_ObjectStoreGetAllResponse().cloneInfos());
         break;
@@ -2534,8 +2551,10 @@ BackgroundRequestChild::Recv__delete__(const RequestResponse& aResponse)
  * BackgroundCursorChild
  ******************************************************************************/
 
+// Does not need to be threadsafe since this only runs on one thread, but
+// inheriting from CancelableRunnable is easy.
 class BackgroundCursorChild::DelayedActionRunnable final
-  : public nsICancelableRunnable
+  : public CancelableRunnable
 {
   using ActionFunc = void (BackgroundCursorChild::*)();
 
@@ -2556,15 +2575,12 @@ public:
     MOZ_ASSERT(mActionFunc);
   }
 
-  // Does not need to be threadsafe since this only runs on one thread.
-  NS_DECL_ISUPPORTS
-
 private:
   ~DelayedActionRunnable()
   { }
 
   NS_DECL_NSIRUNNABLE
-  NS_DECL_NSICANCELABLERUNNABLE
+  nsresult Cancel() override;
 };
 
 BackgroundCursorChild::BackgroundCursorChild(IDBRequest* aRequest,
@@ -2629,8 +2645,7 @@ BackgroundCursorChild::AssertIsOnOwningThread() const
 #endif // DEBUG
 
 void
-BackgroundCursorChild::SendContinueInternal(const CursorRequestParams& aParams,
-                                            const Key& aKey)
+BackgroundCursorChild::SendContinueInternal(const CursorRequestParams& aParams)
 {
   AssertIsOnOwningThread();
   MOZ_ASSERT(mRequest);
@@ -2647,66 +2662,7 @@ BackgroundCursorChild::SendContinueInternal(const CursorRequestParams& aParams,
 
   mTransaction->OnNewRequest();
 
-  CursorRequestParams params = aParams;
-  Key key = aKey;
-
-  switch (params.type()) {
-    case CursorRequestParams::TContinueParams: {
-      if (key.IsUnset()) {
-        break;
-      }
-      while (!mCachedResponses.IsEmpty()) {
-        if (mCachedResponses[0].mKey == key) {
-          break;
-        }
-        mCachedResponses.RemoveElementAt(0);
-      }
-      break;
-    }
-
-    case CursorRequestParams::TAdvanceParams: {
-      uint32_t& advanceCount = params.get_AdvanceParams().count();
-      while (advanceCount > 1 && !mCachedResponses.IsEmpty()) {
-        key = mCachedResponses[0].mKey;
-        mCachedResponses.RemoveElementAt(0);
-        --advanceCount;
-      }
-      break;
-    }
-
-    default:
-      MOZ_CRASH("Should never get here!");
-  }
-
-  if (!mCachedResponses.IsEmpty()) {
-    nsCOMPtr<nsIRunnable> continueRunnable = new DelayedActionRunnable(
-      this, &BackgroundCursorChild::SendDelayedContinueInternal);
-    MOZ_ALWAYS_TRUE(NS_SUCCEEDED(NS_DispatchToCurrentThread(continueRunnable)));
-  } else {
-    MOZ_ALWAYS_TRUE(PBackgroundIDBCursorChild::SendContinue(params, key));
-  }
-}
-
-void
-BackgroundCursorChild::SendDelayedContinueInternal()
-{
-  AssertIsOnOwningThread();
-  MOZ_ASSERT(mTransaction);
-  MOZ_ASSERT(mCursor);
-  MOZ_ASSERT(mStrongCursor);
-  MOZ_ASSERT(!mCachedResponses.IsEmpty());
-
-  RefPtr<IDBCursor> cursor;
-  mStrongCursor.swap(cursor);
-
-  auto& item = mCachedResponses[0];
-  mCursor->Reset(Move(item.mKey), Move(item.mCloneInfo));
-  mCachedResponses.RemoveElementAt(0);
-
-  ResultHelper helper(mRequest, mTransaction, mCursor);
-  DispatchSuccessEvent(&helper);
-
-  mTransaction->OnRequestFinished(/* aActorDestroyedNormally */ true);
+  MOZ_ALWAYS_TRUE(PBackgroundIDBCursorChild::SendContinue(aParams));
 }
 
 void
@@ -2727,14 +2683,6 @@ BackgroundCursorChild::SendDeleteMeInternal()
 
     MOZ_ALWAYS_TRUE(PBackgroundIDBCursorChild::SendDeleteMe());
   }
-}
-
-void
-BackgroundCursorChild::InvalidateCachedResponses()
-{
-  AssertIsOnOwningThread();
-
-  mCachedResponses.Clear();
 }
 
 void
@@ -2770,7 +2718,7 @@ BackgroundCursorChild::HandleResponse(const void_t& aResponse)
   if (!mCursor) {
     nsCOMPtr<nsIRunnable> deleteRunnable = new DelayedActionRunnable(
       this, &BackgroundCursorChild::SendDeleteMeInternal);
-    MOZ_ALWAYS_TRUE(NS_SUCCEEDED(NS_DispatchToCurrentThread(deleteRunnable)));
+    MOZ_ALWAYS_SUCCEEDS(NS_DispatchToCurrentThread(deleteRunnable));
   }
 }
 
@@ -2802,14 +2750,7 @@ BackgroundCursorChild::HandleResponse(
     RefPtr<IDBCursor> newCursor;
 
     if (mCursor) {
-      if (mCursor->IsContinueCalled()) {
-        mCursor->Reset(Move(response.key()), Move(cloneReadInfo));
-      } else {
-        CachedResponse cachedResponse;
-        cachedResponse.mKey = Move(response.key());
-        cachedResponse.mCloneInfo = Move(cloneReadInfo);
-        mCachedResponses.AppendElement(Move(cachedResponse));
-      }
+      mCursor->Reset(Move(response.key()), Move(cloneReadInfo));
     } else {
       newCursor = IDBCursor::Create(this,
                                     Move(response.key()),
@@ -3001,10 +2942,6 @@ BackgroundCursorChild::RecvResponse(const CursorResponse& aResponse)
   return true;
 }
 
-NS_IMPL_ISUPPORTS(BackgroundCursorChild::DelayedActionRunnable,
-                  nsIRunnable,
-                  nsICancelableRunnable)
-
 NS_IMETHODIMP
 BackgroundCursorChild::
 DelayedActionRunnable::Run()
@@ -3022,7 +2959,7 @@ DelayedActionRunnable::Run()
   return NS_OK;
 }
 
-NS_IMETHODIMP
+nsresult
 BackgroundCursorChild::
 DelayedActionRunnable::Cancel()
 {
@@ -3034,16 +2971,6 @@ DelayedActionRunnable::Cancel()
   Run();
 
   return NS_OK;
-}
-
-BackgroundCursorChild::CachedResponse::CachedResponse()
-{
-}
-
-BackgroundCursorChild::CachedResponse::CachedResponse(CachedResponse&& aOther)
-  : mKey(Move(aOther.mKey))
-{
-  mCloneInfo = Move(aOther.mCloneInfo);
 }
 
 /*******************************************************************************

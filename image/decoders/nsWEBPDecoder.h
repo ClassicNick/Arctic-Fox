@@ -7,6 +7,8 @@
 
 #include "Decoder.h"
 
+#include "StreamingLexer.h"
+
 extern "C" {
 #include "webp/decode.h"
 }
@@ -23,14 +25,26 @@ class nsWEBPDecoder : public Decoder
 public:
   virtual ~nsWEBPDecoder();
 
-  void InitInternal() override;
-  void WriteInternal(const char* aBuffer, uint32_t aCount) override;
-  void FinishInternal() override;
+  nsresult InitInternal() override;
+  LexerResult DoDecode(SourceBufferIterator& aIterator,
+                       IResumable* aOnResume) override;
+  nsresult FinishInternal() override;
 private:
   friend class DecoderFactory;
 
   // Decoders should only be instantiated via DecoderFactory.
   explicit nsWEBPDecoder(RasterImage* aImage);
+
+  enum class State
+  {
+    WEBP_DATA,
+    FINISHED_WEBP_DATA
+  };
+
+  LexerTransition<State> ReadWEBPData(const char* aData, size_t aLength);
+  LexerTransition<State> FinishedWEBPData();
+
+  StreamingLexer<State> mLexer;
 
   WebPIDecoder *mDecoder;
   uint8_t *mData;          // Pointer to WebP-decoded data.

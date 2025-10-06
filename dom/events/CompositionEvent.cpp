@@ -25,7 +25,7 @@ CompositionEvent::CompositionEvent(EventTarget* aOwner,
     mEventIsInternal = false;
   } else {
     mEventIsInternal = true;
-    mEvent->time = PR_Now();
+    mEvent->mTime = PR_Now();
 
     // XXX compositionstart is cancelable in draft of DOM3 Events.
     //     However, it doesn't make sence for us, we cannot cancel composition
@@ -67,6 +67,27 @@ CompositionEvent::InitCompositionEvent(const nsAString& aType,
   UIEvent::InitUIEvent(aType, aCanBubble, aCancelable, aView, 0);
   mData = aData;
   mLocale = aLocale;
+}
+
+void
+CompositionEvent::GetRanges(TextClauseArray& aRanges)
+{
+  // If the mRanges is not empty, we return the cached value.
+  if (!mRanges.IsEmpty()) {
+    aRanges = mRanges;
+    return;
+  }
+  RefPtr<TextRangeArray> textRangeArray = mEvent->AsCompositionEvent()->mRanges;
+  if (!textRangeArray) {
+    return;
+  }
+  nsCOMPtr<nsPIDOMWindowInner> window = do_QueryInterface(mOwner);
+  const TextRange* targetRange = textRangeArray->GetTargetClause();
+  for (size_t i = 0; i < textRangeArray->Length(); i++) {
+    const TextRange& range = textRangeArray->ElementAt(i);
+    mRanges.AppendElement(new TextClause(window, range, targetRange));
+  }
+  aRanges = mRanges;
 }
 
 } // namespace dom

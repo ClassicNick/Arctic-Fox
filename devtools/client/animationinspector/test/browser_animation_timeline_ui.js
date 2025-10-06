@@ -4,10 +4,12 @@
 
 "use strict";
 
+requestLongerTimeout(2);
+
 // Check that the timeline contains the right elements.
 
-add_task(function*() {
-  yield addTab(TEST_URL_ROOT + "doc_simple_animation.html");
+add_task(function* () {
+  yield addTab(URL_ROOT + "doc_simple_animation.html");
   let {panel} = yield openAnimationInspector();
 
   let timeline = panel.animationsTimelineComponent;
@@ -15,7 +17,7 @@ add_task(function*() {
 
   ok(el.querySelector(".time-header"),
      "The header element is in the DOM of the timeline");
-  ok(el.querySelectorAll(".time-header .time-tick").length,
+  ok(el.querySelectorAll(".time-header .header-item").length,
      "The header has some time graduations");
 
   ok(el.querySelector(".animations"),

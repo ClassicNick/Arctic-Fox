@@ -127,6 +127,7 @@ class ReftestServer:
                 self._process.kill()
 
 class RemoteReftest(RefTest):
+    use_marionette = False
     remoteApp = ''
     resolver_cls = RemoteReftestResolver
 
@@ -252,11 +253,12 @@ class RemoteReftest(RefTest):
         prefs["extensions.getAddons.getWithPerformance.url"] = "http://127.0.0.1:8888/extensions-dummy/repositoryGetWithPerformanceURL"
         prefs["extensions.getAddons.search.browseURL"] = "http://127.0.0.1:8888/extensions-dummy/repositoryBrowseURL"
         prefs["extensions.getAddons.search.url"] = "http://127.0.0.1:8888/extensions-dummy/repositorySearchURL"
-        # Make sure that opening the plugins check page won't hit the network
-        prefs["plugins.update.url"] = "http://127.0.0.1:8888/plugins-dummy/updateCheckURL"
         # Make sure the GMPInstallManager won't hit the network
         prefs["media.gmp-manager.url.override"] = "http://127.0.0.1:8888/dummy-gmp-manager.xml";
         prefs["layout.css.devPixelsPerPx"] = "1.0"
+        # Because Fennec is a little wacky (see bug 1156817) we need to load the
+        # reftest pages at 1.0 zoom, rather than zooming to fit the CSS viewport.
+        prefs["apz.allow_zooming"] = False
 
         # Disable skia-gl: see bug 907351
         prefs["gfx.canvas.azure.accelerated"] = False
@@ -266,6 +268,7 @@ class RemoteReftest(RefTest):
 
         try:
             self._devicemanager.pushDir(profileDir, options.remoteProfile)
+            self._devicemanager.chmodDir(options.remoteProfile)
         except devicemanager.DMError:
             print "Automation Error: Failed to copy profiledir to device"
             raise
@@ -277,6 +280,7 @@ class RemoteReftest(RefTest):
         RefTest.copyExtraFilesToProfile(self, options, profile)
         try:
             self._devicemanager.pushDir(profileDir, options.remoteProfile)
+            self._devicemanager.chmodDir(options.remoteProfile)
         except devicemanager.DMError:
             print "Automation Error: Failed to copy extra files to device"
             raise

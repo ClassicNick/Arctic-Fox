@@ -333,11 +333,48 @@ RUrsh::recover(JSContext* cx, SnapshotIterator& iter) const
 }
 
 bool
+MSignExtend::writeRecoverData(CompactBufferWriter& writer) const
+{
+    MOZ_ASSERT(canRecoverOnBailout());
+    writer.writeUnsigned(uint32_t(RInstruction::Recover_SignExtend));
+    MOZ_ASSERT(Mode(uint8_t(mode_)) == mode_);
+    writer.writeByte(uint8_t(mode_));
+    return true;
+}
+
+RSignExtend::RSignExtend(CompactBufferReader& reader)
+{
+    mode_ = reader.readByte();
+}
+
+bool
+RSignExtend::recover(JSContext* cx, SnapshotIterator& iter) const
+{
+    RootedValue operand(cx, iter.read());
+
+    int32_t result;
+    switch (MSignExtend::Mode(mode_)) {
+      case MSignExtend::Byte:
+        if (!js::SignExtendOperation<int8_t>(cx, operand, &result))
+            return false;
+        break;
+      case MSignExtend::Half:
+        if (!js::SignExtendOperation<int16_t>(cx, operand, &result))
+            return false;
+        break;
+    }
+
+    RootedValue rootedResult(cx, js::Int32Value(result));
+    iter.storeInstructionResult(rootedResult);
+    return true;
+}
+
+bool
 MAdd::writeRecoverData(CompactBufferWriter& writer) const
 {
     MOZ_ASSERT(canRecoverOnBailout());
     writer.writeUnsigned(uint32_t(RInstruction::Recover_Add));
-    writer.writeByte(specialization_ == MIRType_Float32);
+    writer.writeByte(specialization_ == MIRType::Float32);
     return true;
 }
 
@@ -357,7 +394,7 @@ RAdd::recover(JSContext* cx, SnapshotIterator& iter) const
     if (!js::AddValues(cx, &lhs, &rhs, &result))
         return false;
 
-    // MIRType_Float32 is a specialization embedding the fact that the result is
+    // MIRType::Float32 is a specialization embedding the fact that the result is
     // rounded to a Float32.
     if (isFloatOperation_ && !RoundFloat32(cx, result, &result))
         return false;
@@ -371,7 +408,7 @@ MSub::writeRecoverData(CompactBufferWriter& writer) const
 {
     MOZ_ASSERT(canRecoverOnBailout());
     writer.writeUnsigned(uint32_t(RInstruction::Recover_Sub));
-    writer.writeByte(specialization_ == MIRType_Float32);
+    writer.writeByte(specialization_ == MIRType::Float32);
     return true;
 }
 
@@ -391,7 +428,7 @@ RSub::recover(JSContext* cx, SnapshotIterator& iter) const
     if (!js::SubValues(cx, &lhs, &rhs, &result))
         return false;
 
-    // MIRType_Float32 is a specialization embedding the fact that the result is
+    // MIRType::Float32 is a specialization embedding the fact that the result is
     // rounded to a Float32.
     if (isFloatOperation_ && !RoundFloat32(cx, result, &result))
         return false;
@@ -405,7 +442,7 @@ MMul::writeRecoverData(CompactBufferWriter& writer) const
 {
     MOZ_ASSERT(canRecoverOnBailout());
     writer.writeUnsigned(uint32_t(RInstruction::Recover_Mul));
-    writer.writeByte(specialization_ == MIRType_Float32);
+    writer.writeByte(specialization_ == MIRType::Float32);
     MOZ_ASSERT(Mode(uint8_t(mode_)) == mode_);
     writer.writeByte(uint8_t(mode_));
     return true;
@@ -428,7 +465,7 @@ RMul::recover(JSContext* cx, SnapshotIterator& iter) const
         if (!js::MulValues(cx, &lhs, &rhs, &result))
             return false;
 
-        // MIRType_Float32 is a specialization embedding the fact that the
+        // MIRType::Float32 is a specialization embedding the fact that the
         // result is rounded to a Float32.
         if (isFloatOperation_ && !RoundFloat32(cx, result, &result))
             return false;
@@ -447,7 +484,7 @@ MDiv::writeRecoverData(CompactBufferWriter& writer) const
 {
     MOZ_ASSERT(canRecoverOnBailout());
     writer.writeUnsigned(uint32_t(RInstruction::Recover_Div));
-    writer.writeByte(specialization_ == MIRType_Float32);
+    writer.writeByte(specialization_ == MIRType::Float32);
     return true;
 }
 
@@ -466,7 +503,7 @@ RDiv::recover(JSContext* cx, SnapshotIterator& iter) const
     if (!js::DivValues(cx, &lhs, &rhs, &result))
         return false;
 
-    // MIRType_Float32 is a specialization embedding the fact that the result is
+    // MIRType::Float32 is a specialization embedding the fact that the result is
     // rounded to a Float32.
     if (isFloatOperation_ && !RoundFloat32(cx, result, &result))
         return false;
@@ -830,7 +867,7 @@ MSqrt::writeRecoverData(CompactBufferWriter& writer) const
 {
     MOZ_ASSERT(canRecoverOnBailout());
     writer.writeUnsigned(uint32_t(RInstruction::Recover_Sqrt));
-    writer.writeByte(type() == MIRType_Float32);
+    writer.writeByte(type() == MIRType::Float32);
     return true;
 }
 
@@ -849,7 +886,7 @@ RSqrt::recover(JSContext* cx, SnapshotIterator& iter) const
     if (!math_sqrt_handle(cx, num, &result))
         return false;
 
-    // MIRType_Float32 is a specialization embedding the fact that the result is
+    // MIRType::Float32 is a specialization embedding the fact that the result is
     // rounded to a Float32.
     if (isFloatOperation_ && !RoundFloat32(cx, result, &result))
         return false;
@@ -987,7 +1024,7 @@ RStringSplit::recover(JSContext* cx, SnapshotIterator& iter) const
     RootedObjectGroup group(cx, iter.read().toObject().group());
     RootedValue result(cx);
 
-    JSObject* res = str_split_string(cx, group, str, sep);
+    JSObject* res = str_split_string(cx, group, str, sep, INT32_MAX);
     if (!res)
         return false;
 
@@ -1013,13 +1050,40 @@ RRegExpMatcher::recover(JSContext* cx, SnapshotIterator& iter) const
     RootedObject regexp(cx, &iter.read().toObject());
     RootedString input(cx, iter.read().toString());
     int32_t lastIndex = iter.read().toInt32();
-    bool sticky = iter.read().toBoolean();
 
     RootedValue result(cx);
-    if (!RegExpMatcherRaw(cx, regexp, input, lastIndex, sticky, nullptr, &result))
+    if (!RegExpMatcherRaw(cx, regexp, input, lastIndex, nullptr, &result))
         return false;
 
     iter.storeInstructionResult(result);
+    return true;
+}
+
+bool
+MRegExpSearcher::writeRecoverData(CompactBufferWriter& writer) const
+{
+    MOZ_ASSERT(canRecoverOnBailout());
+    writer.writeUnsigned(uint32_t(RInstruction::Recover_RegExpSearcher));
+    return true;
+}
+
+RRegExpSearcher::RRegExpSearcher(CompactBufferReader& reader)
+{}
+
+bool
+RRegExpSearcher::recover(JSContext* cx, SnapshotIterator& iter) const
+{
+    RootedObject regexp(cx, &iter.read().toObject());
+    RootedString input(cx, iter.read().toString());
+    int32_t lastIndex = iter.read().toInt32();
+
+    int32_t result;
+    if (!RegExpSearcherRaw(cx, regexp, input, lastIndex, nullptr, &result))
+        return false;
+
+    RootedValue resultVal(cx);
+    resultVal.setInt32(result);
+    iter.storeInstructionResult(resultVal);
     return true;
 }
 
@@ -1040,41 +1104,14 @@ RRegExpTester::recover(JSContext* cx, SnapshotIterator& iter) const
     RootedString string(cx, iter.read().toString());
     RootedObject regexp(cx, &iter.read().toObject());
     int32_t lastIndex = iter.read().toInt32();
-    bool sticky = iter.read().toBoolean();
     int32_t endIndex;
 
-    if (!js::RegExpTesterRaw(cx, regexp, string, lastIndex, sticky, &endIndex))
+    if (!js::RegExpTesterRaw(cx, regexp, string, lastIndex, &endIndex))
         return false;
 
     RootedValue result(cx);
     result.setInt32(endIndex);
     iter.storeInstructionResult(result);
-    return true;
-}
-
-bool
-MRegExpReplace::writeRecoverData(CompactBufferWriter& writer) const
-{
-    MOZ_ASSERT(canRecoverOnBailout());
-    writer.writeUnsigned(uint32_t(RInstruction::Recover_RegExpReplace));
-    return true;
-}
-
-RRegExpReplace::RRegExpReplace(CompactBufferReader& reader)
-{ }
-
-bool
-RRegExpReplace::recover(JSContext* cx, SnapshotIterator& iter) const
-{
-    RootedString string(cx, iter.read().toString());
-    Rooted<RegExpObject*> regexp(cx, &iter.read().toObject().as<RegExpObject>());
-    RootedString repl(cx, iter.read().toString());
-
-    JSString* result = js::str_replace_regexp_raw(cx, string, regexp, repl);
-    if (!result)
-        return false;
-
-    iter.storeInstructionResult(StringValue(result));
     return true;
 }
 
@@ -1202,11 +1239,13 @@ RNewObject::recover(JSContext* cx, SnapshotIterator& iter) const
     JSObject* resultObject = nullptr;
 
     // See CodeGenerator::visitNewObjectVMCall
-    if (mode_ == MNewObject::ObjectLiteral) {
+    switch (mode_) {
+      case MNewObject::ObjectLiteral:
         resultObject = NewObjectOperationWithTemplate(cx, templateObject);
-    } else {
-        MOZ_ASSERT(mode_ == MNewObject::ObjectCreate);
+        break;
+      case MNewObject::ObjectCreate:
         resultObject = ObjectCreateWithTemplate(cx, templateObject.as<PlainObject>());
+        break;
     }
 
     if (!resultObject)
@@ -1335,7 +1374,7 @@ MSimdBox::writeRecoverData(CompactBufferWriter& writer) const
 {
     MOZ_ASSERT(canRecoverOnBailout());
     writer.writeUnsigned(uint32_t(RInstruction::Recover_SimdBox));
-    static_assert(sizeof(SimdType) == sizeof(uint8_t), "assuming uint8 storage class for SimdType");
+    static_assert(unsigned(SimdType::Count) < 0x100, "assuming SimdType fits in 8 bits");
     writer.writeByte(uint8_t(simdType()));
     return true;
 }
@@ -1354,6 +1393,24 @@ RSimdBox::recover(JSContext* cx, SnapshotIterator& iter) const
     MOZ_ASSERT_IF(a.mode() == RValueAllocation::ANY_FLOAT_REG, a.fpuReg().isSimd128());
     const FloatRegisters::RegisterContent* raw = iter.floatAllocationPointer(a);
     switch (SimdType(type_)) {
+      case SimdType::Bool8x16:
+        resultObject = js::CreateSimd<Bool8x16>(cx, (const Bool8x16::Elem*) raw);
+        break;
+      case SimdType::Int8x16:
+        resultObject = js::CreateSimd<Int8x16>(cx, (const Int8x16::Elem*) raw);
+        break;
+      case SimdType::Uint8x16:
+        resultObject = js::CreateSimd<Uint8x16>(cx, (const Uint8x16::Elem*) raw);
+        break;
+      case SimdType::Bool16x8:
+        resultObject = js::CreateSimd<Bool16x8>(cx, (const Bool16x8::Elem*) raw);
+        break;
+      case SimdType::Int16x8:
+        resultObject = js::CreateSimd<Int16x8>(cx, (const Int16x8::Elem*) raw);
+        break;
+      case SimdType::Uint16x8:
+        resultObject = js::CreateSimd<Uint16x8>(cx, (const Uint16x8::Elem*) raw);
+        break;
       case SimdType::Bool32x4:
         resultObject = js::CreateSimd<Bool32x4>(cx, (const Bool32x4::Elem*) raw);
         break;
@@ -1368,24 +1425,6 @@ RSimdBox::recover(JSContext* cx, SnapshotIterator& iter) const
         break;
       case SimdType::Float64x2:
         MOZ_CRASH("NYI, RSimdBox of Float64x2");
-        break;
-      case SimdType::Int8x16:
-        MOZ_CRASH("NYI, RSimdBox of Int8x16");
-        break;
-      case SimdType::Int16x8:
-        MOZ_CRASH("NYI, RSimdBox of Int16x8");
-        break;
-      case SimdType::Uint8x16:
-        MOZ_CRASH("NYI, RSimdBox of UInt8x16");
-        break;
-      case SimdType::Uint16x8:
-        MOZ_CRASH("NYI, RSimdBox of UInt16x8");
-        break;
-      case SimdType::Bool8x16:
-        MOZ_CRASH("NYI, RSimdBox of Bool8x16");
-        break;
-      case SimdType::Bool16x8:
-        MOZ_CRASH("NYI, RSimdBox of Bool16x8");
         break;
       case SimdType::Bool64x2:
         MOZ_CRASH("NYI, RSimdBox of Bool64x2");
@@ -1515,6 +1554,7 @@ RAssertRecoveredOnBailout::RAssertRecoveredOnBailout(CompactBufferReader& reader
 bool RAssertRecoveredOnBailout::recover(JSContext* cx, SnapshotIterator& iter) const
 {
     RootedValue result(cx);
+    iter.read(); // skip the unused operand.
     result.setUndefined();
     iter.storeInstructionResult(result);
     return true;

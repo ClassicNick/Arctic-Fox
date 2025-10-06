@@ -17,7 +17,7 @@
 #include "mozilla/DebugOnly.h"
 #include "mozilla/Monitor.h"
 #include "mozilla/Mutex.h"
-#include "mozilla/unused.h"
+#include "mozilla/Unused.h"
 #include "mozilla/dom/File.h"
 #include "mozilla/dom/nsIContentParent.h"
 #include "mozilla/dom/nsIContentChild.h"
@@ -206,13 +206,13 @@ EventTargetIsOnCurrentThread(nsIEventTarget* aEventTarget)
   }
 
   bool current;
-  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(aEventTarget->IsOnCurrentThread(&current)));
+  MOZ_ALWAYS_SUCCEEDS(aEventTarget->IsOnCurrentThread(&current));
 
   return current;
 }
 
 class CancelableRunnableWrapper final
-  : public nsCancelableRunnable
+  : public CancelableRunnable
 {
   nsCOMPtr<nsIRunnable> mRunnable;
 #ifdef DEBUG
@@ -238,10 +238,10 @@ private:
   { }
 
   NS_DECL_NSIRUNNABLE
-  NS_DECL_NSICANCELABLERUNNABLE
+  nsresult Cancel() override;
 };
 
-NS_IMPL_ISUPPORTS_INHERITED0(CancelableRunnableWrapper, nsCancelableRunnable)
+NS_IMPL_ISUPPORTS_INHERITED0(CancelableRunnableWrapper, CancelableRunnable)
 
 NS_IMETHODIMP
 CancelableRunnableWrapper::Run()
@@ -261,7 +261,7 @@ CancelableRunnableWrapper::Run()
   return NS_OK;
 }
 
-NS_IMETHODIMP
+nsresult
 CancelableRunnableWrapper::Cancel()
 {
   DebugOnly<bool> onTarget;
@@ -293,7 +293,7 @@ ReleaseOnTarget(SmartPtr<T>& aDoomed, nsIEventTarget* aTarget)
   auto* doomedSupports = static_cast<nsISupports*>(doomedRaw);
 
   nsCOMPtr<nsIRunnable> releaseRunnable =
-    NS_NewNonOwningRunnableMethod(doomedSupports, &nsISupports::Release);
+    NewNonOwningRunnableMethod(doomedSupports, &nsISupports::Release);
   MOZ_ASSERT(releaseRunnable);
 
   if (aTarget) {
@@ -301,10 +301,10 @@ ReleaseOnTarget(SmartPtr<T>& aDoomed, nsIEventTarget* aTarget)
     // cancelable.
     releaseRunnable = new CancelableRunnableWrapper(releaseRunnable, aTarget);
 
-    MOZ_ALWAYS_TRUE(NS_SUCCEEDED(aTarget->Dispatch(releaseRunnable,
-                                                   NS_DISPATCH_NORMAL)));
+    MOZ_ALWAYS_SUCCEEDS(aTarget->Dispatch(releaseRunnable,
+                                          NS_DISPATCH_NORMAL));
   } else {
-    MOZ_ALWAYS_TRUE(NS_SUCCEEDED(NS_DispatchToMainThread(releaseRunnable)));
+    MOZ_ALWAYS_SUCCEEDS(NS_DispatchToMainThread(releaseRunnable));
   }
 }
 
@@ -566,7 +566,7 @@ class InputStreamParent final
   : public PBlobStreamParent
 {
   typedef mozilla::ipc::InputStreamParams InputStreamParams;
-  typedef mozilla::ipc::OptionalFileDescriptorSet OptionalFileDescriptorSet;
+  typedef mozilla::dom::OptionalFileDescriptorSet OptionalFileDescriptorSet;
 
   bool* mSyncLoopGuard;
   InputStreamParams* mParams;
@@ -657,73 +657,18 @@ private:
   }
 };
 
-class EmptyBlobImpl final
-  : public BlobImplBase
-{
-public:
-  explicit EmptyBlobImpl(const nsAString& aContentType)
-    : BlobImplBase(aContentType, 0)
-  {
-    mImmutable = true;
-  }
-
-  EmptyBlobImpl(const nsAString& aName,
-                const nsAString& aContentType,
-                int64_t aLastModifiedDate)
-    : BlobImplBase(aName, aContentType, 0, aLastModifiedDate,
-                   BlobDirState::eIsNotDir)
-  {
-    mImmutable = true;
-  }
-
-private:
-  virtual already_AddRefed<BlobImpl>
-  CreateSlice(uint64_t /* aStart */,
-              uint64_t aLength,
-              const nsAString& aContentType,
-              ErrorResult& /* aRv */) override
-  {
-    MOZ_ASSERT(!aLength);
-
-    RefPtr<BlobImpl> sliceImpl = new EmptyBlobImpl(aContentType);
-
-    DebugOnly<bool> isMutable;
-    MOZ_ASSERT(NS_SUCCEEDED(sliceImpl->GetMutable(&isMutable)));
-    MOZ_ASSERT(!isMutable);
-
-    return sliceImpl.forget();
-  }
-
-  virtual void
-  GetInternalStream(nsIInputStream** aStream, ErrorResult& aRv) override
-  {
-    if (NS_WARN_IF(!aStream)) {
-      aRv.Throw(NS_ERROR_FAILURE);
-      return;
-    }
-
-    nsString emptyString;
-    aRv = NS_NewStringInputStream(aStream, emptyString);
-    if (NS_WARN_IF(aRv.Failed())) {
-      return;
-    }
-  }
-};
-
 struct MOZ_STACK_CLASS CreateBlobImplMetadata final
 {
   nsString mContentType;
   nsString mName;
   uint64_t mLength;
   int64_t mLastModifiedDate;
-  BlobDirState mDirState;
   bool mHasRecursed;
   const bool mIsSameProcessActor;
 
   explicit CreateBlobImplMetadata(bool aIsSameProcessActor)
     : mLength(0)
     , mLastModifiedDate(0)
-    , mDirState(BlobDirState::eUnknownIfDir)
     , mHasRecursed(false)
     , mIsSameProcessActor(aIsSameProcessActor)
   {
@@ -778,7 +723,7 @@ CreateBlobImpl(const nsTArray<uint8_t>& aMemoryData,
   RefPtr<BlobImpl> blobImpl;
 
   if (auto length = static_cast<size_t>(aMemoryData.Length())) {
-    static MOZ_CONSTEXPR_VAR size_t elementSizeMultiplier =
+    static constexpr size_t elementSizeMultiplier =
       sizeof(aMemoryData[0]) / sizeof(char);
 
     if (!aMetadata.mHasRecursed &&
@@ -814,7 +759,7 @@ CreateBlobImpl(const nsTArray<uint8_t>& aMemoryData,
     blobImpl = new EmptyBlobImpl(aMetadata.mContentType);
   }
 
-  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(blobImpl->SetMutable(false)));
+  MOZ_ALWAYS_SUCCEEDS(blobImpl->SetMutable(false));
 
   return blobImpl.forget();
 }
@@ -914,10 +859,11 @@ CreateBlobImpl(const nsTArray<BlobData>& aBlobDatas,
   }
 
   if (NS_WARN_IF(rv.Failed())) {
+    rv.SuppressException();
     return nullptr;
   }
 
-  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(blobImpl->SetMutable(false)));
+  MOZ_ALWAYS_SUCCEEDS(blobImpl->SetMutable(false));
 
   return blobImpl.forget();
 }
@@ -961,11 +907,15 @@ CreateBlobImpl(const ParentBlobConstructorParams& aParams,
       return nullptr;
     }
 
+    if (NS_WARN_IF(!params.path().IsEmpty())) {
+      ASSERT_UNLESS_FUZZING();
+      return nullptr;
+    }
+
     metadata.mContentType = params.contentType();
     metadata.mName = params.name();
     metadata.mLength = params.length();
     metadata.mLastModifiedDate = params.modDate();
-    metadata.mDirState = BlobDirState(params.dirState());
   }
 
   RefPtr<BlobImpl> blobImpl =
@@ -1017,7 +967,7 @@ BlobDataFromBlobImpl(BlobImpl* aBlobImpl, BlobData& aBlobData)
   MOZ_ASSERT(isNonBlocking);
 
   uint64_t available;
-  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(inputStream->Available(&available)));
+  MOZ_ALWAYS_SUCCEEDS(inputStream->Available(&available));
 
   MOZ_ASSERT(available <= uint64_t(UINT32_MAX));
 
@@ -1028,10 +978,10 @@ BlobDataFromBlobImpl(BlobImpl* aBlobImpl, BlobData& aBlobData)
   blobData.SetLength(size_t(available));
 
   uint32_t readCount;
-  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(
+  MOZ_ALWAYS_SUCCEEDS(
     inputStream->Read(reinterpret_cast<char*>(blobData.Elements()),
                       uint32_t(available),
-                      &readCount)));
+                      &readCount));
 }
 
 RemoteInputStream::RemoteInputStream(BlobImpl* aBlobImpl,
@@ -1512,7 +1462,7 @@ private:
 // dispatch itself to the thread pool again in order to close the file input
 // stream.
 class BlobParent::OpenStreamRunnable final
-  : public nsRunnable
+  : public Runnable
 {
   friend class nsRevocableEventPtr<OpenStreamRunnable>;
 
@@ -1635,7 +1585,7 @@ private:
       nsresult rv = mActorTarget->Dispatch(this, NS_DISPATCH_NORMAL);
       NS_ENSURE_SUCCESS(rv, rv);
     } else {
-      MOZ_ALWAYS_TRUE(NS_SUCCEEDED(NS_DispatchToMainThread(this)));
+      MOZ_ALWAYS_SUCCEEDS(NS_DispatchToMainThread(this));
     }
 
     return NS_OK;
@@ -1656,11 +1606,7 @@ private:
 
     NS_WARN_IF_FALSE(NS_SUCCEEDED(stream->Close()), "Failed to close stream!");
 
-    nsCOMPtr<nsIRunnable> shutdownRunnable =
-      NS_NewRunnableMethod(ioTarget, &nsIThread::Shutdown);
-    MOZ_ASSERT(shutdownRunnable);
-
-    MOZ_ALWAYS_TRUE(NS_SUCCEEDED(NS_DispatchToMainThread(shutdownRunnable)));
+    MOZ_ALWAYS_SUCCEEDS(NS_DispatchToMainThread(NewRunnableMethod(ioTarget, &nsIThread::Shutdown)));
 
     return NS_OK;
   }
@@ -1741,7 +1687,7 @@ private:
   }
 };
 
-NS_IMPL_ISUPPORTS_INHERITED0(BlobParent::OpenStreamRunnable, nsRunnable)
+NS_IMPL_ISUPPORTS_INHERITED0(BlobParent::OpenStreamRunnable, Runnable)
 
 /*******************************************************************************
  * BlobChild::RemoteBlobImpl Declaration
@@ -1767,15 +1713,25 @@ protected:
 
   const bool mIsSlice;
 
+  const bool mIsDirectory;
+
 public:
+
+  enum BlobImplIsDirectory
+  {
+    eNotDirectory,
+    eDirectory
+  };
+
   // For File.
   RemoteBlobImpl(BlobChild* aActor,
                  BlobImpl* aRemoteBlobImpl,
                  const nsAString& aName,
                  const nsAString& aContentType,
+                 const nsAString& aPath,
                  uint64_t aLength,
                  int64_t aModDate,
-                 BlobDirState aDirState,
+                 BlobImplIsDirectory aIsDirectory,
                  bool aIsSameProcessBlob);
 
   // For Blob.
@@ -1829,6 +1785,9 @@ public:
   virtual void
   GetMozFullPathInternal(nsAString& aFileName, ErrorResult& aRv) const override;
 
+  virtual bool
+  IsDirectory() const override;
+
   virtual already_AddRefed<BlobImpl>
   CreateSlice(uint64_t aStart,
               uint64_t aLength,
@@ -1881,7 +1840,7 @@ protected:
 };
 
 class BlobChild::RemoteBlobImpl::CreateStreamHelper final
-  : public nsRunnable
+  : public Runnable
 {
   Monitor mMonitor;
   RefPtr<RemoteBlobImpl> mRemoteBlobImpl;
@@ -1982,10 +1941,13 @@ public:
   NS_DECL_ISUPPORTS_INHERITED
 
   virtual void
-  GetName(nsAString& aName) override;
+  GetName(nsAString& aName) const override;
 
   virtual void
-  GetPath(nsAString& aPath, ErrorResult& aRv) override;
+  GetPath(nsAString& aPath) const override;
+
+  virtual void
+  SetPath(const nsAString& aPath) override;
 
   virtual int64_t
   GetLastModified(ErrorResult& aRv) override;
@@ -1998,6 +1960,9 @@ public:
 
   virtual void
   GetMozFullPathInternal(nsAString& aFileName, ErrorResult& aRv) const override;
+
+  virtual bool
+  IsDirectory() const override;
 
   virtual uint64_t
   GetSize(ErrorResult& aRv) override;
@@ -2053,18 +2018,6 @@ public:
   virtual bool
   IsFile() const override;
 
-  virtual void
-  LookupAndCacheIsDirectory() override;
-
-  virtual void
-  SetIsDirectory(bool aIsDir) override;
-
-  virtual bool
-  IsDirectory() const override;
-
-  virtual BlobDirState
-  GetDirState() const override;
-
   virtual bool
   MayBeClonedToOtherThreads() const override;
 
@@ -2094,13 +2047,16 @@ RemoteBlobImpl::RemoteBlobImpl(BlobChild* aActor,
                                BlobImpl* aRemoteBlobImpl,
                                const nsAString& aName,
                                const nsAString& aContentType,
+                               const nsAString& aPath,
                                uint64_t aLength,
                                int64_t aModDate,
-                               BlobDirState aDirState,
+                               BlobImplIsDirectory aIsDirectory,
                                bool aIsSameProcessBlob)
-  : BlobImplBase(aName, aContentType, aLength, aModDate, aDirState)
-  , mIsSlice(false)
+  : BlobImplBase(aName, aContentType, aLength, aModDate)
+  , mIsSlice(false), mIsDirectory(aIsDirectory == eDirectory)
 {
+  SetPath(aPath);
+
   if (aIsSameProcessBlob) {
     MOZ_ASSERT(aRemoteBlobImpl);
     mSameProcessBlobImpl = aRemoteBlobImpl;
@@ -2119,7 +2075,7 @@ RemoteBlobImpl::RemoteBlobImpl(BlobChild* aActor,
                                uint64_t aLength,
                                bool aIsSameProcessBlob)
   : BlobImplBase(aContentType, aLength)
-  , mIsSlice(false)
+  , mIsSlice(false), mIsDirectory(false)
 {
   if (aIsSameProcessBlob) {
     MOZ_ASSERT(aRemoteBlobImpl);
@@ -2135,7 +2091,7 @@ RemoteBlobImpl::RemoteBlobImpl(BlobChild* aActor,
 BlobChild::
 RemoteBlobImpl::RemoteBlobImpl(BlobChild* aActor)
   : BlobImplBase(EmptyString(), EmptyString(), UINT64_MAX, INT64_MAX)
-  , mIsSlice(false)
+  , mIsSlice(false), mIsDirectory(false)
 {
   CommonInit(aActor);
 }
@@ -2145,6 +2101,7 @@ RemoteBlobImpl::RemoteBlobImpl(const nsAString& aContentType, uint64_t aLength)
   : BlobImplBase(aContentType, aLength)
   , mActor(nullptr)
   , mIsSlice(true)
+  , mIsDirectory(false)
 {
   mImmutable = true;
 }
@@ -2208,16 +2165,16 @@ RemoteBlobImpl::Destroy()
   }
 
   nsCOMPtr<nsIRunnable> destroyRunnable =
-    NS_NewNonOwningRunnableMethod(this, &RemoteBlobImpl::Destroy);
+    NewNonOwningRunnableMethod(this, &RemoteBlobImpl::Destroy);
 
   if (mActorTarget) {
     destroyRunnable =
       new CancelableRunnableWrapper(destroyRunnable, mActorTarget);
 
-    MOZ_ALWAYS_TRUE(NS_SUCCEEDED(mActorTarget->Dispatch(destroyRunnable,
-                                                        NS_DISPATCH_NORMAL)));
+    MOZ_ALWAYS_SUCCEEDS(mActorTarget->Dispatch(destroyRunnable,
+                                               NS_DISPATCH_NORMAL));
   } else {
-    MOZ_ALWAYS_TRUE(NS_SUCCEEDED(NS_DispatchToMainThread(destroyRunnable)));
+    MOZ_ALWAYS_SUCCEEDS(NS_DispatchToMainThread(destroyRunnable));
   }
 }
 
@@ -2255,6 +2212,13 @@ RemoteBlobImpl::GetMozFullPathInternal(nsAString& aFilePath,
   }
 
   aFilePath = filePath;
+}
+
+bool
+BlobChild::
+RemoteBlobImpl::IsDirectory() const
+{
+  return mIsDirectory;
 }
 
 already_AddRefed<BlobImpl>
@@ -2498,7 +2462,7 @@ CreateStreamHelper::RunInternal(RemoteBlobImpl* aBaseRemoteBlobImpl,
 }
 
 NS_IMPL_ISUPPORTS_INHERITED0(BlobChild::RemoteBlobImpl::CreateStreamHelper,
-                             nsRunnable)
+                             Runnable)
 
 NS_IMETHODIMP
 BlobChild::RemoteBlobImpl::
@@ -2562,7 +2526,7 @@ RemoteBlobSliceImpl::EnsureActorWasCreatedInternal()
   MOZ_ASSERT(baseActor->HasManager());
 
   nsID id;
-  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(gUUIDGenerator->GenerateUUIDInPlace(&id)));
+  MOZ_ALWAYS_SUCCEEDS(gUUIDGenerator->GenerateUUIDInPlace(&id));
 
   ParentBlobConstructorParams params(
     SlicedBlobConstructorParams(nullptr /* sourceParent */,
@@ -2636,16 +2600,16 @@ RemoteBlobImpl::Destroy()
   }
 
   nsCOMPtr<nsIRunnable> destroyRunnable =
-    NS_NewNonOwningRunnableMethod(this, &RemoteBlobImpl::Destroy);
+    NewNonOwningRunnableMethod(this, &RemoteBlobImpl::Destroy);
 
   if (mActorTarget) {
     destroyRunnable =
       new CancelableRunnableWrapper(destroyRunnable, mActorTarget);
 
-    MOZ_ALWAYS_TRUE(NS_SUCCEEDED(mActorTarget->Dispatch(destroyRunnable,
-                                                        NS_DISPATCH_NORMAL)));
+    MOZ_ALWAYS_SUCCEEDS(mActorTarget->Dispatch(destroyRunnable,
+                                               NS_DISPATCH_NORMAL));
   } else {
-    MOZ_ALWAYS_TRUE(NS_SUCCEEDED(NS_DispatchToMainThread(destroyRunnable)));
+    MOZ_ALWAYS_SUCCEEDS(NS_DispatchToMainThread(destroyRunnable));
   }
 }
 
@@ -2657,16 +2621,23 @@ NS_IMPL_QUERY_INTERFACE_INHERITED(BlobParent::RemoteBlobImpl,
 
 void
 BlobParent::
-RemoteBlobImpl::GetName(nsAString& aName)
+RemoteBlobImpl::GetName(nsAString& aName) const
 {
   mBlobImpl->GetName(aName);
 }
 
 void
 BlobParent::
-RemoteBlobImpl::GetPath(nsAString& aPath, ErrorResult& aRv)
+RemoteBlobImpl::GetPath(nsAString& aPath) const
 {
-  mBlobImpl->GetPath(aPath, aRv);
+  mBlobImpl->GetPath(aPath);
+}
+
+void
+BlobParent::
+RemoteBlobImpl::SetPath(const nsAString& aPath)
+{
+  mBlobImpl->SetPath(aPath);
 }
 
 int64_t
@@ -2695,6 +2666,13 @@ BlobParent::
 RemoteBlobImpl::GetMozFullPathInternal(nsAString& aFileName, ErrorResult& aRv) const
 {
   mBlobImpl->GetMozFullPathInternal(aFileName, aRv);
+}
+
+bool
+BlobParent::
+RemoteBlobImpl::IsDirectory() const
+{
+  return mBlobImpl->IsDirectory();
 }
 
 uint64_t
@@ -2812,34 +2790,6 @@ BlobParent::
 RemoteBlobImpl::IsFile() const
 {
   return mBlobImpl->IsFile();
-}
-
-void
-BlobParent::
-RemoteBlobImpl::LookupAndCacheIsDirectory()
-{
-  return mBlobImpl->LookupAndCacheIsDirectory();
-}
-
-void
-BlobParent::
-RemoteBlobImpl::SetIsDirectory(bool aIsDir)
-{
-  return mBlobImpl->SetIsDirectory(aIsDir);
-}
-
-bool
-BlobParent::
-RemoteBlobImpl::IsDirectory() const
-{
-  return mBlobImpl->IsDirectory();
-}
-
-BlobDirState
-BlobParent::
-RemoteBlobImpl::GetDirState() const
-{
-  return mBlobImpl->GetDirState();
 }
 
 bool
@@ -3026,15 +2976,23 @@ BlobChild::CommonInit(BlobChild* aOther, BlobImpl* aBlobImpl)
 
   RemoteBlobImpl* remoteBlob = nullptr;
   if (otherImpl->IsFile()) {
-    nsString name;
+    nsAutoString name;
     otherImpl->GetName(name);
+
+    nsAutoString path;
+    otherImpl->GetPath(path);
 
     int64_t modDate = otherImpl->GetLastModified(rv);
     MOZ_ASSERT(!rv.Failed());
 
-    remoteBlob = new RemoteBlobImpl(this, otherImpl, name, contentType, length,
-                                    modDate, otherImpl->GetDirState(),
-                                    false /* SameProcessBlobImpl */);
+    RemoteBlobImpl::BlobImplIsDirectory directory = otherImpl->IsDirectory() ?
+      RemoteBlobImpl::BlobImplIsDirectory::eDirectory :
+      RemoteBlobImpl::BlobImplIsDirectory::eNotDirectory;
+
+    remoteBlob =
+      new RemoteBlobImpl(this, otherImpl, name, contentType, path,
+                         length, modDate, directory,
+                         false /* SameProcessBlobImpl */);
   } else {
     remoteBlob = new RemoteBlobImpl(this, otherImpl, contentType, length,
                                     false /* SameProcessBlobImpl */);
@@ -3080,13 +3038,17 @@ BlobChild::CommonInit(const ChildBlobConstructorParams& aParams)
     case AnyBlobConstructorParams::TFileBlobConstructorParams: {
       const FileBlobConstructorParams& params =
         blobParams.get_FileBlobConstructorParams();
+      RemoteBlobImpl::BlobImplIsDirectory directory = params.isDirectory() ?
+        RemoteBlobImpl::BlobImplIsDirectory::eDirectory :
+        RemoteBlobImpl::BlobImplIsDirectory::eNotDirectory;
       remoteBlob = new RemoteBlobImpl(this,
                                       nullptr,
                                       params.name(),
                                       params.contentType(),
+                                      params.path(),
                                       params.length(),
                                       params.modDate(),
-                                      BlobDirState(params.dirState()),
+                                      directory,
                                       false /* SameProcessBlobImpl */);
       break;
     }
@@ -3109,20 +3071,29 @@ BlobChild::CommonInit(const ChildBlobConstructorParams& aParams)
       blobImpl->GetType(contentType);
 
       if (blobImpl->IsFile()) {
-        nsString name;
+        nsAutoString name;
         blobImpl->GetName(name);
+
+        nsAutoString path;
+        blobImpl->GetPath(path);
 
         int64_t lastModifiedDate = blobImpl->GetLastModified(rv);
         MOZ_ASSERT(!rv.Failed());
+
+        RemoteBlobImpl::BlobImplIsDirectory directory =
+          blobImpl->IsDirectory() ?
+            RemoteBlobImpl::BlobImplIsDirectory::eDirectory :
+            RemoteBlobImpl::BlobImplIsDirectory::eNotDirectory;
 
         remoteBlob =
           new RemoteBlobImpl(this,
                              blobImpl,
                              name,
                              contentType,
+                             path,
                              size,
                              lastModifiedDate,
-                             blobImpl->GetDirState(),
+                             directory,
                              true /* SameProcessBlobImpl */);
       } else {
         remoteBlob = new RemoteBlobImpl(this, blobImpl, contentType, size,
@@ -3296,15 +3267,18 @@ BlobChild::GetOrCreateFromImpl(ChildManagerType* aManager,
     MOZ_ASSERT(!rv.Failed());
 
     if (aBlobImpl->IsFile()) {
-      nsString name;
+      nsAutoString name;
       aBlobImpl->GetName(name);
+
+      nsAutoString path;
+      aBlobImpl->GetPath(path);
 
       int64_t modDate = aBlobImpl->GetLastModified(rv);
       MOZ_ASSERT(!rv.Failed());
 
       blobParams =
-        FileBlobConstructorParams(name, contentType, length, modDate,
-                                  aBlobImpl->GetDirState(), blobData);
+        FileBlobConstructorParams(name, contentType, path, length, modDate,
+                                  aBlobImpl->IsDirectory(), blobData);
     } else {
       blobParams = NormalBlobConstructorParams(contentType, length, blobData);
     }
@@ -3477,21 +3451,23 @@ bool
 BlobChild::SetMysteryBlobInfo(const nsString& aName,
                               const nsString& aContentType,
                               uint64_t aLength,
-                              int64_t aLastModifiedDate,
-                              BlobDirState aDirState)
+                              int64_t aLastModifiedDate)
 {
   AssertIsOnOwningThread();
   MOZ_ASSERT(mBlobImpl);
+  MOZ_ASSERT(!mBlobImpl->IsDirectory());
   MOZ_ASSERT(mRemoteBlobImpl);
+  MOZ_ASSERT(!mRemoteBlobImpl->IsDirectory());
   MOZ_ASSERT(aLastModifiedDate != INT64_MAX);
 
   mBlobImpl->SetLazyData(aName, aContentType, aLength, aLastModifiedDate);
 
   FileBlobConstructorParams params(aName,
                                    aContentType,
+                                   EmptyString(),
                                    aLength,
                                    aLastModifiedDate,
-                                   aDirState,
+                                   mBlobImpl->IsDirectory(),
                                    void_t() /* optionalBlobData */);
   return SendResolveMystery(params);
 }
@@ -3526,15 +3502,15 @@ BlobChild::NoteDyingRemoteBlobImpl()
   // on the owning thread, so we proxy here if necessary.
   if (!IsOnOwningThread()) {
     nsCOMPtr<nsIRunnable> runnable =
-      NS_NewNonOwningRunnableMethod(this, &BlobChild::NoteDyingRemoteBlobImpl);
+      NewNonOwningRunnableMethod(this, &BlobChild::NoteDyingRemoteBlobImpl);
 
     if (mEventTarget) {
       runnable = new CancelableRunnableWrapper(runnable, mEventTarget);
 
-      MOZ_ALWAYS_TRUE(NS_SUCCEEDED(mEventTarget->Dispatch(runnable,
-                                                          NS_DISPATCH_NORMAL)));
+      MOZ_ALWAYS_SUCCEEDS(mEventTarget->Dispatch(runnable,
+                                                 NS_DISPATCH_NORMAL));
     } else {
-      MOZ_ALWAYS_TRUE(NS_SUCCEEDED(NS_DispatchToMainThread(runnable)));
+      MOZ_ALWAYS_SUCCEEDS(NS_DispatchToMainThread(runnable));
     }
 
     return;
@@ -3846,15 +3822,18 @@ BlobParent::GetOrCreateFromImpl(ParentManagerType* aManager,
       MOZ_ASSERT(!rv.Failed());
 
       if (aBlobImpl->IsFile()) {
-        nsString name;
+        nsAutoString name;
         aBlobImpl->GetName(name);
+
+        nsAutoString path;
+        aBlobImpl->GetPath(path);
 
         int64_t modDate = aBlobImpl->GetLastModified(rv);
         MOZ_ASSERT(!rv.Failed());
 
         blobParams =
-          FileBlobConstructorParams(name, contentType, length, modDate,
-                                    aBlobImpl->GetDirState(), void_t());
+          FileBlobConstructorParams(name, contentType, path, length, modDate,
+                                    aBlobImpl->IsDirectory(), void_t());
       } else {
         blobParams = NormalBlobConstructorParams(contentType, length, void_t());
       }
@@ -3862,7 +3841,7 @@ BlobParent::GetOrCreateFromImpl(ParentManagerType* aManager,
   }
 
   nsID id;
-  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(gUUIDGenerator->GenerateUUIDInPlace(&id)));
+  MOZ_ALWAYS_SUCCEEDS(gUUIDGenerator->GenerateUUIDInPlace(&id));
 
   RefPtr<IDTableEntry> idTableEntry =
     IDTableEntry::GetOrCreate(id, ActorManagerProcessID(aManager), aBlobImpl);
@@ -3918,7 +3897,7 @@ BlobParent::CreateFromParams(ParentManagerType* aManager,
       }
 
       nsID id;
-      MOZ_ALWAYS_TRUE(NS_SUCCEEDED(gUUIDGenerator->GenerateUUIDInPlace(&id)));
+      MOZ_ALWAYS_SUCCEEDS(gUUIDGenerator->GenerateUUIDInPlace(&id));
 
       RefPtr<IDTableEntry> idTableEntry =
         IDTableEntry::Create(id, ActorManagerProcessID(aManager), blobImpl);
@@ -3958,7 +3937,7 @@ BlobParent::CreateFromParams(ParentManagerType* aManager,
         return nullptr;
       }
 
-      MOZ_ALWAYS_TRUE(NS_SUCCEEDED(slice->SetMutable(false)));
+      MOZ_ALWAYS_SUCCEEDS(slice->SetMutable(false));
 
       RefPtr<IDTableEntry> idTableEntry =
         IDTableEntry::Create(params.id(),
@@ -4000,7 +3979,7 @@ BlobParent::CreateFromParams(ParentManagerType* aManager,
       MOZ_ASSERT(blobImpl);
 
       nsID id;
-      MOZ_ALWAYS_TRUE(NS_SUCCEEDED(gUUIDGenerator->GenerateUUIDInPlace(&id)));
+      MOZ_ALWAYS_SUCCEEDS(gUUIDGenerator->GenerateUUIDInPlace(&id));
 
       RefPtr<IDTableEntry> idTableEntry =
         IDTableEntry::Create(id, ActorManagerProcessID(aManager), blobImpl);
@@ -4105,15 +4084,15 @@ BlobParent::NoteDyingRemoteBlobImpl()
   // on the main thread, so we proxy here if necessary.
   if (!IsOnOwningThread()) {
     nsCOMPtr<nsIRunnable> runnable =
-      NS_NewNonOwningRunnableMethod(this, &BlobParent::NoteDyingRemoteBlobImpl);
+      NewNonOwningRunnableMethod(this, &BlobParent::NoteDyingRemoteBlobImpl);
 
     if (mEventTarget) {
       runnable = new CancelableRunnableWrapper(runnable, mEventTarget);
 
-      MOZ_ALWAYS_TRUE(NS_SUCCEEDED(mEventTarget->Dispatch(runnable,
-                                                          NS_DISPATCH_NORMAL)));
+      MOZ_ALWAYS_SUCCEEDS(mEventTarget->Dispatch(runnable,
+                                                 NS_DISPATCH_NORMAL));
     } else {
-      MOZ_ALWAYS_TRUE(NS_SUCCEEDED(NS_DispatchToMainThread(runnable)));
+      MOZ_ALWAYS_SUCCEEDS(NS_DispatchToMainThread(runnable));
     }
 
     return;
@@ -4462,17 +4441,11 @@ BlobParent::RecvGetFilePath(nsString* aFilePath)
 
   // In desktop e10s the file picker code sends this message.
 
-#if defined(MOZ_CHILD_PERMISSIONS) && !defined(MOZ_GRAPHENE)
-  if (NS_WARN_IF(!IndexedDatabaseManager::InTestingMode())) {
-    ASSERT_UNLESS_FUZZING();
-    return false;
-  }
-#endif
-
   nsString filePath;
   ErrorResult rv;
   mBlobImpl->GetMozFullPathInternal(filePath, rv);
   if (NS_WARN_IF(rv.Failed())) {
+    rv.SuppressException();
     return false;
   }
 

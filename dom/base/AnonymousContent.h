@@ -25,7 +25,8 @@ public:
   NS_DECL_CYCLE_COLLECTION_NATIVE_CLASS(AnonymousContent)
 
   explicit AnonymousContent(Element* aContentNode);
-  nsCOMPtr<Element> GetContentNode();
+  Element* GetContentNode();
+  Element* GetElementById(const nsAString& aElementId);
   void SetContentNode(Element* aContentNode);
   bool WrapObject(JSContext* aCx, JS::Handle<JSObject*> aGivenProto, JS::MutableHandle<JSObject*> aReflector);
 
@@ -58,7 +59,6 @@ public:
 
 private:
   ~AnonymousContent();
-  Element* GetElementById(const nsAString& aElementId);
   nsCOMPtr<Element> mContentNode;
 };
 

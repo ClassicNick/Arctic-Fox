@@ -18,7 +18,6 @@
 #include "mozilla/RefCountType.h"
 #include "mozilla/SheetType.h"
 #include "mozilla/UniquePtr.h"
-#include "nsAutoPtr.h"
 #include "nsExpirationTracker.h"
 #include "nsIMediaList.h"
 #include "nsIStyleRuleProcessor.h"
@@ -65,6 +64,11 @@ public:
   // aPreviousCSSRuleProcessor is the rule processor (if any) that this
   // one is replacing.
   nsCSSRuleProcessor(const sheet_array_type& aSheets,
+                     mozilla::SheetType aSheetType,
+                     mozilla::dom::Element* aScopeElement,
+                     nsCSSRuleProcessor* aPreviousCSSRuleProcessor,
+                     bool aIsShared = false);
+  nsCSSRuleProcessor(sheet_array_type&& aSheets,
                      mozilla::SheetType aSheetType,
                      mozilla::dom::Element* aScopeElement,
                      nsCSSRuleProcessor* aPreviousCSSRuleProcessor,

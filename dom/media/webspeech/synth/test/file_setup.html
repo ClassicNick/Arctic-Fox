@@ -27,6 +27,7 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=525444
 
 ok(SpeechSynthesis, "SpeechSynthesis exists in global scope");
 ok(SpeechSynthesisVoice, "SpeechSynthesisVoice exists in global scope");
+ok(SpeechSynthesisErrorEvent, "SpeechSynthesisErrorEvent exists in global scope");
 ok(SpeechSynthesisEvent, "SpeechSynthesisEvent exists in global scope");
 
 // SpeechSynthesisUtterance is the only type that has a constructor
@@ -46,6 +47,24 @@ is(ssu.lang, "he-IL", "SpeechSynthesisUtterance.lang is correct");
 is(ssu.volume, 0.5,  "SpeechSynthesisUtterance.volume is correct");
 is(ssu.rate, 2.0,  "SpeechSynthesisUtterance.rate is correct");
 is(ssu.pitch, 1.5,  "SpeechSynthesisUtterance.pitch is correct");
+
+// Assign a rate that is out of bounds
+ssu.rate = 20;
+is(ssu.rate, 10, "SpeechSynthesisUtterance.rate enforces max of 10");
+ssu.rate = 0;
+is(ssu.rate.toPrecision(1), "0.1", "SpeechSynthesisUtterance.rate enforces min of 0.1");
+
+// Assign a volume which is out of bounds
+ssu.volume = 2;
+is(ssu.volume, 1, "SpeechSynthesisUtterance.volume enforces max of 1");
+ssu.volume = -1;
+is(ssu.volume, 0, "SpeechSynthesisUtterance.volume enforces min of 0");
+
+// Assign a pitch which is out of bounds
+ssu.pitch = 2.1;
+is(ssu.pitch, 2, "SpeechSynthesisUtterance.pitch enforces max of 2");
+ssu.pitch = -1;
+is(ssu.pitch, 0, "SpeechSynthesisUtterance.pitch enforces min of 0");
 
 // Test for singleton instance hanging off of window.
 ok(speechSynthesis, "speechSynthesis exists in global scope");

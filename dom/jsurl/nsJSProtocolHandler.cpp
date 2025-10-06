@@ -5,7 +5,6 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsCOMPtr.h"
-#include "nsAutoPtr.h"
 #include "jsapi.h"
 #include "jswrapper.h"
 #include "nsCRT.h"
@@ -240,13 +239,8 @@ nsresult nsJSThunk::EvaluateScript(nsIChannel *aChannel,
     // New script entry point required, due to the "Create a script" step of
     // http://www.whatwg.org/specs/web-apps/current-work/#javascript-protocol
     nsAutoMicroTask mt;
-    AutoEntryScript entryScript(innerGlobal, "javascript: URI", true,
-                                scriptContext->GetNativeContext());
-    // We want to make sure we report any exceptions that happen before we
-    // return, since whatever happens inside our execution shouldn't affect any
-    // other scripts that might happen to be running.
-    entryScript.TakeOwnershipOfErrorReporting();
-    JSContext* cx = entryScript.cx();
+    AutoEntryScript aes(innerGlobal, "javascript: URI", true);
+    JSContext* cx = aes.cx();
     JS::Rooted<JSObject*> globalJSObject(cx, innerGlobal->GetGlobalJSObject());
     NS_ENSURE_TRUE(globalJSObject, NS_ERROR_UNEXPECTED);
 
@@ -263,19 +257,23 @@ nsresult nsJSThunk::EvaluateScript(nsIChannel *aChannel,
         return NS_ERROR_DOM_RETVAL_UNDEFINED;
     }
 
+    // Fail if someone tries to execute in a global with system principal.
+    if (nsContentUtils::IsSystemPrincipal(objectPrincipal)) {
+        return NS_ERROR_DOM_SECURITY_ERR;
+    }
+
     JS::Rooted<JS::Value> v (cx, JS::UndefinedValue());
     // Finally, we have everything needed to evaluate the expression.
     JS::CompileOptions options(cx);
     options.setFileAndLine(mURL.get(), 1)
            .setVersion(JSVERSION_DEFAULT);
     nsJSUtils::EvaluateOptions evalOptions(cx);
-    evalOptions.setCoerceToString(true);
     rv = nsJSUtils::EvaluateString(cx, NS_ConvertUTF8toUTF16(script),
                                    globalJSObject, options, evalOptions, &v);
 
-    if (NS_FAILED(rv) || !(v.isString() || v.isUndefined())) {
+    if (NS_FAILED(rv)) {
         return NS_ERROR_MALFORMED_URI;
-    } else if (v.isUndefined()) {
+    } else if (!v.isString()) {
         return NS_ERROR_DOM_RETVAL_UNDEFINED;
     } else {
         MOZ_ASSERT(rv != NS_SUCCESS_DOM_SCRIPT_EVALUATION_THREW,
@@ -417,15 +415,16 @@ nsresult nsJSChannel::Init(nsIURI *aURI)
     nsCOMPtr<nsIChannel> channel;
 
     nsCOMPtr<nsIPrincipal> nullPrincipal = nsNullPrincipal::Create();
-    NS_ENSURE_TRUE(nullPrincipal, NS_ERROR_FAILURE);
 
     // If the resultant script evaluation actually does return a value, we
     // treat it as html.
+    // The following channel is never openend, so it does not matter what
+    // securityFlags we pass; let's follow the principle of least privilege.
     rv = NS_NewInputStreamChannel(getter_AddRefs(channel),
                                   aURI,
                                   mIOThunk,
                                   nullPrincipal,
-                                  nsILoadInfo::SEC_NORMAL,
+                                  nsILoadInfo::SEC_REQUIRE_SAME_ORIGIN_DATA_IS_BLOCKED,
                                   nsIContentPolicy::TYPE_OTHER,
                                   NS_LITERAL_CSTRING("text/html"));
     if (NS_FAILED(rv)) return rv;
@@ -657,8 +656,7 @@ nsJSChannel::AsyncOpen(nsIStreamListener *aListener, nsISupports *aContext)
         method = &nsJSChannel::NotifyListener;            
     }
 
-    nsCOMPtr<nsIRunnable> ev = NS_NewRunnableMethod(this, method);
-    nsresult rv = NS_DispatchToCurrentThread(ev);
+    nsresult rv = NS_DispatchToCurrentThread(mozilla::NewRunnableMethod(this, method));
 
     if (NS_FAILED(rv)) {
         loadGroup->RemoveRequest(this, nullptr, rv);
@@ -1224,6 +1222,7 @@ nsJSProtocolHandler::NewChannel2(nsIURI* uri,
                                  nsIChannel** result)
 {
     nsresult rv;
+
     NS_ENSURE_ARG_POINTER(uri);
 
     RefPtr<nsJSChannel> channel = new nsJSChannel();
@@ -1239,7 +1238,6 @@ nsJSProtocolHandler::NewChannel2(nsIURI* uri,
     NS_ENSURE_SUCCESS(rv, rv);
 
     if (NS_SUCCEEDED(rv)) {
-        *result = channel;
         channel.forget(result);
     }
     return rv;
@@ -1265,8 +1263,8 @@ static NS_DEFINE_CID(kThisSimpleURIImplementationCID,
                      NS_THIS_SIMPLEURI_IMPLEMENTATION_CID);
 
 
-NS_IMPL_ADDREF_INHERITED(nsJSURI, nsSimpleURI)
-NS_IMPL_RELEASE_INHERITED(nsJSURI, nsSimpleURI)
+NS_IMPL_ADDREF_INHERITED(nsJSURI, mozilla::net::nsSimpleURI)
+NS_IMPL_RELEASE_INHERITED(nsJSURI, mozilla::net::nsSimpleURI)
 
 NS_INTERFACE_MAP_BEGIN(nsJSURI)
   if (aIID.Equals(kJSURICID))
@@ -1279,14 +1277,14 @@ NS_INTERFACE_MAP_BEGIN(nsJSURI)
       return NS_NOINTERFACE;
   }
   else
-NS_INTERFACE_MAP_END_INHERITING(nsSimpleURI)
+NS_INTERFACE_MAP_END_INHERITING(mozilla::net::nsSimpleURI)
 
 // nsISerializable methods:
 
 NS_IMETHODIMP
 nsJSURI::Read(nsIObjectInputStream* aStream)
 {
-    nsresult rv = nsSimpleURI::Read(aStream);
+    nsresult rv = mozilla::net::nsSimpleURI::Read(aStream);
     if (NS_FAILED(rv)) return rv;
 
     bool haveBase;
@@ -1306,7 +1304,7 @@ nsJSURI::Read(nsIObjectInputStream* aStream)
 NS_IMETHODIMP
 nsJSURI::Write(nsIObjectOutputStream* aStream)
 {
-    nsresult rv = nsSimpleURI::Write(aStream);
+    nsresult rv = mozilla::net::nsSimpleURI::Write(aStream);
     if (NS_FAILED(rv)) return rv;
 
     rv = aStream->WriteBoolean(mBaseURI != nullptr);
@@ -1329,7 +1327,7 @@ nsJSURI::Serialize(mozilla::ipc::URIParams& aParams)
     JSURIParams jsParams;
     URIParams simpleParams;
 
-    nsSimpleURI::Serialize(simpleParams);
+    mozilla::net::nsSimpleURI::Serialize(simpleParams);
 
     jsParams.simpleParams() = simpleParams;
     if (mBaseURI) {
@@ -1352,7 +1350,7 @@ nsJSURI::Deserialize(const mozilla::ipc::URIParams& aParams)
     }
 
     const JSURIParams& jsParams = aParams.get_JSURIParams();
-    nsSimpleURI::Deserialize(jsParams.simpleParams());
+    mozilla::net::nsSimpleURI::Deserialize(jsParams.simpleParams());
 
     if (jsParams.baseURI().type() != OptionalURIParams::Tvoid_t) {
         mBaseURI = DeserializeURI(jsParams.baseURI().get_URIParams());
@@ -1363,8 +1361,9 @@ nsJSURI::Deserialize(const mozilla::ipc::URIParams& aParams)
 }
 
 // nsSimpleURI methods:
-/* virtual */ nsSimpleURI*
-nsJSURI::StartClone(nsSimpleURI::RefHandlingEnum /* ignored */)
+/* virtual */ mozilla::net::nsSimpleURI*
+nsJSURI::StartClone(mozilla::net::nsSimpleURI::RefHandlingEnum refHandlingMode,
+                    const nsACString& newRef)
 {
     nsCOMPtr<nsIURI> baseClone;
     if (mBaseURI) {
@@ -1375,12 +1374,14 @@ nsJSURI::StartClone(nsSimpleURI::RefHandlingEnum /* ignored */)
       }
     }
 
-    return new nsJSURI(baseClone);
+    nsJSURI* url = new nsJSURI(baseClone);
+    SetRefOnClone(url, refHandlingMode, newRef);
+    return url;
 }
 
 /* virtual */ nsresult
 nsJSURI::EqualsInternal(nsIURI* aOther,
-                        nsSimpleURI::RefHandlingEnum aRefHandlingMode,
+                        mozilla::net::nsSimpleURI::RefHandlingEnum aRefHandlingMode,
                         bool* aResult)
 {
     NS_ENSURE_ARG_POINTER(aOther);
@@ -1395,7 +1396,7 @@ nsJSURI::EqualsInternal(nsIURI* aOther,
     }
 
     // Compare the member data that our base class knows about.
-    if (!nsSimpleURI::EqualsInternal(otherJSURI, aRefHandlingMode)) {
+    if (!mozilla::net::nsSimpleURI::EqualsInternal(otherJSURI, aRefHandlingMode)) {
         *aResult = false;
         return NS_OK;
     }

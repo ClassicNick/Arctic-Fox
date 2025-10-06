@@ -160,6 +160,55 @@ var TEST_DATA = [
   {
     key: "VK_BACK_SPACE",
     suggestions: []
+  },
+  {
+    key: "p",
+    suggestions: [
+      {label: "p"},
+      {label: "#p1"},
+      {label: "#p2"},
+      {label: "#p3"}
+    ]
+  },
+  {
+    key: "[", suggestions: []
+  },
+  {
+    key: "i", suggestions: []
+  },
+  {
+    key: "d", suggestions: []
+  },
+  {
+    key: "*", suggestions: []
+  },
+  {
+    key: "=", suggestions: []
+  },
+  {
+    key: "p", suggestions: []
+  },
+  {
+    key: "]", suggestions: []
+  },
+  {
+    key: ".",
+    suggestions: [
+      {label: "p[id*=p].c1"},
+      {label: "p[id*=p].c2"}
+    ]
+  },
+  {
+    key: "VK_BACK_SPACE",
+    suggestions: []
+  },
+  {
+    key: "#",
+    suggestions: [
+      {label: "p[id*=p]#p1"},
+      {label: "p[id*=p]#p2"},
+      {label: "p[id*=p]#p3"}
+    ]
   }
 ];
 
@@ -173,17 +222,18 @@ add_task(function* () {
   for (let { key, suggestions } of TEST_DATA) {
     info("Pressing " + key + " to get " + formatSuggestions(suggestions));
 
-    let command = once(searchBox, "command");
+    let command = once(searchBox, "input");
     EventUtils.synthesizeKey(key, {}, inspector.panelWin);
     yield command;
 
     info("Waiting for search query to complete");
     yield inspector.searchSuggestions._lastQuery;
 
-    info("Query completed. Performing checks for input '" + searchBox.value + "'");
+    info("Query completed. Performing checks for input '" +
+         searchBox.value + "'");
     let actualSuggestions = popup.getItems().reverse();
 
-    is(popup.isOpen ? actualSuggestions.length: 0, suggestions.length,
+    is(popup.isOpen ? actualSuggestions.length : 0, suggestions.length,
        "There are expected number of suggestions.");
 
     for (let i = 0; i < suggestions.length; i++) {

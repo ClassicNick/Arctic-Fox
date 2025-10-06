@@ -415,11 +415,6 @@ this.PermissionsTable =  { geolocation: {
                              privileged: ALLOW_ACTION,
                              certified: ALLOW_ACTION
                            },
-                           "mobileid": {
-                             app: DENY_ACTION,
-                             privileged: PROMPT_ACTION,
-                             certified: PROMPT_ACTION
-                           },
                            // This permission doesn't actually grant access to
                            // anything. It exists only to check the correctness
                            // of web prompt composed permissions in tests.
@@ -452,11 +447,6 @@ this.PermissionsTable =  { geolocation: {
                              access: ["read", "write"],
                              additional: ["settings-api"]
                            },
-                           "engineering-mode": {
-                             app: DENY_ACTION,
-                             privileged: DENY_ACTION,
-                             certified: ALLOW_ACTION
-                           },
                            "tv": {
                              app: DENY_ACTION,
                              privileged: DENY_ACTION,
@@ -472,11 +462,6 @@ this.PermissionsTable =  { geolocation: {
                              privileged: DENY_ACTION,
                              certified: ALLOW_ACTION
                            },
-                           "requestsync-manager": {
-                             app: DENY_ACTION,
-                             privileged: DENY_ACTION,
-                             certified: ALLOW_ACTION
-                           },
                            "secureelement-manage": {
                              app: DENY_ACTION,
                              privileged: DENY_ACTION,
@@ -487,19 +472,9 @@ this.PermissionsTable =  { geolocation: {
                              privileged: DENY_ACTION,
                              certified: ALLOW_ACTION
                            },
-                           "external-app": {
-                             app: DENY_ACTION,
-                             privileged: ALLOW_ACTION,
-                             certified: ALLOW_ACTION
-                           },
                            "system-update": {
                              app: DENY_ACTION,
                              privileged: DENY_ACTION,
-                             certified: ALLOW_ACTION
-                           },
-                           "presentation": {
-                             app: DENY_ACTION,
-                             privileged: ALLOW_ACTION,
                              certified: ALLOW_ACTION
                            },
                            "open-hidden-window": {
@@ -518,7 +493,7 @@ this.PermissionsTable =  { geolocation: {
                              privileged: DENY_ACTION,
                              certified: ALLOW_ACTION
                            },
-                           "killswitch": {
+                           "previously-certified-app": {
                              app: DENY_ACTION,
                              trusted: DENY_ACTION,
                              privileged: DENY_ACTION,

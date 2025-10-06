@@ -174,6 +174,14 @@ BodyRule::MightMapInheritedStyleData()
   return false;
 }
 
+/* virtual */ bool
+BodyRule::GetDiscretelyAnimatedCSSValue(nsCSSPropertyID aProperty,
+                                        nsCSSValue* aValue)
+{
+  MOZ_ASSERT(false, "GetDiscretelyAnimatedCSSValue is not implemented yet");
+  return false;
+}
+
 #ifdef DEBUG
 /* virtual */ void
 BodyRule::List(FILE* out, int32_t aIndent) const
@@ -410,7 +418,7 @@ HTMLBodyElement::WalkContentStyleRules(nsRuleWalker* aRuleWalker)
 {
   nsGenericHTMLElement::WalkContentStyleRules(aRuleWalker);
 
-  if (!mContentStyleRule && IsInDoc()) {
+  if (!mContentStyleRule && IsInUncomposedDoc()) {
     // XXXbz should this use OwnerDoc() or GetComposedDoc()?
     // sXBL/XBL2 issue!
     mContentStyleRule = new BodyRule(this);

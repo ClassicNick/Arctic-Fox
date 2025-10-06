@@ -279,35 +279,11 @@ class MacroAssemblerCompat : public vixl::MacroAssembler
     void storeValue(ValueOperand val, BaseIndex dest) {
         storePtr(val.valueReg(), dest);
     }
-
-    template <typename T>
-    void storeUnboxedValue(ConstantOrRegister value, MIRType valueType, const T& dest, MIRType slotType) {
-        if (valueType == MIRType_Double) {
-            storeDouble(value.reg().typedReg().fpu(), dest);
-            return;
-        }
-
-        // For known integers and booleans, we can just store the unboxed value if
-        // the slot has the same type.
-        if ((valueType == MIRType_Int32 || valueType == MIRType_Boolean) && slotType == valueType) {
-            if (value.constant()) {
-                Value val = value.value();
-                if (valueType == MIRType_Int32)
-                    store32(Imm32(val.toInt32()), dest);
-                else
-                    store32(Imm32(val.toBoolean() ? 1 : 0), dest);
-            } else {
-                store32(value.reg().typedReg().gpr(), dest);
-            }
-            return;
-        }
-
-        if (value.constant())
-            storeValue(value.value(), dest);
-        else
-            storeValue(ValueTypeFromMIRType(valueType), value.reg().typedReg().gpr(), dest);
-
+    void storeValue(const Address& src, const Address& dest, Register temp) {
+        loadPtr(src, temp);
+        storePtr(temp, dest);
     }
+
     void loadValue(Address src, Register val) {
         Ldr(ARMRegister(val, 64), MemOperand(src));
     }
@@ -365,7 +341,7 @@ class MacroAssemblerCompat : public vixl::MacroAssembler
             return;
           }
           case 4:
-            storePtr(value.valueReg(), address);
+            store32(value.valueReg(), address);
             return;
           case 1:
             store8(value.valueReg(), address);
@@ -439,30 +415,7 @@ class MacroAssemblerCompat : public vixl::MacroAssembler
         return scratch;
     }
 
-    // If source is a double, load into dest.
-    // If source is int32, convert to double and store in dest.
-    // Else, branch to failure.
-    void ensureDouble(const ValueOperand& source, FloatRegister dest, Label* failure) {
-        Label isDouble, done;
-
-        // TODO: splitTagForTest really should not leak a scratch register.
-        Register tag = splitTagForTest(source);
-        {
-            vixl::UseScratchRegisterScope temps(this);
-            temps.Exclude(ARMRegister(tag, 64));
-
-            branchTestDouble(Assembler::Equal, tag, &isDouble);
-            branchTestInt32(Assembler::NotEqual, tag, failure);
-        }
-
-        convertInt32ToDouble(source.valueReg(), dest);
-        jump(&done);
-
-        bind(&isDouble);
-        unboxDouble(source, dest);
-
-        bind(&done);
-    }
+    inline void ensureDouble(const ValueOperand& source, FloatRegister dest, Label* failure);
 
     void emitSet(Condition cond, Register dest) {
         Cset(ARMRegister(dest, 64), cond);
@@ -745,6 +698,9 @@ class MacroAssemblerCompat : public vixl::MacroAssembler
         // ARM doesn't have one either.
         armbuffer_.align(alignment);
     }
+    void nopAlign(int alignment) {
+        MOZ_CRASH("NYI");
+    }
 
     void movePtr(Register src, Register dest) {
         Mov(ARMRegister(dest, 64), ARMRegister(src, 64));
@@ -978,27 +934,25 @@ class MacroAssemblerCompat : public vixl::MacroAssembler
     void storeInt32x2(FloatRegister src, const BaseIndex& dest) { MOZ_CRASH("NYI"); }
     void storeInt32x3(FloatRegister src, const Address& dest) { MOZ_CRASH("NYI"); }
     void storeInt32x3(FloatRegister src, const BaseIndex& dest) { MOZ_CRASH("NYI"); }
-    void loadAlignedInt32x4(const Address& addr, FloatRegister dest) { MOZ_CRASH("NYI"); }
-    void loadAlignedInt32x4(const BaseIndex& addr, FloatRegister dest) { MOZ_CRASH("NYI"); }
-    void storeAlignedInt32x4(FloatRegister src, const Address& addr) { MOZ_CRASH("NYI"); }
-    void storeAlignedInt32x4(FloatRegister src, const BaseIndex& addr) { MOZ_CRASH("NYI"); }
-    void loadUnalignedInt32x4(const Address& addr, FloatRegister dest) { MOZ_CRASH("NYI"); }
-    void loadUnalignedInt32x4(const BaseIndex& addr, FloatRegister dest) { MOZ_CRASH("NYI"); }
-    void storeUnalignedInt32x4(FloatRegister dest, const Address& addr) { MOZ_CRASH("NYI"); }
-    void storeUnalignedInt32x4(FloatRegister dest, const BaseIndex& addr) { MOZ_CRASH("NYI"); }
+    void loadAlignedSimd128Int(const Address& addr, FloatRegister dest) { MOZ_CRASH("NYI"); }
+    void loadAlignedSimd128Int(const BaseIndex& addr, FloatRegister dest) { MOZ_CRASH("NYI"); }
+    void storeAlignedSimd128Int(FloatRegister src, const Address& addr) { MOZ_CRASH("NYI"); }
+    void storeAlignedSimd128Int(FloatRegister src, const BaseIndex& addr) { MOZ_CRASH("NYI"); }
+    void loadUnalignedSimd128Int(const Address& addr, FloatRegister dest) { MOZ_CRASH("NYI"); }
+    void loadUnalignedSimd128Int(const BaseIndex& addr, FloatRegister dest) { MOZ_CRASH("NYI"); }
+    void storeUnalignedSimd128Int(FloatRegister dest, const Address& addr) { MOZ_CRASH("NYI"); }
+    void storeUnalignedSimd128Int(FloatRegister dest, const BaseIndex& addr) { MOZ_CRASH("NYI"); }
 
     void loadFloat32x3(const Address& src, FloatRegister dest) { MOZ_CRASH("NYI"); }
     void loadFloat32x3(const BaseIndex& src, FloatRegister dest) { MOZ_CRASH("NYI"); }
-    void storeFloat32x3(FloatRegister src, const Address& dest) { MOZ_CRASH("NYI"); }
-    void storeFloat32x3(FloatRegister src, const BaseIndex& dest) { MOZ_CRASH("NYI"); }
-    void loadAlignedFloat32x4(const Address& addr, FloatRegister dest) { MOZ_CRASH("NYI"); }
-    void loadAlignedFloat32x4(const BaseIndex& addr, FloatRegister dest) { MOZ_CRASH("NYI"); }
-    void storeAlignedFloat32x4(FloatRegister src, const Address& addr) { MOZ_CRASH("NYI"); }
-    void storeAlignedFloat32x4(FloatRegister src, const BaseIndex& addr) { MOZ_CRASH("NYI"); }
-    void loadUnalignedFloat32x4(const Address& addr, FloatRegister dest) { MOZ_CRASH("NYI"); }
-    void loadUnalignedFloat32x4(const BaseIndex& addr, FloatRegister dest) { MOZ_CRASH("NYI"); }
-    void storeUnalignedFloat32x4(FloatRegister dest, const Address& addr) { MOZ_CRASH("NYI"); }
-    void storeUnalignedFloat32x4(FloatRegister dest, const BaseIndex& addr) { MOZ_CRASH("NYI"); }
+    void loadAlignedSimd128Float(const Address& addr, FloatRegister dest) { MOZ_CRASH("NYI"); }
+    void loadAlignedSimd128Float(const BaseIndex& addr, FloatRegister dest) { MOZ_CRASH("NYI"); }
+    void storeAlignedSimd128Float(FloatRegister src, const Address& addr) { MOZ_CRASH("NYI"); }
+    void storeAlignedSimd128Float(FloatRegister src, const BaseIndex& addr) { MOZ_CRASH("NYI"); }
+    void loadUnalignedSimd128Float(const Address& addr, FloatRegister dest) { MOZ_CRASH("NYI"); }
+    void loadUnalignedSimd128Float(const BaseIndex& addr, FloatRegister dest) { MOZ_CRASH("NYI"); }
+    void storeUnalignedSimd128Float(FloatRegister dest, const Address& addr) { MOZ_CRASH("NYI"); }
+    void storeUnalignedSimd128Float(FloatRegister dest, const BaseIndex& addr) { MOZ_CRASH("NYI"); }
 
     // StackPointer manipulation.
     template <typename T> void addToStackPtr(T t);
@@ -1049,6 +1003,12 @@ class MacroAssemblerCompat : public vixl::MacroAssembler
     }
     void cmp32(Register a, Register b) {
         Cmp(ARMRegister(a, 32), Operand(ARMRegister(b, 32)));
+    }
+    void cmp32(const Address& lhs, Imm32 rhs) {
+        cmp32(Operand(lhs.base, lhs.offset), rhs);
+    }
+    void cmp32(const Address& lhs, Register rhs) {
+        cmp32(Operand(lhs.base, lhs.offset), rhs);
     }
     void cmp32(const Operand& lhs, Imm32 rhs) {
         vixl::UseScratchRegisterScope temps(this);
@@ -1171,20 +1131,6 @@ class MacroAssemblerCompat : public vixl::MacroAssembler
             Add(scratch64, base, Operand(index, vixl::LSL, unsigned(src.scale)));
             Ldr(ARMFPRegister(dest, 32), MemOperand(scratch64, src.offset));
         }
-    }
-
-    void storeDouble(FloatRegister src, const Address& dest) {
-        Str(ARMFPRegister(src, 64), MemOperand(ARMRegister(dest.base, 64), dest.offset));
-    }
-    void storeDouble(FloatRegister src, const BaseIndex& dest) {
-        doBaseIndex(ARMFPRegister(src, 64), dest, vixl::STR_d);
-    }
-
-    void storeFloat32(FloatRegister src, Address addr) {
-        Str(ARMFPRegister(src, 32), MemOperand(ARMRegister(addr.base, 64), addr.offset));
-    }
-    void storeFloat32(FloatRegister src, BaseIndex addr) {
-        doBaseIndex(ARMFPRegister(src, 32), addr, vixl::STR_s);
     }
 
     void moveDouble(FloatRegister src, FloatRegister dest) {
@@ -1350,214 +1296,6 @@ class MacroAssemblerCompat : public vixl::MacroAssembler
     CodeOffsetJump backedgeJump(RepatchLabel* label, Label* documentation = nullptr) {
         return jumpWithPatch(label, Always, documentation);
     }
-    template <typename T>
-    CodeOffsetJump branchPtrWithPatch(Condition cond, Register reg, T ptr, RepatchLabel* label) {
-        cmpPtr(reg, ptr);
-        return jumpWithPatch(label, cond);
-    }
-    template <typename T>
-    CodeOffsetJump branchPtrWithPatch(Condition cond, Address addr, T ptr, RepatchLabel* label) {
-        // The scratch register is unused after the condition codes are set.
-        {
-            vixl::UseScratchRegisterScope temps(this);
-            const Register scratch = temps.AcquireX().asUnsized();
-            MOZ_ASSERT(scratch != addr.base);
-            loadPtr(addr, scratch);
-            cmpPtr(scratch, ptr);
-        }
-        return jumpWithPatch(label, cond);
-    }
-
-    void decBranchPtr(Condition cond, Register lhs, Imm32 imm, Label* label) {
-        Subs(ARMRegister(lhs, 64), ARMRegister(lhs, 64), Operand(imm.value));
-        B(cond, label);
-    }
-
-    void branchTestUndefined(Condition cond, Register tag, Label* label) {
-        Condition c = testUndefined(cond, tag);
-        B(label, c);
-    }
-    void branchTestInt32(Condition cond, Register tag, Label* label) {
-        Condition c = testInt32(cond, tag);
-        B(label, c);
-    }
-    void branchTestDouble(Condition cond, Register tag, Label* label) {
-        Condition c = testDouble(cond, tag);
-        B(label, c);
-    }
-    void branchTestBoolean(Condition cond, Register tag, Label* label) {
-        Condition c = testBoolean(cond, tag);
-        B(label, c);
-    }
-    void branchTestNull(Condition cond, Register tag, Label* label) {
-        Condition c = testNull(cond, tag);
-        B(label, c);
-    }
-    void branchTestString(Condition cond, Register tag, Label* label) {
-        Condition c = testString(cond, tag);
-        B(label, c);
-    }
-    void branchTestSymbol(Condition cond, Register tag, Label* label) {
-        Condition c = testSymbol(cond, tag);
-        B(label, c);
-    }
-    void branchTestObject(Condition cond, Register tag, Label* label) {
-        Condition c = testObject(cond, tag);
-        B(label, c);
-    }
-    void branchTestNumber(Condition cond, Register tag, Label* label) {
-        Condition c = testNumber(cond, tag);
-        B(label, c);
-    }
-
-    void branchTestUndefined(Condition cond, const Address& address, Label* label) {
-        Condition c = testUndefined(cond, address);
-        B(label, c);
-    }
-    void branchTestInt32(Condition cond, const Address& address, Label* label) {
-        Condition c = testInt32(cond, address);
-        B(label, c);
-    }
-    void branchTestDouble(Condition cond, const Address& address, Label* label) {
-        Condition c = testDouble(cond, address);
-        B(label, c);
-    }
-    void branchTestBoolean(Condition cond, const Address& address, Label* label) {
-        Condition c = testDouble(cond, address);
-        B(label, c);
-    }
-    void branchTestNull(Condition cond, const Address& address, Label* label) {
-        Condition c = testNull(cond, address);
-        B(label, c);
-    }
-    void branchTestString(Condition cond, const Address& address, Label* label) {
-        Condition c = testString(cond, address);
-        B(label, c);
-    }
-    void branchTestSymbol(Condition cond, const Address& address, Label* label) {
-        Condition c = testSymbol(cond, address);
-        B(label, c);
-    }
-    void branchTestObject(Condition cond, const Address& address, Label* label) {
-        Condition c = testObject(cond, address);
-        B(label, c);
-    }
-    void branchTestNumber(Condition cond, const Address& address, Label* label) {
-        Condition c = testNumber(cond, address);
-        B(label, c);
-    }
-
-    // Perform a type-test on a full Value loaded into a register.
-    // Clobbers the ScratchReg.
-    void branchTestUndefined(Condition cond, const ValueOperand& src, Label* label) {
-        Condition c = testUndefined(cond, src);
-        B(label, c);
-    }
-    void branchTestInt32(Condition cond, const ValueOperand& src, Label* label) {
-        Condition c = testInt32(cond, src);
-        B(label, c);
-    }
-    void branchTestBoolean(Condition cond, const ValueOperand& src, Label* label) {
-        Condition c = testBoolean(cond, src);
-        B(label, c);
-    }
-    void branchTestDouble(Condition cond, const ValueOperand& src, Label* label) {
-        Condition c = testDouble(cond, src);
-        B(label, c);
-    }
-    void branchTestNull(Condition cond, const ValueOperand& src, Label* label) {
-        Condition c = testNull(cond, src);
-        B(label, c);
-    }
-    void branchTestString(Condition cond, const ValueOperand& src, Label* label) {
-        Condition c = testString(cond, src);
-        B(label, c);
-    }
-    void branchTestSymbol(Condition cond, const ValueOperand& src, Label* label) {
-        Condition c = testSymbol(cond, src);
-        B(label, c);
-    }
-    void branchTestObject(Condition cond, const ValueOperand& src, Label* label) {
-        Condition c = testObject(cond, src);
-        B(label, c);
-    }
-    void branchTestNumber(Condition cond, const ValueOperand& src, Label* label) {
-        Condition c = testNumber(cond, src);
-        B(label, c);
-    }
-
-    // Perform a type-test on a Value addressed by BaseIndex.
-    // Clobbers the ScratchReg.
-    void branchTestUndefined(Condition cond, const BaseIndex& address, Label* label) {
-        Condition c = testUndefined(cond, address);
-        B(label, c);
-    }
-    void branchTestInt32(Condition cond, const BaseIndex& address, Label* label) {
-        Condition c = testInt32(cond, address);
-        B(label, c);
-    }
-    void branchTestBoolean(Condition cond, const BaseIndex& address, Label* label) {
-        Condition c = testBoolean(cond, address);
-        B(label, c);
-    }
-    void branchTestDouble(Condition cond, const BaseIndex& address, Label* label) {
-        Condition c = testDouble(cond, address);
-        B(label, c);
-    }
-    void branchTestNull(Condition cond, const BaseIndex& address, Label* label) {
-        Condition c = testNull(cond, address);
-        B(label, c);
-    }
-    void branchTestString(Condition cond, const BaseIndex& address, Label* label) {
-        Condition c = testString(cond, address);
-        B(label, c);
-    }
-    void branchTestSymbol(Condition cond, const BaseIndex& address, Label* label) {
-        Condition c = testSymbol(cond, address);
-        B(label, c);
-    }
-    void branchTestObject(Condition cond, const BaseIndex& address, Label* label) {
-        Condition c = testObject(cond, address);
-        B(label, c);
-    }
-    template <typename T>
-    void branchTestGCThing(Condition cond, const T& src, Label* label) {
-        Condition c = testGCThing(cond, src);
-        B(label, c);
-    }
-    template <typename T>
-    void branchTestPrimitive(Condition cond, const T& t, Label* label) {
-        Condition c = testPrimitive(cond, t);
-        B(label, c);
-    }
-    template <typename T, typename L>
-    void branchTestMagic(Condition cond, const T& t, L label) {
-        Condition c = testMagic(cond, t);
-        B(label, c);
-    }
-    void branchTestMagicValue(Condition cond, const ValueOperand& val, JSWhyMagic why, Label* label) {
-        MOZ_ASSERT(cond == Equal || cond == NotEqual);
-        branchTestValue(cond, val, MagicValue(why), label);
-    }
-    void branchTestValue(Condition cond, const ValueOperand& value, const Value& v, Label* label) {
-        vixl::UseScratchRegisterScope temps(this);
-        const ARMRegister scratch64 = temps.AcquireX();
-        MOZ_ASSERT(scratch64.asUnsized() != value.valueReg());
-        moveValue(v, ValueOperand(scratch64.asUnsized()));
-        Cmp(ARMRegister(value.valueReg(), 64), scratch64);
-        B(label, cond);
-    }
-    void branchTestValue(Condition cond, const Address& valaddr, const ValueOperand& value,
-                         Label* label)
-    {
-        vixl::UseScratchRegisterScope temps(this);
-        const ARMRegister scratch64 = temps.AcquireX();
-        MOZ_ASSERT(scratch64.asUnsized() != valaddr.base);
-        MOZ_ASSERT(scratch64.asUnsized() != value.valueReg());
-        loadValue(valaddr, scratch64.asUnsized());
-        Cmp(ARMRegister(value.valueReg(), 64), Operand(scratch64));
-        B(label, cond);
-    }
 
     void compareDouble(DoubleCondition cond, FloatRegister lhs, FloatRegister rhs) {
         Fcmp(ARMFPRegister(lhs, 64), ARMFPRegister(rhs, 64));
@@ -1649,20 +1387,8 @@ class MacroAssemblerCompat : public vixl::MacroAssembler
         unboxNonDouble(dest, dest);
     }
 
-    void unboxValue(const ValueOperand& src, AnyRegister dest) {
-        if (dest.isFloat()) {
-            Label notInt32, end;
-            branchTestInt32(Assembler::NotEqual, src, &notInt32);
-            convertInt32ToDouble(src.valueReg(), dest.fpu());
-            jump(&end);
-            bind(&notInt32);
-            unboxDouble(src, dest.fpu());
-            bind(&end);
-        } else {
-            unboxNonDouble(src, dest.gpr());
-        }
+    inline void unboxValue(const ValueOperand& src, AnyRegister dest);
 
-    }
     void unboxString(const ValueOperand& operand, Register dest) {
         unboxNonDouble(operand, dest);
     }
@@ -1786,7 +1512,7 @@ class MacroAssemblerCompat : public vixl::MacroAssembler
                 Mov(ScratchReg64, immediate);
                 Eor(ScratchReg64, ScratchReg2_64, ScratchReg64);
             }
-            Tst(ScratchReg64, Operand(-1ll << JSVAL_TAG_SHIFT));
+            Tst(ScratchReg64, Operand((unsigned long long)(-1ll) << JSVAL_TAG_SHIFT));
             return cond;
         }
 
@@ -2036,36 +1762,11 @@ class MacroAssemblerCompat : public vixl::MacroAssembler
         Tst(payload32, payload32);
         return truthy ? NonZero : Zero;
     }
-    void branchTestInt32Truthy(bool truthy, const ValueOperand& operand, Label* label) {
-        Condition c = testInt32Truthy(truthy, operand);
-        B(label, c);
-    }
-
-    void branchTestDoubleTruthy(bool truthy, FloatRegister reg, Label* label) {
-        Fcmp(ARMFPRegister(reg, 64), 0.0);
-        if (!truthy) {
-            // falsy values are zero, and NaN.
-            branch(Zero, label);
-            branch(Overflow, label);
-        } else {
-            // truthy values are non-zero and not nan.
-            // If it is overflow
-            Label onFalse;
-            branch(Zero, &onFalse);
-            branch(Overflow, &onFalse);
-            B(label);
-            bind(&onFalse);
-        }
-    }
 
     Condition testBooleanTruthy(bool truthy, const ValueOperand& operand) {
         ARMRegister payload32(operand.valueReg(), 32);
         Tst(payload32, payload32);
         return truthy ? NonZero : Zero;
-    }
-    void branchTestBooleanTruthy(bool truthy, const ValueOperand& operand, Label* label) {
-        Condition c = testBooleanTruthy(truthy, operand);
-        B(label, c);
     }
     Condition testStringTruthy(bool truthy, const ValueOperand& value) {
         vixl::UseScratchRegisterScope temps(this);
@@ -2079,10 +1780,6 @@ class MacroAssemblerCompat : public vixl::MacroAssembler
         Ldr(scratch32, MemOperand(scratch64, JSString::offsetOfLength()));
         Cmp(scratch32, Operand(0));
         return truthy ? Condition::NonZero : Condition::Zero;
-    }
-    void branchTestStringTruthy(bool truthy, const ValueOperand& value, Label* label) {
-        Condition c = testStringTruthy(truthy, value);
-        B(label, c);
     }
     void int32OrDouble(Register src, ARMFPRegister dest) {
         Label isInt32;
@@ -2104,7 +1801,7 @@ class MacroAssemblerCompat : public vixl::MacroAssembler
             MOZ_ASSERT(scratch64.asUnsized() != address.base);
             Ldr(scratch64, toMemOperand(address));
             int32OrDouble(scratch64.asUnsized(), ARMFPRegister(dest.fpu(), 64));
-        } else if (type == MIRType_Int32 || type == MIRType_Boolean) {
+        } else if (type == MIRType::Int32 || type == MIRType::Boolean) {
             load32(address, dest.gpr());
         } else {
             loadPtr(address, dest.gpr());
@@ -2120,7 +1817,7 @@ class MacroAssemblerCompat : public vixl::MacroAssembler
             MOZ_ASSERT(scratch64.asUnsized() != address.index);
             doBaseIndex(scratch64, address, vixl::LDR_x);
             int32OrDouble(scratch64.asUnsized(), ARMFPRegister(dest.fpu(), 64));
-        }  else if (type == MIRType_Int32 || type == MIRType_Boolean) {
+        }  else if (type == MIRType::Int32 || type == MIRType::Boolean) {
             load32(address, dest.gpr());
         } else {
             loadPtr(address, dest.gpr());
@@ -2176,25 +1873,6 @@ class MacroAssemblerCompat : public vixl::MacroAssembler
     }
 
     void handleFailureWithHandlerTail(void* handler);
-
-    // FIXME: See CodeGeneratorX64 calls to noteAsmJSGlobalAccess.
-    void patchAsmJSGlobalAccess(CodeOffset patchAt, uint8_t* code,
-                                uint8_t* globalData, unsigned globalDataOffset)
-    {
-        MOZ_CRASH("patchAsmJSGlobalAccess");
-    }
-
-    void memIntToValue(const Address& src, const Address& dest) {
-        vixl::UseScratchRegisterScope temps(this);
-        const Register scratch = temps.AcquireX().asUnsized();
-        MOZ_ASSERT(scratch != src.base);
-        MOZ_ASSERT(scratch != dest.base);
-        load32(src, scratch);
-        storeValue(JSVAL_TYPE_INT32, scratch, dest);
-    }
-
-    void branchPtrInNurseryRange(Condition cond, Register ptr, Register temp, Label* label);
-    void branchValueIsNurseryObject(Condition cond, ValueOperand value, Register temp, Label* label);
 
     void profilerEnterFrame(Register framePtr, Register scratch) {
         AbsoluteAddress activation(GetJitContext()->runtime->addressOfProfilingActivation());
@@ -2558,17 +2236,6 @@ class MacroAssemblerCompat : public vixl::MacroAssembler
         Ucvtf(ARMFPRegister(dest, 64), ARMRegister(src.reg, 64));
     }
 
-    template <typename T>
-    void branchAdd32(Condition cond, T src, Register dest, Label* label) {
-        adds32(src, dest);
-        branch(cond, label);
-    }
-
-    template <typename T>
-    void branchSub32(Condition cond, T src, Register dest, Label* label) {
-        subs32(src, dest);
-        branch(cond, label);
-    }
     void clampCheck(Register r, Label* handleNotAnInt) {
         MOZ_CRASH("clampCheck");
     }
@@ -2638,12 +2305,13 @@ class MacroAssemblerCompat : public vixl::MacroAssembler
 #endif
     }
 
-    void loadWasmActivation(Register dest) {
-        loadPtr(Address(GlobalReg, wasm::ActivationGlobalDataOffset - AsmJSGlobalRegBias), dest);
+    void loadWasmGlobalPtr(uint32_t globalDataOffset, Register dest) {
+        loadPtr(Address(GlobalReg, globalDataOffset - AsmJSGlobalRegBias), dest);
     }
-    void loadAsmJSHeapRegisterFromGlobalData() {
-        loadPtr(Address(GlobalReg, wasm::HeapGlobalDataOffset - AsmJSGlobalRegBias), HeapReg);
-        loadPtr(Address(GlobalReg, wasm::HeapGlobalDataOffset - AsmJSGlobalRegBias + 8), HeapLenReg);
+    void loadWasmPinnedRegsFromTls() {
+        loadPtr(Address(WasmTlsReg, offsetof(wasm::TlsData, memoryBase)), HeapReg);
+        loadPtr(Address(WasmTlsReg, offsetof(wasm::TlsData, globalData)), GlobalReg);
+        adds32(Imm32(AsmJSGlobalRegBias), GlobalReg);
     }
 
     // Overwrites the payload bits of a dest register containing a Value.

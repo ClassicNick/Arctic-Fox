@@ -11,8 +11,8 @@
 
 using namespace std;
 
-#include "mozilla/Scoped.h"
 #include "mozilla/SyncRunnable.h"
+#include "mozilla/UniquePtr.h"
 #include <MediaConduitInterface.h>
 #include "GmpVideoCodec.h"
 #include "nsIEventTarget.h"
@@ -92,8 +92,8 @@ public:
   {
         mSession = aSession;
         mLen = ((width * height) * 3 / 2);
-        mFrame = (uint8_t*) PR_MALLOC(mLen);
-        memset(mFrame, COLOR, mLen);
+        mFrame = mozilla::MakeUnique<uint8_t[]>(mLen);
+        memset(mFrame.get(), COLOR, mLen);
         numFrames = 121;
   }
 
@@ -101,7 +101,7 @@ public:
   {
     do
     {
-      mSession->SendVideoFrame((unsigned char*)mFrame,
+      mSession->SendVideoFrame(reinterpret_cast<unsigned char*>(mFrame.get()),
                                 mLen,
                                 width,
                                 height,
@@ -115,7 +115,7 @@ public:
 
 private:
 RefPtr<mozilla::VideoSessionConduit> mSession;
-mozilla::ScopedDeletePtr<uint8_t> mFrame;
+mozilla::UniquePtr<uint8_t[]> mFrame;
 int mLen;
 int width, height;
 int rate;
@@ -290,8 +290,8 @@ void AudioSendAndReceive::GenerateMusic(short* buf, int len)
 //Hardcoded for 16 bit samples for now
 void AudioSendAndReceive::GenerateAndReadSamples()
 {
-   mozilla::ScopedDeletePtr<int16_t> audioInput(new int16_t [PLAYOUT_SAMPLE_LENGTH]);
-   mozilla::ScopedDeletePtr<int16_t> audioOutput(new int16_t [PLAYOUT_SAMPLE_LENGTH]);
+   auto audioInput = mozilla::MakeUnique<int16_t []>(PLAYOUT_SAMPLE_LENGTH);
+   auto audioOutput = mozilla::MakeUnique<int16_t []>(PLAYOUT_SAMPLE_LENGTH);
    short* inbuf;
    int sampleLengthDecoded = 0;
    unsigned int SAMPLES = (PLAYOUT_SAMPLE_FREQUENCY * 10); //10 seconds
@@ -565,10 +565,9 @@ class TransportConduitTest : public ::testing::Test
     ASSERT_EQ(mozilla::kMediaConduitNoError, err);
 
     //configure send and recv codecs on the audio-conduit
-    //mozilla::AudioCodecConfig cinst1(124,"PCMU",8000,80,1,64000);
-    mozilla::AudioCodecConfig cinst1(124,"opus",48000,960,1,64000);
-    mozilla::AudioCodecConfig cinst2(125,"L16",16000,320,1,256000);
-
+    //mozilla::AudioCodecConfig cinst1(124, "PCMU", 8000, 80, 1, 64000, false);
+    mozilla::AudioCodecConfig cinst1(124, "opus", 48000, 960, 1, 64000, false);
+    mozilla::AudioCodecConfig cinst2(125, "L16", 16000, 320, 1, 256000, false);
 
     std::vector<mozilla::AudioCodecConfig*> rcvCodecList;
     rcvCodecList.push_back(&cinst1);
@@ -576,10 +575,14 @@ class TransportConduitTest : public ::testing::Test
 
     err = mAudioSession->ConfigureSendMediaCodec(&cinst1);
     ASSERT_EQ(mozilla::kMediaConduitNoError, err);
+    err = mAudioSession->StartTransmitting();
+    ASSERT_EQ(mozilla::kMediaConduitNoError, err);
     err = mAudioSession->ConfigureRecvMediaCodecs(rcvCodecList);
     ASSERT_EQ(mozilla::kMediaConduitNoError, err);
 
     err = mAudioSession2->ConfigureSendMediaCodec(&cinst1);
+    ASSERT_EQ(mozilla::kMediaConduitNoError, err);
+    err = mAudioSession2->StartTransmitting();
     ASSERT_EQ(mozilla::kMediaConduitNoError, err);
     err = mAudioSession2->ConfigureRecvMediaCodecs(rcvCodecList);
     ASSERT_EQ(mozilla::kMediaConduitNoError, err);
@@ -650,9 +653,13 @@ class TransportConduitTest : public ::testing::Test
         send_vp8 ? &cinst1 : &cinst2);
 
     ASSERT_EQ(mozilla::kMediaConduitNoError, err);
+    err = mVideoSession->StartTransmitting();
+    ASSERT_EQ(mozilla::kMediaConduitNoError, err);
 
     err = mVideoSession2->ConfigureSendMediaCodec(
         send_vp8 ? &cinst1 : &cinst2);
+    err = mVideoSession2->StartTransmitting();
+    ASSERT_EQ(mozilla::kMediaConduitNoError, err);
 
     ASSERT_EQ(mozilla::kMediaConduitNoError, err);
     err = mVideoSession2->ConfigureRecvMediaCodecs(rcvCodecList);
@@ -770,8 +777,12 @@ class TransportConduitTest : public ::testing::Test
 
     err = videoSession->ConfigureSendMediaCodec(&cinst1);
     EXPECT_EQ(mozilla::kMediaConduitNoError, err);
+    err = videoSession->StartTransmitting();
+    ASSERT_EQ(mozilla::kMediaConduitNoError, err);
     err = videoSession->ConfigureSendMediaCodec(&cinst1);
     EXPECT_EQ(mozilla::kMediaConduitCodecInUse, err);
+    err = videoSession->StartTransmitting();
+    ASSERT_EQ(mozilla::kMediaConduitNoError, err);
 
 
     cerr << "   *************************************************" << endl;
@@ -823,6 +834,8 @@ class TransportConduitTest : public ::testing::Test
     mozilla::VideoCodecConfig cinst1(120, "VP8", constraints);
 
     err = mVideoSession->ConfigureSendMediaCodec(&cinst1);
+    ASSERT_EQ(mozilla::kMediaConduitNoError, err);
+    err = mVideoSession->StartTransmitting();
     ASSERT_EQ(mozilla::kMediaConduitNoError, err);
 
     // Send one frame.

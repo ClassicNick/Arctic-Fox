@@ -10,7 +10,7 @@
  * liability, trademark and document use rules apply.
  */
 
-[Exposed=(Window,Worker)]
+[Exposed=(Window,Worker,System)]
 interface IDBDatabase : EventTarget {
     readonly    attribute DOMString          name;
     readonly    attribute unsigned long long version;
@@ -30,6 +30,7 @@ interface IDBDatabase : EventTarget {
     void           close ();
 
                 attribute EventHandler       onabort;
+                attribute EventHandler       onclose;
                 attribute EventHandler       onerror;
                 attribute EventHandler       onversionchange;
 };

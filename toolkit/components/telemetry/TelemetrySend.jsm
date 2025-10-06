@@ -121,15 +121,8 @@ function isDeletionPing(aPing) {
 function savePing(aPing) {
   if (isDeletionPing(aPing)) {
     return TelemetryStorage.saveDeletionPing(aPing);
-  } else {
-    return TelemetryStorage.savePendingPing(aPing);
   }
-}
-
-function tomorrow(date) {
-  let d = new Date(date);
-  d.setDate(d.getDate() + 1);
-  return d;
+  return TelemetryStorage.savePendingPing(aPing);
 }
 
 /**
@@ -681,7 +674,7 @@ var TelemetrySendImpl = {
   },
 
   observe: function(subject, topic, data) {
-    switch(topic) {
+    switch (topic) {
     case TOPIC_IDLE_DAILY:
       SendScheduler.triggerSendingPings(true);
       break;
@@ -851,9 +844,8 @@ var TelemetrySendImpl = {
         return TelemetryStorage.removeDeletionPing();
       }
       return TelemetryStorage.removePendingPing(id);
-    } else {
-      return Promise.resolve();
     }
+    return Promise.resolve();
   },
 
   _getSubmissionPath: function(ping) {
@@ -911,6 +903,7 @@ var TelemetrySendImpl = {
     request.open("POST", url, true);
     request.overrideMimeType("text/plain");
     request.setRequestHeader("Content-Type", "application/json; charset=UTF-8");
+    request.setRequestHeader("Date", Policy.now().toUTCString());
 
     this._pendingPingRequests.set(id, request);
 

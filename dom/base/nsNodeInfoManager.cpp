@@ -182,7 +182,6 @@ nsNodeInfoManager::Init(nsIDocument *aDocument)
                   "Being inited when we already have a principal?");
 
   mPrincipal = nsNullPrincipal::Create();
-  NS_ENSURE_TRUE(mPrincipal, NS_ERROR_FAILURE);
 
   if (aDocument) {
     mBindingManager = new nsBindingManager(aDocument);
@@ -265,7 +264,7 @@ nsNodeInfoManager::GetNodeInfo(const nsAString& aName, nsIAtom *aPrefix,
 {
 #ifdef DEBUG
   {
-    nsCOMPtr<nsIAtom> nameAtom = do_GetAtom(aName);
+    nsCOMPtr<nsIAtom> nameAtom = NS_Atomize(aName);
     CheckValidNodeInfo(aNodeType, nameAtom, aNamespaceID, nullptr);
   }
 #endif
@@ -275,14 +274,13 @@ nsNodeInfoManager::GetNodeInfo(const nsAString& aName, nsIAtom *aPrefix,
   void *node = PL_HashTableLookup(mNodeInfoHash, &tmpKey);
 
   if (node) {
-    NodeInfo* nodeInfo = static_cast<NodeInfo *>(node);
-
-    NS_ADDREF(*aNodeInfo = nodeInfo);
+    RefPtr<NodeInfo> nodeInfo = static_cast<NodeInfo*>(node);
+    nodeInfo.forget(aNodeInfo);
 
     return NS_OK;
   }
 
-  nsCOMPtr<nsIAtom> nameAtom = do_GetAtom(aName);
+  nsCOMPtr<nsIAtom> nameAtom = NS_Atomize(aName);
   NS_ENSURE_TRUE(nameAtom, NS_ERROR_OUT_OF_MEMORY);
 
   RefPtr<NodeInfo> newNodeInfo =

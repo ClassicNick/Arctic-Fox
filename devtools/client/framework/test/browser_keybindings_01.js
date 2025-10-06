@@ -1,5 +1,7 @@
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
+/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 /* Any copyright is dedicated to the Public Domain.
-   http://creativecommons.org/publicdomain/zero/1.0/ */
+ * http://creativecommons.org/publicdomain/zero/1.0/ */
 
 // Tests that the keybindings for opening and closing the inspector work as expected
 // Can probably make this a shared test that tests all of the tools global keybindings
@@ -26,7 +28,7 @@ function test()
                      "<h1>Keybindings!</h1></body></html>";
 
   function buildDevtoolsKeysetMap(keyset) {
-    [].forEach.call(keyset.querySelectorAll("key"), function(key) {
+    [].forEach.call(keyset.querySelectorAll("key"), function (key) {
 
       if (!key.getAttribute("key")) {
         return;
@@ -44,10 +46,10 @@ function test()
           metaKey: modifiers.match("meta"),
           accelKey: modifiers.match("accel")
         },
-        synthesizeKey: function() {
+        synthesizeKey: function () {
           EventUtils.synthesizeKey(this.key, this.modifierOpt);
         }
-      }
+      };
     });
   }
 
@@ -66,7 +68,7 @@ function test()
 
   function inspectorShouldBeOpenAndHighlighting(aInspector, aToolbox)
   {
-    is (aToolbox.currentToolId, "inspector", "Correct tool has been loaded");
+    is(aToolbox.currentToolId, "inspector", "Correct tool has been loaded");
 
     aToolbox.once("picker-started", () => {
       ok(true, "picker-started event received, highlighter started");
@@ -84,29 +86,29 @@ function test()
 
   function webconsoleShouldBeSelected(aToolbox)
   {
-      is (aToolbox.currentToolId, "webconsole", "webconsole should be selected.");
+    is(aToolbox.currentToolId, "webconsole", "webconsole should be selected.");
 
-      gDevTools.once("select-tool-command", () => {
-        jsdebuggerShouldBeSelected(aToolbox);
-      });
-      keysetMap.jsdebugger.synthesizeKey();
+    gDevTools.once("select-tool-command", () => {
+      jsdebuggerShouldBeSelected(aToolbox);
+    });
+    keysetMap.jsdebugger.synthesizeKey();
   }
 
   function jsdebuggerShouldBeSelected(aToolbox)
   {
-      is (aToolbox.currentToolId, "jsdebugger", "jsdebugger should be selected.");
+    is(aToolbox.currentToolId, "jsdebugger", "jsdebugger should be selected.");
 
-      gDevTools.once("select-tool-command", () => {
-        netmonitorShouldBeSelected(aToolbox);
-      });
+    gDevTools.once("select-tool-command", () => {
+      netmonitorShouldBeSelected(aToolbox);
+    });
 
-      keysetMap.netmonitor.synthesizeKey();
+    keysetMap.netmonitor.synthesizeKey();
   }
 
   function netmonitorShouldBeSelected(aToolbox, panel)
   {
-      is (aToolbox.currentToolId, "netmonitor", "netmonitor should be selected.");
-      finishUp();
+    is(aToolbox.currentToolId, "netmonitor", "netmonitor should be selected.");
+    finishUp();
   }
 
   function finishUp() {

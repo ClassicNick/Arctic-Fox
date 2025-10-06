@@ -15,6 +15,23 @@
 namespace js {
 namespace jit {
 
+static inline bool
+IsConstant(const LInt64Allocation& a)
+{
+#if JS_BITS_PER_WORD == 32
+    if (a.high().isConstantValue())
+        return true;
+    if (a.high().isConstantIndex())
+        return true;
+#else
+    if (a.value().isConstantValue())
+        return true;
+    if (a.value().isConstantIndex())
+        return true;
+#endif
+    return false;
+}
+
 static inline int32_t
 ToInt32(const LAllocation* a)
 {
@@ -22,6 +39,33 @@ ToInt32(const LAllocation* a)
         return a->toConstant()->toInt32();
     if (a->isConstantIndex())
         return a->toConstantIndex()->index();
+    MOZ_CRASH("this is not a constant!");
+}
+
+static inline int64_t
+ToInt64(const LAllocation* a)
+{
+    if (a->isConstantValue())
+        return a->toConstant()->toInt64();
+    if (a->isConstantIndex())
+        return a->toConstantIndex()->index();
+    MOZ_CRASH("this is not a constant!");
+}
+
+static inline int64_t
+ToInt64(const LInt64Allocation& a)
+{
+#if JS_BITS_PER_WORD == 32
+    if (a.high().isConstantValue())
+        return a.high().toConstant()->toInt64();
+    if (a.high().isConstantIndex())
+        return a.high().toConstantIndex()->index();
+#else
+    if (a.value().isConstantValue())
+        return a.value().toConstant()->toInt64();
+    if (a.value().isConstantIndex())
+        return a.value().toConstantIndex()->index();
+#endif
     MOZ_CRASH("this is not a constant!");
 }
 
@@ -54,11 +98,21 @@ static inline Register64
 ToOutRegister64(LInstruction* ins)
 {
 #if JS_BITS_PER_WORD == 32
-    Register loReg = ToRegister(ins->getDef(0));
-    Register hiReg = ToRegister(ins->getDef(1));
+    Register loReg = ToRegister(ins->getDef(INT64LOW_INDEX));
+    Register hiReg = ToRegister(ins->getDef(INT64HIGH_INDEX));
     return Register64(hiReg, loReg);
 #else
     return Register64(ToRegister(ins->getDef(0)));
+#endif
+}
+
+static inline Register64
+ToRegister64(const LInt64Allocation& a)
+{
+#if JS_BITS_PER_WORD == 32
+    return Register64(ToRegister(a.high()), ToRegister(a.low()));
+#else
+    return Register64(ToRegister(a.value()));
 #endif
 }
 
@@ -130,12 +184,12 @@ ToAnyRegister(const LDefinition* def)
     return ToAnyRegister(def->output());
 }
 
-static inline Int32Key
-ToInt32Key(const LAllocation* a)
+static inline RegisterOrInt32Constant
+ToRegisterOrInt32Constant(const LAllocation* a)
 {
     if (a->isConstant())
-        return Int32Key(ToInt32(a));
-    return Int32Key(ToRegister(a));
+        return RegisterOrInt32Constant(ToInt32(a));
+    return RegisterOrInt32Constant(ToRegister(a));
 }
 
 static inline ValueOperand
@@ -234,26 +288,17 @@ CodeGeneratorShared::ToStackOffset(const LAllocation* a) const
     return ToStackOffset(*a);
 }
 
-Operand
-CodeGeneratorShared::ToOperand(const LAllocation& a)
+Address
+CodeGeneratorShared::ToAddress(const LAllocation& a)
 {
-    if (a.isGeneralReg())
-        return Operand(a.toGeneralReg()->reg());
-    if (a.isFloatReg())
-        return Operand(a.toFloatReg()->reg());
-    return Operand(masm.getStackPointer(), ToStackOffset(&a));
+    MOZ_ASSERT(a.isMemory());
+    return Address(masm.getStackPointer(), ToStackOffset(&a));
 }
 
-Operand
-CodeGeneratorShared::ToOperand(const LAllocation* a)
+Address
+CodeGeneratorShared::ToAddress(const LAllocation* a)
 {
-    return ToOperand(*a);
-}
-
-Operand
-CodeGeneratorShared::ToOperand(const LDefinition* def)
-{
-    return ToOperand(def->output());
+    return ToAddress(*a);
 }
 
 void
@@ -302,41 +347,59 @@ CodeGeneratorShared::restoreLiveVolatile(LInstruction* ins)
 
 void
 CodeGeneratorShared::verifyHeapAccessDisassembly(uint32_t begin, uint32_t end, bool isLoad,
-                                                 Scalar::Type type, unsigned numElems,
+                                                 bool isInt64, Scalar::Type type, unsigned numElems,
                                                  const Operand& mem, LAllocation alloc)
 {
 #ifdef DEBUG
     using namespace Disassembler;
 
-    OtherOperand op;
     Disassembler::HeapAccess::Kind kind = isLoad ? HeapAccess::Load : HeapAccess::Store;
     switch (type) {
       case Scalar::Int8:
       case Scalar::Int16:
         if (kind == HeapAccess::Load)
-            kind = HeapAccess::LoadSext32;
-        MOZ_FALLTHROUGH;
+            kind = isInt64 ? HeapAccess::LoadSext64 : HeapAccess::LoadSext32;
+        break;
+      case Scalar::Int32:
+        if (isInt64 && kind == HeapAccess::Load)
+            kind = HeapAccess::LoadSext64;
+        break;
+      default:
+        break;
+    }
+
+    OtherOperand op;
+    switch (type) {
+      case Scalar::Int8:
       case Scalar::Uint8:
+      case Scalar::Int16:
       case Scalar::Uint16:
       case Scalar::Int32:
       case Scalar::Uint32:
         if (!alloc.isConstant()) {
             op = OtherOperand(ToRegister(alloc).encoding());
         } else {
-            int32_t i = ToInt32(&alloc);
+            // x86 doesn't allow encoding an imm64 to memory move; the value
+            // is wrapped anyways.
+            int32_t i = isInt64 ? int32_t(ToInt64(&alloc)) : ToInt32(&alloc);
 
             // Sign-extend the immediate value out to 32 bits. We do this even
             // for unsigned element types so that we match what the disassembly
             // code does, as it doesn't know about signedness of stores.
             unsigned shift = 32 - TypedArrayElemSize(type) * 8;
             i = i << shift >> shift;
-
             op = OtherOperand(i);
         }
+        break;
+      case Scalar::Int64:
+        // Can't encode an imm64-to-memory move.
+        op = OtherOperand(ToRegister(alloc).encoding());
         break;
       case Scalar::Float32:
       case Scalar::Float64:
       case Scalar::Float32x4:
+      case Scalar::Int8x16:
+      case Scalar::Int16x8:
       case Scalar::Int32x4:
         op = OtherOperand(ToFloatRegister(alloc).encoding());
         break;
@@ -351,6 +414,31 @@ CodeGeneratorShared::verifyHeapAccessDisassembly(uint32_t begin, uint32_t end, b
     masm.verifyHeapAccessDisassembly(begin, end,
                                      HeapAccess(kind, size, ComplexAddress(mem), op));
 #endif
+}
+
+void
+CodeGeneratorShared::verifyLoadDisassembly(uint32_t begin, uint32_t end, bool isInt64,
+                                           Scalar::Type type, unsigned numElems, const Operand& mem,
+                                           LAllocation alloc)
+{
+    verifyHeapAccessDisassembly(begin, end, true, isInt64, type, numElems, mem, alloc);
+}
+
+void
+CodeGeneratorShared::verifyStoreDisassembly(uint32_t begin, uint32_t end, bool isInt64,
+                                            Scalar::Type type, unsigned numElems,
+                                            const Operand& mem, LAllocation alloc)
+{
+    verifyHeapAccessDisassembly(begin, end, false, isInt64, type, numElems, mem, alloc);
+}
+
+inline bool
+CodeGeneratorShared::isGlobalObject(JSObject* object)
+{
+    // Calling object->is<GlobalObject>() is racy because this relies on
+    // checking the group and this can be changed while we are compiling off the
+    // main thread.
+    return object == gen->compartment->maybeGlobal();
 }
 
 } // namespace jit

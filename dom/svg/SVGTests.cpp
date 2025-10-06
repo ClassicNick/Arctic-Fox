@@ -15,8 +15,6 @@
 namespace mozilla {
 namespace dom {
 
-NS_IMPL_ISUPPORTS0(SVGTests)
-
 nsIAtom** SVGTests::sStringListNames[3] =
 {
   &nsGkAtoms::requiredFeatures,
@@ -59,7 +57,7 @@ SVGTests::SystemLanguage()
 bool
 SVGTests::HasExtension(const nsAString& aExtension)
 {
-  return nsSVGFeatures::HasExtension(aExtension);
+  return nsSVGFeatures::HasExtension(aExtension, IsInChromeDoc());
 }
 
 bool
@@ -141,7 +139,7 @@ SVGTests::PassesConditionalProcessingTests(const nsString *aAcceptLangs) const
       return false;
     }
     for (uint32_t i = 0; i < mStringListAttributes[EXTENSIONS].Length(); i++) {
-      if (!nsSVGFeatures::HasExtension(mStringListAttributes[EXTENSIONS][i])) {
+      if (!nsSVGFeatures::HasExtension(mStringListAttributes[EXTENSIONS][i], IsInChromeDoc())) {
         return false;
       }
     }

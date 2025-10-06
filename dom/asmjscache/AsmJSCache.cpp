@@ -12,6 +12,7 @@
 #include "jsfriendapi.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/CondVar.h"
+#include "mozilla/CycleCollectedJSRuntime.h"
 #include "mozilla/dom/asmjscache/PAsmJSCacheEntryChild.h"
 #include "mozilla/dom/asmjscache/PAsmJSCacheEntryParent.h"
 #include "mozilla/dom/ContentChild.h"
@@ -25,7 +26,8 @@
 #include "mozilla/ipc/BackgroundParent.h"
 #include "mozilla/ipc/BackgroundUtils.h"
 #include "mozilla/ipc/PBackgroundChild.h"
-#include "mozilla/unused.h"
+#include "mozilla/Unused.h"
+#include "nsAutoPtr.h"
 #include "nsIAtom.h"
 #include "nsIFile.h"
 #include "nsIIPCBackgroundChildCreateCallback.h"
@@ -34,7 +36,6 @@
 #include "nsIRunnable.h"
 #include "nsISimpleEnumerator.h"
 #include "nsIThread.h"
-#include "nsIXULAppInfo.h"
 #include "nsJSPrincipals.h"
 #include "nsThreadUtils.h"
 #include "nsXULAppAPI.h"
@@ -238,7 +239,7 @@ EvictEntries(nsIFile* aDirectory, const nsACString& aGroup,
 // FileDescriptorHolder owns a file descriptor and its memory mapping.
 // FileDescriptorHolder is derived by two runnable classes (that is,
 // (Parent|Child)Runnable.
-class FileDescriptorHolder : public nsRunnable
+class FileDescriptorHolder : public Runnable
 {
 public:
   FileDescriptorHolder()
@@ -464,8 +465,7 @@ private:
                mState != eFinished);
 
     mState = eFailing;
-    MOZ_ALWAYS_TRUE(NS_SUCCEEDED(mOwningThread->Dispatch(this,
-                                                         NS_DISPATCH_NORMAL)));
+    MOZ_ALWAYS_SUCCEEDS(mOwningThread->Dispatch(this, NS_DISPATCH_NORMAL));
   }
 
   void
@@ -590,6 +590,7 @@ private:
 
   // State initialized during eInitial:
   quota::PersistenceType mPersistence;
+  nsCString mSuffix;
   nsCString mGroup;
   nsCString mOrigin;
   RefPtr<DirectoryLock> mDirectoryLock;
@@ -686,8 +687,8 @@ ParentRunnable::InitOnMainThread()
     return rv;
   }
 
-  rv = QuotaManager::GetInfoFromPrincipal(principal, &mGroup, &mOrigin,
-                                          &mIsApp);
+  rv = QuotaManager::GetInfoFromPrincipal(principal, &mSuffix, &mGroup,
+                                          &mOrigin, &mIsApp);
   NS_ENSURE_SUCCESS(rv, rv);
 
   InitPersistenceType();
@@ -728,8 +729,8 @@ ParentRunnable::ReadMetadata()
   MOZ_ASSERT(qm, "We are on the QuotaManager's IO thread");
 
   nsresult rv =
-    qm->EnsureOriginIsInitialized(mPersistence, mGroup, mOrigin, mIsApp,
-                                  getter_AddRefs(mDirectory));
+    qm->EnsureOriginIsInitialized(mPersistence, mSuffix, mGroup, mOrigin,
+                                  mIsApp, getter_AddRefs(mDirectory));
   if (NS_WARN_IF(NS_FAILED(rv))) {
     mResult = JS::AsmJSCache_StorageInitFailure;
     return rv;
@@ -916,8 +917,7 @@ ParentRunnable::Run()
       }
 
       mState = eWaitingToFinishInit;
-      MOZ_ALWAYS_TRUE(NS_SUCCEEDED(
-        mOwningThread->Dispatch(this, NS_DISPATCH_NORMAL)));
+      MOZ_ALWAYS_SUCCEEDS(mOwningThread->Dispatch(this, NS_DISPATCH_NORMAL));
 
       return NS_OK;
     }
@@ -959,15 +959,13 @@ ParentRunnable::Run()
       rv = ReadMetadata();
       if (NS_FAILED(rv)) {
         mState = eFailedToReadMetadata;
-        MOZ_ALWAYS_TRUE(NS_SUCCEEDED(
-          mOwningThread->Dispatch(this, NS_DISPATCH_NORMAL)));
+        MOZ_ALWAYS_SUCCEEDS(mOwningThread->Dispatch(this, NS_DISPATCH_NORMAL));
         return NS_OK;
       }
 
       if (mOpenMode == eOpenForRead) {
         mState = eSendingMetadataForRead;
-        MOZ_ALWAYS_TRUE(NS_SUCCEEDED(
-          mOwningThread->Dispatch(this, NS_DISPATCH_NORMAL)));
+        MOZ_ALWAYS_SUCCEEDS(mOwningThread->Dispatch(this, NS_DISPATCH_NORMAL));
 
         return NS_OK;
       }
@@ -979,8 +977,7 @@ ParentRunnable::Run()
       }
 
       mState = eSendingCacheFile;
-      MOZ_ALWAYS_TRUE(NS_SUCCEEDED(
-        mOwningThread->Dispatch(this, NS_DISPATCH_NORMAL)));
+      MOZ_ALWAYS_SUCCEEDS(mOwningThread->Dispatch(this, NS_DISPATCH_NORMAL));
       return NS_OK;
     }
 
@@ -1022,8 +1019,7 @@ ParentRunnable::Run()
       }
 
       mState = eSendingCacheFile;
-      MOZ_ALWAYS_TRUE(NS_SUCCEEDED(
-        mOwningThread->Dispatch(this, NS_DISPATCH_NORMAL)));
+      MOZ_ALWAYS_SUCCEEDS(mOwningThread->Dispatch(this, NS_DISPATCH_NORMAL));
       return NS_OK;
     }
 
@@ -1314,7 +1310,8 @@ private:
 
     mFileSize = aFileSize;
 
-    mFileDesc = PR_ImportFile(PROsfd(aFileDesc.PlatformHandle()));
+    auto rawFD = aFileDesc.ClonePlatformHandle();
+    mFileDesc = PR_ImportFile(PROsfd(rawFD.release()));
     if (!mFileDesc) {
       return false;
     }
@@ -1414,21 +1411,14 @@ ChildRunnable::Run()
     case eInitial: {
       MOZ_ASSERT(NS_IsMainThread());
 
-      bool nullPrincipal;
-      nsresult rv = mPrincipal->GetIsNullPrincipal(&nullPrincipal);
-      if (NS_WARN_IF(NS_FAILED(rv))) {
-        Fail(JS::AsmJSCache_InternalError);
-        return NS_OK;
-      }
-
-      if (nullPrincipal) {
+      if (mPrincipal->GetIsNullPrincipal()) {
         NS_WARNING("AsmsJSCache not supported on null principal.");
         Fail(JS::AsmJSCache_InternalError);
         return NS_OK;
       }
 
       nsAutoPtr<PrincipalInfo> principalInfo(new PrincipalInfo());
-      rv = PrincipalToPrincipalInfo(mPrincipal, principalInfo);
+      nsresult rv = PrincipalToPrincipalInfo(mPrincipal, principalInfo);
       if (NS_WARN_IF(NS_FAILED(rv))) {
         Fail(JS::AsmJSCache_InternalError);
         return NS_OK;
@@ -1709,29 +1699,6 @@ CloseEntryForWrite(size_t aSize,
   }
 }
 
-bool
-GetBuildId(JS::BuildIdCharVector* aBuildID)
-{
-  nsCOMPtr<nsIXULAppInfo> info = do_GetService("@mozilla.org/xre/app-info;1");
-  if (!info) {
-    return false;
-  }
-
-  nsCString buildID;
-  nsresult rv = info->GetPlatformBuildID(buildID);
-  NS_ENSURE_SUCCESS(rv, false);
-
-  if (!aBuildID->resize(buildID.Length())) {
-    return false;
-  }
-
-  for (size_t i = 0; i < buildID.Length(); i++) {
-    (*aBuildID)[i] = buildID[i];
-  }
-
-  return true;
-}
-
 class Client : public quota::Client
 {
   ~Client() {}
@@ -1877,7 +1844,7 @@ ParamTraits<Metadata>::Write(Message* aMsg, const paramType& aParam)
 }
 
 bool
-ParamTraits<Metadata>::Read(const Message* aMsg, void** aIter,
+ParamTraits<Metadata>::Read(const Message* aMsg, PickleIterator* aIter,
                             paramType* aResult)
 {
   for (unsigned i = 0; i < Metadata::kNumEntries; i++) {
@@ -1916,7 +1883,7 @@ ParamTraits<WriteParams>::Write(Message* aMsg, const paramType& aParam)
 }
 
 bool
-ParamTraits<WriteParams>::Read(const Message* aMsg, void** aIter,
+ParamTraits<WriteParams>::Read(const Message* aMsg, PickleIterator* aIter,
                                paramType* aResult)
 {
   return ReadParam(aMsg, aIter, &aResult->mSize) &&

@@ -15,6 +15,10 @@
 #include <sstream>
 #include <vector>
 
+#ifdef MOZ_WIDGET_COCOA
+#include <ApplicationServices/ApplicationServices.h>
+#endif
+
 namespace mozilla {
 namespace gfx {
 
@@ -74,6 +78,16 @@ public:
   virtual void Fill(const Path *aPath,
                     const Pattern &aPattern,
                     const DrawOptions &aOptions = DrawOptions()) override;
+#ifdef MOZ_WIDGET_COCOA
+  CGContextRef BorrowCGContext(const DrawOptions &aOptions);
+  void ReturnCGContext(CGContextRef);
+  bool FillGlyphsWithCG(ScaledFont *aFont,
+                        const GlyphBuffer &aBuffer,
+                        const Pattern &aPattern,
+                        const DrawOptions &aOptions = DrawOptions(),
+                        const GlyphRenderingOptions *aRenderingOptions = nullptr);
+#endif
+
   virtual void FillGlyphs(ScaledFont *aFont,
                           const GlyphBuffer &aBuffer,
                           const Pattern &aPattern,
@@ -86,6 +100,8 @@ public:
                            SourceSurface *aMask,
                            Point aOffset,
                            const DrawOptions &aOptions = DrawOptions()) override;
+  virtual bool Draw3DTransformedSurface(SourceSurface* aSurface,
+                                        const Matrix4x4& aMatrix) override;
   virtual void PushClip(const Path *aPath) override;
   virtual void PushClipRect(const Rect& aRect) override;
   virtual void PopClip() override;
@@ -100,6 +116,7 @@ public:
                                                             int32_t aStride,
                                                             SurfaceFormat aFormat) const override;
   virtual already_AddRefed<SourceSurface> OptimizeSourceSurface(SourceSurface *aSurface) const override;
+  virtual already_AddRefed<SourceSurface> OptimizeSourceSurfaceForUnknownAlpha(SourceSurface *aSurface) const override;
   virtual already_AddRefed<SourceSurface>
     CreateSourceSurfaceFromNativeSurface(const NativeSurface &aSurface) const override;
   virtual already_AddRefed<DrawTarget>
@@ -109,14 +126,24 @@ public:
   virtual already_AddRefed<FilterNode> CreateFilter(FilterType aType) override;
   virtual void SetTransform(const Matrix &aTransform) override;
   virtual void *GetNativeSurface(NativeSurfaceType aType) override;
+  virtual void DetachAllSnapshots() override { MarkChanged(); }
 
   bool Init(const IntSize &aSize, SurfaceFormat aFormat);
-  void Init(unsigned char* aData, const IntSize &aSize, int32_t aStride, SurfaceFormat aFormat);
+  void Init(unsigned char* aData, const IntSize &aSize, int32_t aStride, SurfaceFormat aFormat, bool aUninitialized = false);
 
 #ifdef USE_SKIA_GPU
   bool InitWithGrContext(GrContext* aGrContext,
                          const IntSize &aSize,
-                         SurfaceFormat aFormat) override;
+                         SurfaceFormat aFormat,
+                         bool aCached);
+  virtual bool
+    InitWithGrContext(GrContext* aGrContext,
+                      const IntSize &aSize,
+                      SurfaceFormat aFormat) override {
+    return InitWithGrContext(aGrContext, aSize, aFormat, false);
+  }
+
+  already_AddRefed<SourceSurface> OptimizeGPUSourceSurface(SourceSurface *aSurface) const;
 #endif
 
   // Skia assumes that texture sizes fit in 16-bit signed integers.
@@ -168,6 +195,13 @@ private:
   IntSize mSize;
   RefPtrSkia<SkCanvas> mCanvas;
   SourceSurfaceSkia* mSnapshot;
+
+#ifdef MOZ_WIDGET_COCOA
+  CGContextRef mCG;
+  CGColorSpaceRef mColorSpace;
+  uint8_t* mCanvasData;
+  IntSize mCGSize;
+#endif
 };
 
 } // namespace gfx

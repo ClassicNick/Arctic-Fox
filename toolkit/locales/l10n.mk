@@ -52,7 +52,7 @@ ZIP_OUT ?= $(ABS_DIST)/$(PACKAGE)
 ACDEFINES += \
 	-DAB_CD=$(AB_CD) \
 	-DMOZ_LANGPACK_EID=$(MOZ_LANGPACK_EID) \
-	-DMOZ_APP_ID=$(MOZ_APP_ID) \
+	-DMOZ_APP_ID='$(MOZ_APP_ID)' \
 	-DMOZ_APP_VERSION=$(MOZ_APP_VERSION) \
 	-DMOZ_APP_MAXVERSION=$(MOZ_APP_MAXVERSION) \
 	-DLOCALE_SRCDIR=$(abspath $(LOCALE_SRCDIR)) \
@@ -109,7 +109,6 @@ endif
 endif
 endif
 repackage-zip: UNPACKAGE='$(ZIP_IN)'
-repackage-zip: ALREADY_SZIPPED=1
 repackage-zip:  libs-$(AB_CD)
 # call a hook for apps to put their uninstall helper.exe into the package
 	$(UNINSTALLER_PACKAGE_HOOK)

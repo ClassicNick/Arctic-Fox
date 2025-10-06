@@ -966,7 +966,7 @@ static void ReopenWav(rtc_WavWriter** wav_file,
   AECDebugFilenameBase(path, sizeof(path));
   filename = path + strlen(path);
   if (filename > path) {
-#ifdef XP_WIN
+#ifdef WEBRTC_WIN
     if (*(filename-1) != '\\') {
       *filename++ = '\\';
     }
@@ -1491,6 +1491,9 @@ AecCore* WebRtcAec_CreateAec() {
   if (!aec) {
     return NULL;
   }
+
+  // set the mem with 0 in order to prevent garbage data
+  memset(aec, 0, sizeof(*aec));
 
   aec->nearFrBuf = WebRtc_CreateBuffer(FRAME_LEN + PART_LEN, sizeof(float));
   if (!aec->nearFrBuf) {

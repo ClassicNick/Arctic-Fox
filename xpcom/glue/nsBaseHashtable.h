@@ -127,10 +127,10 @@ public:
     }
   }
 
-  MOZ_WARN_UNUSED_RESULT bool Put(KeyType aKey, const UserDataType& aData,
-                                  const fallible_t&)
+  MOZ_MUST_USE bool Put(KeyType aKey, const UserDataType& aData,
+                        const fallible_t&)
   {
-    EntryType* ent = this->PutEntry(aKey);
+    EntryType* ent = this->PutEntry(aKey, mozilla::fallible);
     if (!ent) {
       return false;
     }

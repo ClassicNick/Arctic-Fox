@@ -6,7 +6,7 @@
 
 #include "WAVDecoder.h"
 #include "AudioSampleFormat.h"
-#include "nsAutoPtr.h"
+#include "mozilla/SyncRunnable.h"
 
 using mp4_demuxer::ByteReader;
 
@@ -45,13 +45,9 @@ DecodeULawSample(uint8_t aValue)
   return sign * sample;
 }
 
-WaveDataDecoder::WaveDataDecoder(const AudioInfo& aConfig,
-                                 FlushableTaskQueue* aTaskQueue,
-                                 MediaDataDecoderCallback* aCallback)
-  : mInfo(aConfig)
-  , mTaskQueue(aTaskQueue)
-  , mCallback(aCallback)
-  , mFrames(0)
+WaveDataDecoder::WaveDataDecoder(const CreateDecoderParams& aParams)
+  : mInfo(aParams.AudioConfig())
+  , mCallback(aParams.mCallback)
 {
 }
 
@@ -70,23 +66,10 @@ WaveDataDecoder::Init()
 nsresult
 WaveDataDecoder::Input(MediaRawData* aSample)
 {
-  nsCOMPtr<nsIRunnable> runnable(
-    NS_NewRunnableMethodWithArg<RefPtr<MediaRawData>>(
-      this, &WaveDataDecoder::Decode,
-      RefPtr<MediaRawData>(aSample)));
-  mTaskQueue->Dispatch(runnable.forget());
-
-  return NS_OK;
-}
-
-void
-WaveDataDecoder::Decode(MediaRawData* aSample)
-{
   if (!DoDecode(aSample)) {
-    mCallback->Error();
-  } else if (mTaskQueue->IsEmpty()) {
-    mCallback->InputExhausted();
+    mCallback->Error(MediaDataDecoderError::DECODE_ERROR);
   }
+  return NS_OK;
 }
 
 bool
@@ -99,7 +82,10 @@ WaveDataDecoder::DoDecode(MediaRawData* aSample)
 
   int32_t frames = aLength * 8 / mInfo.mBitDepth / mInfo.mChannels;
 
-  auto buffer = MakeUnique<AudioDataValue[]>(frames * mInfo.mChannels);
+  AlignedAudioBuffer buffer(frames * mInfo.mChannels);
+  if (!buffer) {
+    return false;
+  }
   for (int i = 0; i < frames; ++i) {
     for (unsigned int j = 0; j < mInfo.mChannels; ++j) {
       if (mInfo.mProfile == 6) {                              //ALAW Data
@@ -141,31 +127,20 @@ WaveDataDecoder::DoDecode(MediaRawData* aSample)
                                   Move(buffer),
                                   mInfo.mChannels,
                                   mInfo.mRate));
-  mFrames += frames;
 
   return true;
-}
-
-void
-WaveDataDecoder::DoDrain()
-{
-  mCallback->DrainComplete();
 }
 
 nsresult
 WaveDataDecoder::Drain()
 {
-  nsCOMPtr<nsIRunnable> runnable(
-    NS_NewRunnableMethod(this, &WaveDataDecoder::DoDrain));
-  mTaskQueue->Dispatch(runnable.forget());
+  mCallback->DrainComplete();
   return NS_OK;
 }
 
 nsresult
 WaveDataDecoder::Flush()
 {
-  mTaskQueue->Flush();
-  mFrames = 0;
   return NS_OK;
 }
 

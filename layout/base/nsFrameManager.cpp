@@ -57,8 +57,7 @@ struct PlaceholderMapEntry : public PLDHashEntryHdr {
 };
 
 static bool
-PlaceholderMapMatchEntry(PLDHashTable *table, const PLDHashEntryHdr *hdr,
-                         const void *key)
+PlaceholderMapMatchEntry(const PLDHashEntryHdr *hdr, const void *key)
 {
   const PlaceholderMapEntry *entry =
     static_cast<const PlaceholderMapEntry*>(hdr);
@@ -217,7 +216,8 @@ nsFrameManager::GetStyleContextInMap(UndisplayedMap* aMap, nsIContent* aContent)
   if (!aContent) {
     return nullptr;
   }
-  nsIContent* parent = aContent->GetParent();
+  nsIContent* parent = aContent->GetParentElementCrossingShadowRoot();
+  MOZ_ASSERT(parent || !aContent->GetParent(), "no non-elements");
   for (UndisplayedNode* node = aMap->GetFirstNode(parent);
          node; node = node->mNext) {
     if (node->mContent == aContent)
@@ -256,7 +256,8 @@ nsFrameManager::SetStyleContextInMap(UndisplayedMap* aMap,
   NS_ASSERTION(!GetStyleContextInMap(aMap, aContent),
                "Already have an entry for aContent");
 
-  nsIContent* parent = aContent->GetParent();
+  nsIContent* parent = aContent->GetParentElementCrossingShadowRoot();
+  MOZ_ASSERT(parent || !aContent->GetParent(), "no non-elements");
 #ifdef DEBUG
   nsIPresShell* shell = aStyleContext->PresContext()->PresShell();
   NS_ASSERTION(parent || (shell && shell->GetDocument() &&
@@ -552,8 +553,8 @@ nsFrameManager::CaptureFrameStateFor(nsIFrame* aFrame,
   // Exit early if we get empty key
   nsAutoCString stateKey;
   nsIContent* content = aFrame->GetContent();
-  nsIDocument* doc = content ? content->GetCurrentDoc() : nullptr;
-  rv = nsContentUtils::GenerateStateKey(content, doc, stateKey);
+  nsIDocument* doc = content ? content->GetUncomposedDoc() : nullptr;
+  rv = statefulFrame->GenerateStateKey(content, doc, stateKey);
   if(NS_FAILED(rv) || stateKey.IsEmpty()) {
     return;
   }
@@ -615,8 +616,8 @@ nsFrameManager::RestoreFrameStateFor(nsIFrame* aFrame,
   }
 
   nsAutoCString stateKey;
-  nsIDocument* doc = content->GetCurrentDoc();
-  nsresult rv = nsContentUtils::GenerateStateKey(content, doc, stateKey);
+  nsIDocument* doc = content->GetUncomposedDoc();
+  nsresult rv = statefulFrame->GenerateStateKey(content, doc, stateKey);
   if (NS_FAILED(rv) || stateKey.IsEmpty()) {
     return;
   }

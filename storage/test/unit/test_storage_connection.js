@@ -68,12 +68,8 @@ add_task(function* test_indexExists_created() {
 add_task(function* test_createTable_already_created() {
   var msc = getOpenedDatabase();
   do_check_true(msc.tableExists("test"));
-  try {
-    msc.createTable("test", "id INTEGER PRIMARY KEY, name TEXT");
-    do_throw("We shouldn't get here!");
-  } catch (e) {
-    do_check_eq(Cr.NS_ERROR_FAILURE, e.result);
-  }
+  Assert.throws(() => msc.createTable("test", "id INTEGER PRIMARY KEY, name TEXT"),
+                /NS_ERROR_FAILURE/);
 });
 
 add_task(function* test_attach_createTable_tableExists_indexExists() {
@@ -85,15 +81,8 @@ add_task(function* test_attach_createTable_tableExists_indexExists() {
   do_check_false(msc.tableExists("sample.test"));
   msc.createTable("sample.test", "id INTEGER PRIMARY KEY, name TEXT");
   do_check_true(msc.tableExists("sample.test"));
-  try {
-    msc.createTable("sample.test", "id INTEGER PRIMARY KEY, name TEXT");
-    do_throw("We shouldn't get here!");
-  } catch (e) {
-    if (e.result != Components.results.NS_ERROR_FAILURE) {
-      throw e;
-    }
-    // we expect to fail because this table should exist already.
-  }
+  Assert.throws(() => msc.createTable("sample.test", "id INTEGER PRIMARY KEY, name TEXT"),
+                /NS_ERROR_FAILURE/);
 
   do_check_false(msc.indexExists("sample.test_ind"));
   msc.executeSimpleSQL("CREATE INDEX sample.test_ind ON test (name)");
@@ -135,23 +124,13 @@ add_task(function* test_transactionInProgress_yes() {
 add_task(function* test_commitTransaction_no_transaction() {
   var msc = getOpenedDatabase();
   do_check_false(msc.transactionInProgress);
-  try {
-    msc.commitTransaction();
-    do_throw("We should not get here!");
-  } catch (e) {
-    do_check_eq(Cr.NS_ERROR_UNEXPECTED, e.result);
-  }
+  Assert.throws(() => msc.commitTransaction(), /NS_ERROR_UNEXPECTED/);
 });
 
 add_task(function* test_rollbackTransaction_no_transaction() {
   var msc = getOpenedDatabase();
   do_check_false(msc.transactionInProgress);
-  try {
-    msc.rollbackTransaction();
-    do_throw("We should not get here!");
-  } catch (e) {
-    do_check_eq(Cr.NS_ERROR_UNEXPECTED, e.result);
-  }
+  Assert.throws(() => msc.rollbackTransaction(), /NS_ERROR_UNEXPECTED/);
 });
 
 add_task(function* test_get_schemaVersion_not_set() {
@@ -292,21 +271,15 @@ add_task(function* test_close_fails_with_async_statement_ran() {
   stmt.finalize();
 
   let db = getOpenedDatabase();
-  try {
-    db.close();
-    do_throw("should have thrown");
-  }
-  catch (e) {
-    do_check_eq(e.result, Cr.NS_ERROR_UNEXPECTED);
-  }
-  finally {
-    // Clean up after ourselves.
-    db.asyncClose(function () {
-      // Reset gDBConn so that later tests will get a new connection object.
-      gDBConn = null;
-      deferred.resolve();
-    });
-  }
+  Assert.throws(() => db.close(), /NS_ERROR_UNEXPECTED/);
+
+  // Clean up after ourselves.
+  db.asyncClose(function () {
+    // Reset gDBConn so that later tests will get a new connection object.
+    gDBConn = null;
+    deferred.resolve();
+  });
+
   yield deferred.promise;
 });
 
@@ -723,6 +696,45 @@ add_task(function* test_readonly_clone_copies_pragmas() {
   db2.close();
 });
 
+add_task(function* test_clone_attach_database() {
+  let db1 = getService().openUnsharedDatabase(getTestDB());
+
+  let c = 0;
+  function attachDB(conn, name) {
+    let file = dirSvc.get("ProfD", Ci.nsIFile);
+    file.append("test_storage_" + (++c) + ".sqlite");
+    let db = getService().openUnsharedDatabase(file);
+    conn.executeSimpleSQL(`ATTACH DATABASE '${db.databaseFile.path}' AS ${name}`);
+    db.close();
+  }
+  attachDB(db1, "attached_1");
+  attachDB(db1, "attached_2");
+
+  // These should not throw.
+  db1.createStatement("SELECT * FROM attached_1.sqlite_master");
+  db1.createStatement("SELECT * FROM attached_2.sqlite_master");
+
+  // R/W clone.
+  let db2 = db1.clone();
+  do_check_true(db2.connectionReady);
+
+  // These should not throw.
+  db2.createStatement("SELECT * FROM attached_1.sqlite_master");
+  db2.createStatement("SELECT * FROM attached_2.sqlite_master");
+
+  // R/O clone.
+  let db3 = db1.clone(true);
+  do_check_true(db3.connectionReady);
+
+  // These should not throw.
+  db3.createStatement("SELECT * FROM attached_1.sqlite_master");
+  db3.createStatement("SELECT * FROM attached_2.sqlite_master");
+
+  db1.close();
+  db2.close();
+  db3.close();
+});
+
 add_task(function* test_getInterface() {
   let db = getOpenedDatabase();
   let target = db.QueryInterface(Ci.nsIInterfaceRequestor)
@@ -734,8 +746,3 @@ add_task(function* test_getInterface() {
   yield asyncClose(db);
   gDBConn = null;
 });
-
-
-function run_test() {
-  run_next_test();
-}

@@ -11,10 +11,13 @@
 #ifndef nsCSSProps_h___
 #define nsCSSProps_h___
 
+#include <limits>
+#include <type_traits>
 #include "nsString.h"
-#include "nsCSSProperty.h"
+#include "nsCSSPropertyID.h"
 #include "nsStyleStructFwd.h"
 #include "nsCSSKeywords.h"
+#include "mozilla/CSSEnabledState.h"
 #include "mozilla/UseCounter.h"
 
 // Length of the "--" prefix on custom names (such as custom property names,
@@ -51,11 +54,10 @@
 #define VARIANT_ZERO_ANGLE    0x02000000  // unitless zero for angles
 #define VARIANT_CALC          0x04000000  // eCSSUnit_Calc
 #define VARIANT_ELEMENT       0x08000000  // eCSSUnit_Element
-#define VARIANT_POSITIVE_DIMENSION 0x10000000 // Only lengths greater than 0.0
-#define VARIANT_NONNEGATIVE_DIMENSION 0x20000000 // Only lengths greater than or equal to 0.0
+#define VARIANT_NONNEGATIVE_DIMENSION 0x10000000 // Only lengths greater than or equal to 0.0
 // Keyword used iff gfx.font_rendering.opentype_svg.enabled is true:
-#define VARIANT_OPENTYPE_SVG_KEYWORD 0x40000000
-#define VARIANT_ABSOLUTE_DIMENSION 0x80000000 // B Only lengths with absolute length unit
+#define VARIANT_OPENTYPE_SVG_KEYWORD 0x20000000
+#define VARIANT_ABSOLUTE_DIMENSION 0x40000000 // B Only lengths with absolute length unit
 
 // Variants that can consume more than one token
 #define VARIANT_MULTIPLE_TOKENS \
@@ -161,7 +163,7 @@
 #define CSS_PROPERTY_STORES_CALC                  (1<<8)
 
 // Define what mechanism the CSS parser uses for parsing the property.
-// See CSSParserImpl::ParseProperty(nsCSSProperty).  Don't use 0 so that
+// See CSSParserImpl::ParseProperty(nsCSSPropertyID).  Don't use 0 so that
 // we can verify that every property sets one of the values.
 //
 // CSS_PROPERTY_PARSE_FUNCTION must be used for shorthand properties,
@@ -226,6 +228,10 @@ static_assert((CSS_PROPERTY_PARSE_PROPERTY_MASK &
 //   wrapped in "#ifndef CSS_PROP_LIST_EXCLUDE_INTERNAL".
 // Note that, these flags have no effect on the use of aliases of this
 // property.
+// Furthermore, for the purposes of animation (including triggering
+// transitions) these flags are ignored. That is, if the property is disabled
+// by a pref, we will *not* run animations or transitions on it even in
+// UA sheets or chrome.
 #define CSS_PROPERTY_ENABLED_MASK                 (3<<22)
 #define CSS_PROPERTY_ENABLED_IN_UA_SHEETS         (1<<22)
 #define CSS_PROPERTY_ENABLED_IN_CHROME            (1<<23)
@@ -250,26 +256,20 @@ static_assert((CSS_PROPERTY_PARSE_PROPERTY_MASK &
 // margin-block-start or margin-inline-start).
 #define CSS_PROPERTY_LOGICAL_END_EDGE             (1<<26)
 
-// This property is a logical property which always maps to the same physical
-// property, and its values have some custom processing when being mapped to
-// the physical property's values.  Must not be used in conjunction with
-// CSS_PROPERTY_LOGICAL_{AXIS,BLOCK_AXIS,END_EDGE}.
-#define CSS_PROPERTY_LOGICAL_SINGLE_CUSTOM_VALMAPPING (1<<27)
-
 // This property can be animated on the compositor.
-#define CSS_PROPERTY_CAN_ANIMATE_ON_COMPOSITOR    (1<<28)
+#define CSS_PROPERTY_CAN_ANIMATE_ON_COMPOSITOR    (1<<27)
 
 // This property is an internal property that is not represented
 // in the DOM.  Properties with this flag must be defined in an #ifndef
 // CSS_PROP_LIST_EXCLUDE_INTERNAL section of nsCSSPropList.h.
-#define CSS_PROPERTY_INTERNAL                     (1<<29)
+#define CSS_PROPERTY_INTERNAL                     (1<<28)
 
 // This property has values that can establish a containing block for
 // fixed positioned and absolutely positioned elements.
 // This should be set for any properties that can cause an element to be
 // such a containing block, as implemented in
 // nsStyleDisplay::IsFixedPosContainingBlock.
-#define CSS_PROPERTY_FIXPOS_CB                    (1<<30)
+#define CSS_PROPERTY_FIXPOS_CB                    (1<<29)
 
 // This property has values that can establish a containing block for
 // absolutely positioned elements.
@@ -278,10 +278,7 @@ static_assert((CSS_PROPERTY_PARSE_PROPERTY_MASK &
 // nsStyleDisplay::IsAbsPosContainingBlock.
 // It does not need to be set for properties that also have
 // CSS_PROPERTY_FIXPOS_CB set.
-#define CSS_PROPERTY_ABSPOS_CB                    (1u<<31)
-
-// NOTE: Before adding any new CSS_PROPERTY_* flags here, we'll need to
-// upgrade kFlagsTable to 64-bits -- see bug 1231384.
+#define CSS_PROPERTY_ABSPOS_CB                    (1<<30)
 
 /**
  * Types of animatable values.
@@ -311,12 +308,6 @@ enum nsStyleAnimType {
   // nscoord values
   eStyleAnimType_nscoord,
 
-  // enumerated values (stored in a uint8_t)
-  // In order for a property to use this unit, _all_ of its enumerated values
-  // must be listed in its keyword table, so that any enumerated value can be
-  // converted into a string via a nsCSSValue of type eCSSUnit_Enumerated.
-  eStyleAnimType_EnumU8,
-
   // float values
   eStyleAnimType_float,
 
@@ -329,13 +320,56 @@ enum nsStyleAnimType {
   // RefPtr<nsCSSShadowArray> values
   eStyleAnimType_Shadow,
 
+  // discrete values
+  eStyleAnimType_Discrete,
+
   // property not animatable
   eStyleAnimType_None
 };
 
+namespace mozilla {
+
+// Type trait that determines whether the integral or enum type Type can fit
+// within the integral type Storage without loss.
+template<typename T, typename Storage>
+struct IsEnumFittingWithin
+  : IntegralConstant<
+      bool,
+      std::is_integral<Storage>::value &&
+      std::numeric_limits<typename std::underlying_type<T>::type>::min() >=
+        std::numeric_limits<Storage>::min() &&
+      std::numeric_limits<typename std::underlying_type<T>::type>::max() <=
+        std::numeric_limits<Storage>::max()
+    >
+{};
+
+} // namespace mozilla
+
 class nsCSSProps {
 public:
-  struct KTableEntry {
+  typedef mozilla::CSSEnabledState EnabledState;
+
+  struct KTableEntry
+  {
+    // KTableEntry objects can be initialized either with an int16_t value
+    // or a value of an enumeration type that can fit within an int16_t.
+
+    KTableEntry(nsCSSKeyword aKeyword, int16_t aValue)
+      : mKeyword(aKeyword)
+      , mValue(aValue)
+    {
+    }
+
+    template<typename T,
+             typename = typename std::enable_if<std::is_enum<T>::value>::type>
+    KTableEntry(nsCSSKeyword aKeyword, T aValue)
+      : mKeyword(aKeyword)
+      , mValue(static_cast<int16_t>(aValue))
+    {
+      static_assert(mozilla::IsEnumFittingWithin<T, int16_t>::value,
+                    "aValue must be an enum that fits within mValue");
+    }
+
     nsCSSKeyword mKeyword;
     int16_t mValue;
   };
@@ -343,34 +377,19 @@ public:
   static void AddRefTable(void);
   static void ReleaseTable(void);
 
-  enum EnabledState {
-    // The default EnabledState: only enable what's enabled for all content,
-    // given the current values of preferences.
-    eEnabledForAllContent = 0,
-    // Enable a property in UA sheets.
-    eEnabledInUASheets    = 0x01,
-    // Enable a property in chrome code.
-    eEnabledInChrome      = 0x02,
-    // Special value to unconditionally enable a property. This implies all the
-    // bits above, but is strictly more than just their OR-ed union.
-    // This just skips any test so a property will be enabled even if it would
-    // have been disabled with all the bits above set.
-    eIgnoreEnabledState   = 0xff
-  };
-
   // Looks up the property with name aProperty and returns its corresponding
-  // nsCSSProperty value.  If aProperty is the name of a custom property,
+  // nsCSSPropertyID value.  If aProperty is the name of a custom property,
   // then eCSSPropertyExtra_variable will be returned.
-  static nsCSSProperty LookupProperty(const nsAString& aProperty,
+  static nsCSSPropertyID LookupProperty(const nsAString& aProperty,
                                       EnabledState aEnabled);
-  static nsCSSProperty LookupProperty(const nsACString& aProperty,
+  static nsCSSPropertyID LookupProperty(const nsACString& aProperty,
                                       EnabledState aEnabled);
   // As above, but looked up using a property's IDL name.
   // eCSSPropertyExtra_variable won't be returned from these methods.
-  static nsCSSProperty LookupPropertyByIDLName(
+  static nsCSSPropertyID LookupPropertyByIDLName(
       const nsAString& aPropertyIDLName,
       EnabledState aEnabled);
-  static nsCSSProperty LookupPropertyByIDLName(
+  static nsCSSPropertyID LookupPropertyByIDLName(
       const nsACString& aPropertyIDLName,
       EnabledState aEnabled);
 
@@ -379,14 +398,14 @@ public:
   static bool IsCustomPropertyName(const nsAString& aProperty);
   static bool IsCustomPropertyName(const nsACString& aProperty);
 
-  static inline bool IsShorthand(nsCSSProperty aProperty) {
+  static inline bool IsShorthand(nsCSSPropertyID aProperty) {
     MOZ_ASSERT(0 <= aProperty && aProperty < eCSSProperty_COUNT,
                "out of range");
     return (aProperty >= eCSSProperty_COUNT_no_shorthands);
   }
 
   // Must be given a longhand property.
-  static bool IsInherited(nsCSSProperty aProperty);
+  static bool IsInherited(nsCSSPropertyID aProperty);
 
   // Same but for @font-face descriptors
   static nsCSSFontDesc LookupFontDesc(const nsAString& aProperty);
@@ -401,14 +420,14 @@ public:
   static bool IsPredefinedCounterStyle(const nsACString& aStyle);
 
   // Given a property enum, get the string value
-  static const nsAFlatCString& GetStringValue(nsCSSProperty aProperty);
+  static const nsAFlatCString& GetStringValue(nsCSSPropertyID aProperty);
   static const nsAFlatCString& GetStringValue(nsCSSFontDesc aFontDesc);
   static const nsAFlatCString& GetStringValue(nsCSSCounterDesc aCounterDesc);
 
   // Given a CSS Property and a Property Enum Value
   // Return back a const nsString& representation of the
   // value. Return back nullstr if no value is found
-  static const nsAFlatCString& LookupPropertyValue(nsCSSProperty aProperty, int32_t aValue);
+  static const nsAFlatCString& LookupPropertyValue(nsCSSPropertyID aProperty, int32_t aValue);
 
   // Get a color name for a predefined color value like buttonhighlight or activeborder
   // Sets the aStr param to the name of the propertyID
@@ -426,11 +445,29 @@ public:
                           int32_t& aValue);
   // Return the first keyword in |aTable| that has the corresponding value |aValue|.
   // Return |eCSSKeyword_UNKNOWN| if not found.
-  static nsCSSKeyword ValueToKeywordEnum(int32_t aValue, 
+  static nsCSSKeyword ValueToKeywordEnum(int32_t aValue,
                                          const KTableEntry aTable[]);
+  template<typename T,
+           typename = typename std::enable_if<std::is_enum<T>::value>::type>
+  static nsCSSKeyword ValueToKeywordEnum(T aValue,
+                                         const KTableEntry aTable[])
+  {
+    static_assert(mozilla::IsEnumFittingWithin<T, int16_t>::value,
+                  "aValue must be an enum that fits within KTableEntry::mValue");
+    return ValueToKeywordEnum(static_cast<int16_t>(aValue), aTable);
+  }
   // Ditto but as a string, return "" when not found.
   static const nsAFlatCString& ValueToKeyword(int32_t aValue,
                                               const KTableEntry aTable[]);
+  template<typename T,
+           typename = typename std::enable_if<std::is_enum<T>::value>::type>
+  static const nsAFlatCString& ValueToKeyword(T aValue,
+                                              const KTableEntry aTable[])
+  {
+    static_assert(mozilla::IsEnumFittingWithin<T, int16_t>::value,
+                  "aValue must be an enum that fits within KTableEntry::mValue");
+    return ValueToKeyword(static_cast<int16_t>(aValue), aTable);
+  }
 
   static const nsStyleStructID kSIDTable[eCSSProperty_COUNT_no_shorthands];
   static const KTableEntry* const kKeywordTableTable[eCSSProperty_COUNT_no_shorthands];
@@ -442,7 +479,7 @@ private:
   static const uint32_t        kFlagsTable[eCSSProperty_COUNT];
 
 public:
-  static inline bool PropHasFlags(nsCSSProperty aProperty, uint32_t aFlags)
+  static inline bool PropHasFlags(nsCSSPropertyID aProperty, uint32_t aFlags)
   {
     MOZ_ASSERT(0 <= aProperty && aProperty < eCSSProperty_COUNT,
                "out of range");
@@ -453,7 +490,7 @@ public:
     return (nsCSSProps::kFlagsTable[aProperty] & aFlags) == aFlags;
   }
 
-  static inline uint32_t PropertyParseType(nsCSSProperty aProperty)
+  static inline uint32_t PropertyParseType(nsCSSPropertyID aProperty)
   {
     MOZ_ASSERT(0 <= aProperty && aProperty < eCSSProperty_COUNT,
                "out of range");
@@ -461,7 +498,7 @@ public:
            CSS_PROPERTY_PARSE_PROPERTY_MASK;
   }
 
-  static inline uint32_t ValueRestrictions(nsCSSProperty aProperty)
+  static inline uint32_t ValueRestrictions(nsCSSPropertyID aProperty)
   {
     MOZ_ASSERT(0 <= aProperty && aProperty < eCSSProperty_COUNT,
                "out of range");
@@ -474,7 +511,7 @@ private:
   static const uint32_t kParserVariantTable[eCSSProperty_COUNT_no_shorthands];
 
 public:
-  static inline uint32_t ParserVariant(nsCSSProperty aProperty) {
+  static inline uint32_t ParserVariant(nsCSSPropertyID aProperty) {
     MOZ_ASSERT(0 <= aProperty && aProperty < eCSSProperty_COUNT_no_shorthands,
                "out of range");
     return nsCSSProps::kParserVariantTable[aProperty];
@@ -483,12 +520,12 @@ public:
 private:
   // A table for shorthand properties.  The appropriate index is the
   // property ID minus eCSSProperty_COUNT_no_shorthands.
-  static const nsCSSProperty *const
+  static const nsCSSPropertyID *const
     kSubpropertyTable[eCSSProperty_COUNT - eCSSProperty_COUNT_no_shorthands];
 
 public:
   static inline
-  const nsCSSProperty * SubpropertyEntryFor(nsCSSProperty aProperty) {
+  const nsCSSPropertyID * SubpropertyEntryFor(nsCSSPropertyID aProperty) {
     MOZ_ASSERT(eCSSProperty_COUNT_no_shorthands <= aProperty &&
                aProperty < eCSSProperty_COUNT,
                "out of range");
@@ -499,7 +536,7 @@ public:
   // Returns an eCSSProperty_UNKNOWN-terminated array of the shorthand
   // properties containing |aProperty|, sorted from those that contain
   // the most properties to those that contain the least.
-  static const nsCSSProperty * ShorthandsContaining(nsCSSProperty aProperty) {
+  static const nsCSSPropertyID * ShorthandsContaining(nsCSSPropertyID aProperty) {
     MOZ_ASSERT(gShorthandsContainingPool, "uninitialized");
     MOZ_ASSERT(0 <= aProperty && aProperty < eCSSProperty_COUNT_no_shorthands,
                "out of range");
@@ -507,12 +544,12 @@ public:
   }
 private:
   // gShorthandsContainingTable is an array of the return values for
-  // ShorthandsContaining (arrays of nsCSSProperty terminated by
+  // ShorthandsContaining (arrays of nsCSSPropertyID terminated by
   // eCSSProperty_UNKNOWN) pointing into memory in
   // gShorthandsContainingPool (which contains all of those arrays in a
   // single allocation, and is the one pointer that should be |free|d).
-  static nsCSSProperty *gShorthandsContainingTable[eCSSProperty_COUNT_no_shorthands];
-  static nsCSSProperty* gShorthandsContainingPool;
+  static nsCSSPropertyID *gShorthandsContainingTable[eCSSProperty_COUNT_no_shorthands];
+  static nsCSSPropertyID* gShorthandsContainingPool;
   static bool BuildShorthandsContainingTable();
 
 private:
@@ -532,7 +569,7 @@ public:
    * Return an index for aProperty that is unique within its SID and in
    * the range 0 <= index < PropertyCountInStruct(aSID).
    */
-  static size_t PropertyIndexInStruct(nsCSSProperty aProperty) {
+  static size_t PropertyIndexInStruct(nsCSSPropertyID aProperty) {
     MOZ_ASSERT(0 <= aProperty && aProperty < eCSSProperty_COUNT_no_shorthands,
                "out of range");
     return gPropertyIndexInStruct[aProperty];
@@ -541,7 +578,7 @@ public:
 private:
   // A table for logical property groups.  Indexes are
   // nsCSSPropertyLogicalGroup values.
-  static const nsCSSProperty* const
+  static const nsCSSPropertyID* const
     kLogicalGroupTable[eCSSPropertyLogicalGroup_COUNT];
 
 public:
@@ -555,18 +592,15 @@ public:
    * by the sentinel.
    *
    * When called with a property that has the CSS_PROPERTY_LOGICAL_AXIS
-   * flag, the returned array will have two values preceding the sentinel.
-   * When called with a property that has the
-   * CSS_PROPERTY_LOGICAL_SINGLE_CUSTOM_VALMAPPING flag, the returned array
-   * will have one value preceding the sentinel.
-   * Otherwise it will have four values preceding the sentinel.
+   * flag, the returned array will have two values preceding the sentinel;
+   * otherwise it will have four.
    *
    * (Note that the running time of this function is proportional to the
    * number of logical longhand properties that exist.  If we start
    * getting too many of these properties, we should make kLogicalGroupTable
    * be a simple array of eCSSProperty_COUNT length.)
    */
-  static const nsCSSProperty* LogicalGroup(nsCSSProperty aProperty);
+  static const nsCSSPropertyID* LogicalGroup(nsCSSPropertyID aProperty);
 
 private:
   static bool gPropertyEnabled[eCSSProperty_COUNT_with_aliases];
@@ -586,7 +620,7 @@ public:
    * As a special case, the string "cssFloat" is returned for the float
    * property.  nullptr is returned for internal properties.
    */
-  static const char* PropertyIDLName(nsCSSProperty aProperty)
+  static const char* PropertyIDLName(nsCSSPropertyID aProperty)
   {
     MOZ_ASSERT(0 <= aProperty && aProperty < eCSSProperty_COUNT,
                "out of range");
@@ -601,14 +635,14 @@ public:
    * Returns the position of the specified property in a list of all
    * properties sorted by their IDL name.
    */
-  static int32_t PropertyIDLNameSortPosition(nsCSSProperty aProperty)
+  static int32_t PropertyIDLNameSortPosition(nsCSSPropertyID aProperty)
   {
     MOZ_ASSERT(0 <= aProperty && aProperty < eCSSProperty_COUNT,
                "out of range");
     return kIDLNameSortPositionTable[aProperty];
   }
 
-  static bool IsEnabled(nsCSSProperty aProperty) {
+  static bool IsEnabled(nsCSSPropertyID aProperty) {
     MOZ_ASSERT(0 <= aProperty && aProperty < eCSSProperty_COUNT_with_aliases,
                "out of range");
     return gPropertyEnabled[aProperty];
@@ -621,26 +655,26 @@ public:
 
 public:
 
-  static mozilla::UseCounter UseCounterFor(nsCSSProperty aProperty) {
+  static mozilla::UseCounter UseCounterFor(nsCSSPropertyID aProperty) {
     MOZ_ASSERT(0 <= aProperty && aProperty < eCSSProperty_COUNT_no_shorthands,
                "out of range");
     return gPropertyUseCounter[aProperty];
   }
 
-  static bool IsEnabled(nsCSSProperty aProperty, EnabledState aEnabled)
+  static bool IsEnabled(nsCSSPropertyID aProperty, EnabledState aEnabled)
   {
     if (IsEnabled(aProperty)) {
       return true;
     }
-    if (aEnabled == eIgnoreEnabledState) {
+    if (aEnabled == EnabledState::eIgnoreEnabledState) {
       return true;
     }
-    if ((aEnabled & eEnabledInUASheets) &&
+    if ((aEnabled & EnabledState::eInUASheets) &&
         PropHasFlags(aProperty, CSS_PROPERTY_ENABLED_IN_UA_SHEETS))
     {
       return true;
     }
-    if ((aEnabled & eEnabledInChrome) &&
+    if ((aEnabled & EnabledState::eInChrome) &&
         PropHasFlags(aProperty, CSS_PROPERTY_ENABLED_IN_CHROME))
     {
       return true;
@@ -650,15 +684,16 @@ public:
 
 public:
 
-// Storing the enabledstate_ value in an nsCSSProperty variable is a small hack
+// Storing the enabledstate_ value in an nsCSSPropertyID variable is a small hack
 // to avoid needing a separate variable declaration for its real type
-// (nsCSSProps::EnabledState), which would then require using a block and
+// (CSSEnabledState), which would then require using a block and
 // therefore a pair of macros by consumers for the start and end of the loop.
-#define CSSPROPS_FOR_SHORTHAND_SUBPROPERTIES(it_, prop_, enabledstate_)       \
-  for (const nsCSSProperty *it_ = nsCSSProps::SubpropertyEntryFor(prop_),     \
-                            es_ = (nsCSSProperty) (enabledstate_);            \
-       *it_ != eCSSProperty_UNKNOWN; ++it_)                                   \
-    if (nsCSSProps::IsEnabled(*it_, (nsCSSProps::EnabledState) es_))
+#define CSSPROPS_FOR_SHORTHAND_SUBPROPERTIES(it_, prop_, enabledstate_)   \
+  for (const nsCSSPropertyID *it_ = nsCSSProps::SubpropertyEntryFor(prop_), \
+                            es_ = (nsCSSPropertyID)((enabledstate_) |       \
+                                                  CSSEnabledState(0));    \
+       *it_ != eCSSProperty_UNKNOWN; ++it_)                               \
+    if (nsCSSProps::IsEnabled(*it_, (mozilla::CSSEnabledState) es_))
 
   // Keyword/Enum value tables
   static const KTableEntry kAnimationDirectionKTable[];
@@ -678,6 +713,9 @@ public:
   static const KTableEntry kImageLayerSizeKTable[];
   static const KTableEntry kImageLayerCompositeKTable[];
   static const KTableEntry kImageLayerModeKTable[];
+  // Not const because we modify its entries when the pref
+  // "layout.css.background-clip.text" changes:
+  static KTableEntry kBackgroundClipKTable[];
   static const KTableEntry kBlendModeKTable[];
   static const KTableEntry kBorderCollapseKTable[];
   static const KTableEntry kBorderColorKTable[];
@@ -690,7 +728,7 @@ public:
   static const KTableEntry kBoxDirectionKTable[];
   static const KTableEntry kBoxOrientKTable[];
   static const KTableEntry kBoxPackKTable[];
-  static const KTableEntry kClipShapeSizingKTable[];
+  static const KTableEntry kClipPathGeometryBoxKTable[];
   static const KTableEntry kCounterRangeKTable[];
   static const KTableEntry kCounterSpeakAsKTable[];
   static const KTableEntry kCounterSymbolsSystemKTable[];
@@ -700,6 +738,7 @@ public:
   static const KTableEntry kFillRuleKTable[];
   static const KTableEntry kFilterFunctionKTable[];
   static const KTableEntry kImageRenderingKTable[];
+  static const KTableEntry kShapeOutsideShapeBoxKTable[];
   static const KTableEntry kShapeRenderingKTable[];
   static const KTableEntry kStrokeLinecapKTable[];
   static const KTableEntry kStrokeLinejoinKTable[];
@@ -707,6 +746,7 @@ public:
   static const KTableEntry kVectorEffectKTable[];
   static const KTableEntry kTextAnchorKTable[];
   static const KTableEntry kTextRenderingKTable[];
+  static const KTableEntry kColorAdjustKTable[];
   static const KTableEntry kColorInterpolationKTable[];
   static const KTableEntry kColumnFillKTable[];
   static const KTableEntry kBoxPropSourceKTable[];
@@ -788,15 +828,14 @@ public:
   static const KTableEntry kOverflowKTable[];
   static const KTableEntry kOverflowSubKTable[];
   static const KTableEntry kOverflowClipBoxKTable[];
+  static const KTableEntry kOverflowWrapKTable[];
   static const KTableEntry kPageBreakKTable[];
   static const KTableEntry kPageBreakInsideKTable[];
   static const KTableEntry kPageMarksKTable[];
   static const KTableEntry kPageSizeKTable[];
   static const KTableEntry kPitchKTable[];
   static const KTableEntry kPointerEventsKTable[];
-  // Not const because we modify its entries when the pref
-  // "layout.css.sticky.enabled" changes:
-  static KTableEntry kPositionKTable[];
+  static const KTableEntry kPositionKTable[];
   static const KTableEntry kRadialGradientShapeKTable[];
   static const KTableEntry kRadialGradientSizeKTable[];
   static const KTableEntry kRadialGradientLegacySizeKTable[];
@@ -842,32 +881,7 @@ public:
   static const KTableEntry kWindowDraggingKTable[];
   static const KTableEntry kWindowShadowKTable[];
   static const KTableEntry kWordBreakKTable[];
-  static const KTableEntry kWordWrapKTable[];
   static const KTableEntry kWritingModeKTable[];
 };
-
-inline nsCSSProps::EnabledState operator|(nsCSSProps::EnabledState a,
-                                          nsCSSProps::EnabledState b)
-{
-  return nsCSSProps::EnabledState(int(a) | int(b));
-}
-
-inline nsCSSProps::EnabledState operator&(nsCSSProps::EnabledState a,
-                                          nsCSSProps::EnabledState b)
-{
-  return nsCSSProps::EnabledState(int(a) & int(b));
-}
-
-inline nsCSSProps::EnabledState& operator|=(nsCSSProps::EnabledState& a,
-                                            nsCSSProps::EnabledState b)
-{
-  return a = a | b;
-}
-
-inline nsCSSProps::EnabledState& operator&=(nsCSSProps::EnabledState& a,
-                                            nsCSSProps::EnabledState b)
-{
-  return a = a & b;
-}
 
 #endif /* nsCSSProps_h___ */

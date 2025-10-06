@@ -6,6 +6,7 @@
 
 const Services = require("Services");
 const promise = require("promise");
+const defer = require("devtools/shared/defer");
 
 // Load gDevToolsBrowser toolbox lazily as they need gDevTools to be fully initialized
 loader.lazyRequireGetter(this, "Toolbox", "devtools/client/framework/toolbox", true);
@@ -14,13 +15,9 @@ loader.lazyRequireGetter(this, "gDevToolsBrowser", "devtools/client/framework/de
 const {defaultTools: DefaultTools, defaultThemes: DefaultThemes} =
   require("devtools/client/definitions");
 const EventEmitter = require("devtools/shared/event-emitter");
-const Telemetry = require("devtools/client/shared/telemetry");
 const {JsonView} = require("devtools/client/jsonview/main");
-
-const TABS_OPEN_PEAK_HISTOGRAM = "DEVTOOLS_TABS_OPEN_PEAK_LINEAR";
-const TABS_OPEN_AVG_HISTOGRAM = "DEVTOOLS_TABS_OPEN_AVERAGE_LINEAR";
-const TABS_PINNED_PEAK_HISTOGRAM = "DEVTOOLS_TABS_PINNED_PEAK_LINEAR";
-const TABS_PINNED_AVG_HISTOGRAM = "DEVTOOLS_TABS_PINNED_AVERAGE_LINEAR";
+const AboutDevTools = require("devtools/client/framework/about-devtools-toolbox");
+const {when: unload} = require("sdk/system/unload");
 
 const FORBIDDEN_IDS = new Set(["toolbox", ""]);
 const MAX_ORDINAL = 99;
@@ -33,22 +30,46 @@ this.DevTools = function DevTools() {
   this._tools = new Map();     // Map<toolId, tool>
   this._themes = new Map();    // Map<themeId, theme>
   this._toolboxes = new Map(); // Map<target, toolbox>
-  this._telemetry = new Telemetry();
 
   // destroy() is an observer's handler so we need to preserve context.
   this.destroy = this.destroy.bind(this);
-  this._teardown = this._teardown.bind(this);
 
   // JSON Viewer for 'application/json' documents.
   JsonView.initialize();
 
+  AboutDevTools.register();
+
   EventEmitter.decorate(this);
 
-  Services.obs.addObserver(this._teardown, "devtools-unloaded", false);
   Services.obs.addObserver(this.destroy, "quit-application", false);
+
+  // This is important step in initialization codepath where we are going to
+  // start registering all default tools and themes: create menuitems, keys, emit
+  // related events.
+  this.registerDefaults();
 };
 
 DevTools.prototype = {
+  // The windowtype of the main window, used in various tools. This may be set
+  // to something different by other gecko apps.
+  chromeWindowType: "navigator:browser",
+
+  registerDefaults() {
+    // Ensure registering items in the sorted order (getDefault* functions
+    // return sorted lists)
+    this.getDefaultTools().forEach(definition => this.registerTool(definition));
+    this.getDefaultThemes().forEach(definition => this.registerTheme(definition));
+  },
+
+  unregisterDefaults() {
+    for (let definition of this.getToolDefinitionArray()) {
+      this.unregisterTool(definition.id);
+    }
+    for (let definition of this.getThemeDefinitionArray()) {
+      this.unregisterTheme(definition.id);
+    }
+  },
+
   /**
    * Register a new developer tool.
    *
@@ -90,7 +111,7 @@ DevTools.prototype = {
     // Make sure that additional tools will always be able to be hidden.
     // When being called from main.js, defaultTools has not yet been exported.
     // But, we can assume that in this case, it is a default tool.
-    if (DefaultTools && DefaultTools.indexOf(toolDefinition) == -1) {
+    if (DefaultTools.indexOf(toolDefinition) == -1) {
       toolDefinition.visibilityswitch = "devtools." + toolId + ".enabled";
     }
 
@@ -147,6 +168,10 @@ DevTools.prototype = {
       }
     }
     return tools.sort(this.ordinalSort);
+  },
+
+  getDefaultThemes() {
+    return DefaultThemes.sort(this.ordinalSort);
   },
 
   /**
@@ -372,8 +397,8 @@ DevTools.prototype = {
    * @return {Toolbox} toolbox
    *        The toolbox that was opened
    */
-  showToolbox: function(target, toolId, hostType, hostOptions) {
-    let deferred = promise.defer();
+  showToolbox: function (target, toolId, hostType, hostOptions) {
+    let deferred = defer();
 
     let toolbox = this._toolboxes.get(target);
     if (toolbox) {
@@ -383,12 +408,12 @@ DevTools.prototype = {
           promise.resolve(null);
 
       if (toolId != null && toolbox.currentToolId != toolId) {
-        hostPromise = hostPromise.then(function() {
+        hostPromise = hostPromise.then(function () {
           return toolbox.selectTool(toolId);
         });
       }
 
-      return hostPromise.then(function() {
+      return hostPromise.then(function () {
         toolbox.raise();
         return toolbox;
       });
@@ -450,23 +475,6 @@ DevTools.prototype = {
     return toolbox.destroy().then(() => true);
   },
 
-  _pingTelemetry: function() {
-    let mean = function(arr) {
-      if (arr.length === 0) {
-        return 0;
-      }
-
-      let total = arr.reduce((a, b) => a + b);
-      return Math.ceil(total / arr.length);
-    };
-
-    let tabStats = gDevToolsBrowser._tabStats;
-    this._telemetry.log(TABS_OPEN_PEAK_HISTOGRAM, tabStats.peakOpen);
-    this._telemetry.log(TABS_OPEN_AVG_HISTOGRAM, mean(tabStats.histOpen));
-    this._telemetry.log(TABS_PINNED_PEAK_HISTOGRAM, tabStats.peakPinned);
-    this._telemetry.log(TABS_PINNED_AVG_HISTOGRAM, mean(tabStats.histPinned));
-  },
-
   /**
    * Called to tear down a tools provider.
    */
@@ -474,14 +482,14 @@ DevTools.prototype = {
     for (let [target, toolbox] of this._toolboxes) {
       toolbox.destroy();
     }
+    AboutDevTools.unregister();
   },
 
   /**
    * All browser windows have been closed, tidy up remaining objects.
    */
-  destroy: function() {
+  destroy: function () {
     Services.obs.removeObserver(this.destroy, "quit-application");
-    Services.obs.removeObserver(this._teardown, "devtools-unloaded");
 
     for (let [key, tool] of this.getToolDefinitionMap()) {
       this.unregisterTool(key, true);
@@ -489,8 +497,7 @@ DevTools.prototype = {
 
     JsonView.destroy();
 
-    this._pingTelemetry();
-    this._telemetry = null;
+    gDevTools.unregisterDefaults();
 
     // Cleaning down the toolboxes: i.e.
     //   for (let [target, toolbox] of this._toolboxes) toolbox.destroy();
@@ -500,12 +507,16 @@ DevTools.prototype = {
   /**
    * Iterator that yields each of the toolboxes.
    */
-  *[Symbol.iterator]() {
+  *[Symbol.iterator ]() {
     for (let toolbox of this._toolboxes) {
       yield toolbox;
     }
   }
 };
 
-exports.gDevTools = new DevTools();
+const gDevTools = exports.gDevTools = new DevTools();
 
+// Watch for module loader unload. Fires when the tools are reloaded.
+unload(function () {
+  gDevTools._teardown();
+});

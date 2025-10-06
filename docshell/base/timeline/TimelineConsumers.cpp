@@ -158,12 +158,9 @@ bool
 TimelineConsumers::HasConsumer(nsIDocShell* aDocShell)
 {
   MOZ_ASSERT(NS_IsMainThread());
-  if (!aDocShell) {
-    return false;
-  }
-  bool isTimelineRecording = false;
-  aDocShell->GetRecordProfileTimelineMarkers(&isTimelineRecording);
-  return isTimelineRecording;
+  return aDocShell
+       ? aDocShell->GetRecordProfileTimelineMarkers()
+       : false;
 }
 
 bool
@@ -292,6 +289,20 @@ TimelineConsumers::AddMarkerForAllObservedDocShells(UniquePtr<AbstractTimelineMa
       storage->AddOTMTMarker(Move(clone));
     }
   }
+}
+
+void
+TimelineConsumers::PopMarkers(nsDocShell* aDocShell,
+                              JSContext* aCx,
+                              nsTArray<dom::ProfileTimelineMarker>& aStore)
+{
+  MOZ_ASSERT(NS_IsMainThread());
+
+  if (!aDocShell || !aDocShell->mObserved) {
+    return;
+  }
+
+  aDocShell->mObserved->PopMarkers(aCx, aStore);
 }
 
 } // namespace mozilla

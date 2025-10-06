@@ -21,9 +21,12 @@ class EventListenerManager;
 
 namespace dom {
 
+class AddEventListenerOptionsOrBoolean;
 class Event;
 class EventListener;
+class EventListenerOptionsOrBoolean;
 class EventHandlerNonNull;
+
 template <class T> struct Nullable;
 
 // IID for the dom::EventTarget interface
@@ -43,19 +46,19 @@ public:
   using nsIDOMEventTarget::DispatchEvent;
   virtual void AddEventListener(const nsAString& aType,
                                 EventListener* aCallback,
-                                bool aCapture,
+                                const AddEventListenerOptionsOrBoolean& aOptions,
                                 const Nullable<bool>& aWantsUntrusted,
                                 ErrorResult& aRv) = 0;
   virtual void RemoveEventListener(const nsAString& aType,
                                    EventListener* aCallback,
-                                   bool aCapture,
+                                   const EventListenerOptionsOrBoolean& aOptions,
                                    ErrorResult& aRv);
-  bool DispatchEvent(Event& aEvent, ErrorResult& aRv);
+  bool DispatchEvent(JSContext* aCx, Event& aEvent, ErrorResult& aRv);
 
   // Note, this takes the type in onfoo form!
   EventHandlerNonNull* GetEventHandler(const nsAString& aType)
   {
-    nsCOMPtr<nsIAtom> type = do_GetAtom(aType);
+    nsCOMPtr<nsIAtom> type = NS_Atomize(aType);
     return GetEventHandler(type, EmptyString());
   }
 
@@ -88,7 +91,7 @@ public:
    */
   virtual EventListenerManager* GetExistingListenerManager() const = 0;
 
-  virtual bool HasApzAwareListeners() const;
+  virtual bool IsApzAware() const;
 
 protected:
   EventHandlerNonNull* GetEventHandler(nsIAtom* aType,

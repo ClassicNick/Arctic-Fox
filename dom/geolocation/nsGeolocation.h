@@ -12,7 +12,6 @@
 
 #include "mozilla/StaticPtr.h"
 #include "nsCOMPtr.h"
-#include "nsAutoPtr.h"
 #include "nsTArray.h"
 #include "nsITimer.h"
 #include "nsIObserver.h"
@@ -177,7 +176,7 @@ public:
   // Getter for the window that this Geolocation is owned by
   nsIWeakReference* GetOwner() { return mOwner; }
 
-  // Check to see if the widnow still exists
+  // Check to see if the window still exists
   bool WindowOwnerStillExists();
 
   // Check to see if any active request requires high accuracy
@@ -190,8 +189,12 @@ private:
 
   ~Geolocation();
 
-  nsresult GetCurrentPosition(GeoPositionCallback& aCallback, GeoPositionErrorCallback& aErrorCallback, PositionOptions* aOptions);
-  nsresult WatchPosition(GeoPositionCallback& aCallback, GeoPositionErrorCallback& aErrorCallback, PositionOptions* aOptions, int32_t* aRv);
+  nsresult GetCurrentPosition(GeoPositionCallback aCallback,
+                              GeoPositionErrorCallback aErrorCallback,
+                              PositionOptions* aOptions);
+  nsresult WatchPosition(GeoPositionCallback aCallback,
+                         GeoPositionErrorCallback aErrorCallback,
+                         PositionOptions* aOptions, int32_t* aRv);
 
   bool RegisterRequestWithPrompt(nsGeolocationRequest* request);
 

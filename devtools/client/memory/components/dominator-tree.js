@@ -45,7 +45,7 @@ const DominatorTreeSubtreeFetching = createFactory(createClass({
       dom.span({ className: "heap-tree-item-field heap-tree-item-bytes" }),
       dom.span({
         className: "heap-tree-item-field heap-tree-item-name devtools-throbber",
-        style: { marginLeft: depth * TREE_ROW_HEIGHT }
+        style: { marginInlineStart: depth * TREE_ROW_HEIGHT }
       })
     );
   }
@@ -87,7 +87,7 @@ const DominatorTreeSiblingLink = createFactory(createClass({
       dom.span(
         {
           className: "heap-tree-item-field heap-tree-item-name",
-          style: { marginLeft: depth * TREE_ROW_HEIGHT }
+          style: { marginInlineStart: depth * TREE_ROW_HEIGHT }
         },
         dom.a(
           {
@@ -147,7 +147,7 @@ const DominatorTree = module.exports = createClass({
       isExpanded: node => {
         return node instanceof DominatorTreeLazyChildren
           ? false
-          : dominatorTree.expanded.has(node.nodeId)
+          : dominatorTree.expanded.has(node.nodeId);
       },
       onExpand: item => {
         if (item instanceof DominatorTreeLazyChildren) {
@@ -205,15 +205,12 @@ const DominatorTree = module.exports = createClass({
           expanded,
           getPercentSize: size => (size / dominatorTree.root.retainedSize) * 100,
           onViewSourceInDebugger,
-        })
+        });
       },
       getRoots: () => [dominatorTree.root],
       getKey: node =>
         node instanceof DominatorTreeLazyChildren ? node.key() : node.nodeId,
       itemHeight: TREE_ROW_HEIGHT,
-      // We can't cache traversals because incremental fetching of children
-      // means the traversal might not be valid.
-      reuseCachedTraversal: _ => false,
     });
   }
 });

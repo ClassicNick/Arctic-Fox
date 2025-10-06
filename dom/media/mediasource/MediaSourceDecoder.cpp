@@ -7,7 +7,6 @@
 
 #include "mozilla/Logging.h"
 #include "mozilla/dom/HTMLMediaElement.h"
-#include "mozilla/Preferences.h"
 #include "MediaDecoderStateMachine.h"
 #include "MediaSource.h"
 #include "MediaSourceResource.h"
@@ -31,7 +30,7 @@ MediaSourceDecoder::MediaSourceDecoder(dom::HTMLMediaElement* aElement)
   , mMediaSource(nullptr)
   , mEnded(false)
 {
-  SetExplicitDuration(UnspecifiedNaN<double>());
+  mExplicitDuration.Set(Some(UnspecifiedNaN<double>()));
 }
 
 MediaDecoder*
@@ -61,7 +60,7 @@ MediaSourceDecoder::Load(nsIStreamListener**)
     return NS_ERROR_FAILURE;
   }
 
-  nsresult rv = GetStateMachine()->Init();
+  nsresult rv = GetStateMachine()->Init(this);
   NS_ENSURE_SUCCESS(rv, rv);
 
   SetStateMachineParameters();
@@ -116,6 +115,10 @@ MediaSourceDecoder::GetBuffered()
   MOZ_ASSERT(NS_IsMainThread());
 
   dom::SourceBufferList* sourceBuffers = mMediaSource->ActiveSourceBuffers();
+  if (!sourceBuffers) {
+    // Media source object is shutting down.
+    return TimeIntervals();
+  }
   media::TimeUnit highestEndTime;
   nsTArray<media::TimeIntervals> activeRanges;
   media::TimeIntervals buffered;
@@ -148,7 +151,7 @@ MediaSourceDecoder::GetBuffered()
   return buffered;
 }
 
-RefPtr<ShutdownPromise>
+void
 MediaSourceDecoder::Shutdown()
 {
   MOZ_ASSERT(NS_IsMainThread());
@@ -160,7 +163,7 @@ MediaSourceDecoder::Shutdown()
   }
   mDemuxer = nullptr;
 
-  return MediaDecoder::Shutdown();
+  MediaDecoder::Shutdown();
 }
 
 /*static*/
@@ -189,7 +192,12 @@ MediaSourceDecoder::Ended(bool aEnded)
 {
   MOZ_ASSERT(NS_IsMainThread());
   static_cast<MediaSourceResource*>(GetResource())->SetEnded(aEnded);
-  mEnded = true;
+  if (aEnded) {
+    // We want the MediaSourceReader to refresh its buffered range as it may
+    // have been modified (end lined up).
+    NotifyDataArrived();
+  }
+  mEnded = aEnded;
 }
 
 void
@@ -215,14 +223,14 @@ MediaSourceDecoder::SetInitialDuration(int64_t aDuration)
   if (aDuration >= 0) {
     duration /= USECS_PER_S;
   }
-  SetMediaSourceDuration(duration, MSRangeRemovalAction::SKIP);
+  SetMediaSourceDuration(duration);
 }
 
 void
-MediaSourceDecoder::SetMediaSourceDuration(double aDuration, MSRangeRemovalAction aAction)
+MediaSourceDecoder::SetMediaSourceDuration(double aDuration)
 {
   MOZ_ASSERT(NS_IsMainThread());
-  double oldDuration = ExplicitDuration();
+  MOZ_ASSERT(!IsShutdown());
   if (aDuration >= 0) {
     int64_t checkedDuration;
     if (NS_FAILED(SecondsToUsecs(aDuration, checkedDuration))) {
@@ -234,17 +242,6 @@ MediaSourceDecoder::SetMediaSourceDuration(double aDuration, MSRangeRemovalActio
   } else {
     SetExplicitDuration(PositiveInfinity<double>());
   }
-
-  if (mMediaSource && aAction != MSRangeRemovalAction::SKIP) {
-    mMediaSource->DurationChange(oldDuration, aDuration);
-  }
-}
-
-double
-MediaSourceDecoder::GetMediaSourceDuration()
-{
-  MOZ_ASSERT(NS_IsMainThread());
-  return ExplicitDuration();
 }
 
 void
@@ -279,7 +276,7 @@ MediaSourceDecoder::NextFrameBufferedStatus()
   TimeInterval interval(currentPosition,
                         currentPosition + media::TimeUnit::FromMicroseconds(DEFAULT_NEXT_FRAME_AVAILABLE_BUFFERED),
                         MediaSourceDemuxer::EOS_FUZZ);
-  return GetBuffered().Contains(interval)
+  return GetBuffered().Contains(ClampIntervalToEnd(interval))
     ? MediaDecoderOwner::NEXT_FRAME_AVAILABLE
     : MediaDecoderOwner::NEXT_FRAME_UNAVAILABLE;
 }
@@ -288,6 +285,11 @@ bool
 MediaSourceDecoder::CanPlayThrough()
 {
   MOZ_ASSERT(NS_IsMainThread());
+
+  if (NextFrameBufferedStatus() == MediaDecoderOwner::NEXT_FRAME_UNAVAILABLE) {
+    return false;
+  }
+
   if (IsNaN(mMediaSource->Duration())) {
     // Don't have any data yet.
     return false;
@@ -304,7 +306,31 @@ MediaSourceDecoder::CanPlayThrough()
   TimeInterval interval(currentPosition,
                         timeAhead,
                         MediaSourceDemuxer::EOS_FUZZ);
-  return GetBuffered().Contains(interval);
+  return GetBuffered().Contains(ClampIntervalToEnd(interval));
+}
+
+void
+MediaSourceDecoder::NotifyWaitingForKey()
+{
+  mWaitingForKeyEvent.Notify();
+}
+
+MediaEventSource<void>*
+MediaSourceDecoder::WaitingForKeyEvent()
+{
+  return &mWaitingForKeyEvent;
+}
+
+TimeInterval
+MediaSourceDecoder::ClampIntervalToEnd(const TimeInterval& aInterval)
+{
+  MOZ_ASSERT(NS_IsMainThread());
+
+  if (!mEnded) {
+    return aInterval;
+  }
+  TimeInterval interval(TimeUnit(), TimeUnit::FromSeconds(GetDuration()));
+  return aInterval.Intersection(interval);
 }
 
 #undef MSE_DEBUG

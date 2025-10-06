@@ -41,11 +41,12 @@ add_task(function* testTabEvents() {
     }
 
     browser.test.log("Create second browser window");
+    let windowId;
     Promise.all([
       browser.windows.getCurrent(),
-      browser.windows.create({}),
+      browser.windows.create({url: "about:blank"}),
     ]).then(windows => {
-      let windowId = windows[0].id;
+      windowId = windows[0].id;
       let otherWindowId = windows[1].id;
       let initialTab;
 
@@ -53,7 +54,7 @@ add_task(function* testTabEvents() {
         initialTab = created.tab;
 
         browser.test.log("Create tab in window 1");
-        return browser.tabs.create({windowId, index: 0});
+        return browser.tabs.create({windowId, index: 0, url: "about:blank"});
       }).then(tab => {
         let oldIndex = tab.index;
         browser.test.assertEq(0, oldIndex, "Tab has the expected index");
@@ -103,16 +104,45 @@ add_task(function* testTabEvents() {
           browser.test.assertEq(initialTab.id, removed.tabId, "Expected removed tab ID");
           browser.test.assertEq(otherWindowId, removed.windowId, "Expected removed tab window ID");
           browser.test.assertEq(true, removed.isWindowClosing, "Expected isWindowClosing value");
-        }).then(() => {
-          browser.test.notifyPass("tabs-events");
         });
       });
+    }).then(() => {
+      browser.test.log("Create additional tab in window 1");
+      return browser.tabs.create({windowId, url: "about:blank"});
+    }).then(tab => {
+      return expectEvents(["onCreated"]).then(() => {
+        browser.test.log("Create a new window, adopting the new tab");
+
+        // We have to explicitly wait for the event here, since its timing is
+        // not predictable.
+        let promiseAttached = new Promise(resolve => {
+          browser.tabs.onAttached.addListener(function listener(tabId) {
+            browser.tabs.onAttached.removeListener(listener);
+            resolve();
+          });
+        });
+
+        return Promise.all([
+          browser.windows.create({tabId: tab.id}),
+          promiseAttached,
+        ]);
+      }).then(([window]) => {
+        return expectEvents(["onDetached", "onAttached"]).then(([detached, attached]) => {
+          browser.test.assertEq(tab.id, detached.tabId, "Expected onDetached tab ID");
+
+          browser.test.assertEq(tab.id, attached.tabId, "Expected onAttached tab ID");
+          browser.test.assertEq(0, attached.newPosition, "Expected onAttached new index");
+          browser.test.assertEq(window.id, attached.newWindowId,
+                                "Expected onAttached new window id");
+
+          browser.test.log("Close the new window");
+          return browser.windows.remove(window.id);
+        });
+      });
+    }).then(() => {
+      browser.test.notifyPass("tabs-events");
     }).catch(e => {
-      try {
-        browser.test.fail(`${e} :: ${e.stack}`);
-      } catch (ex) {
-        throw e;
-      }
+      browser.test.fail(`${e} :: ${e.stack}`);
       browser.test.notifyFail("tabs-events");
     });
   }
@@ -128,4 +158,81 @@ add_task(function* testTabEvents() {
   yield extension.startup();
   yield extension.awaitFinish("tabs-events");
   yield extension.unload();
+});
+
+add_task(function* testTabEventsSize() {
+  function background() {
+    function sendSizeMessages(tab, type) {
+      browser.test.sendMessage(`${type}-dims`, {width: tab.width, height: tab.height});
+    }
+
+    browser.tabs.onCreated.addListener(tab => {
+      sendSizeMessages(tab, "on-created");
+    });
+
+    browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+      if (tab.status == "complete") {
+        sendSizeMessages(tab, "on-updated");
+      }
+    });
+
+    browser.test.onMessage.addListener((msg, arg) => {
+      if (msg === "create-tab") {
+        browser.tabs.create({url: "http://example.com/"}).then(tab => {
+          sendSizeMessages(tab, "create");
+          browser.test.sendMessage("created-tab-id", tab.id);
+        });
+      } else if (msg === "update-tab") {
+        browser.tabs.update(arg, {url: "http://example.org/"}).then(tab => {
+          sendSizeMessages(tab, "update");
+        });
+      } else if (msg === "remove-tab") {
+        browser.tabs.remove(arg);
+        browser.test.sendMessage("tab-removed");
+      }
+    });
+
+    browser.test.sendMessage("ready");
+  }
+
+  let extension = ExtensionTestUtils.loadExtension({
+    manifest: {
+      "permissions": ["tabs"],
+    },
+    background,
+  });
+
+  const RESOLUTION_PREF = "layout.css.devPixelsPerPx";
+  registerCleanupFunction(() => {
+    SpecialPowers.clearUserPref(RESOLUTION_PREF);
+  });
+
+  function checkDimensions(dims, type) {
+    is(dims.width, gBrowser.selectedBrowser.clientWidth, `tab from ${type} reports expected width`);
+    is(dims.height, gBrowser.selectedBrowser.clientHeight, `tab from ${type} reports expected height`);
+  }
+
+  yield Promise.all([extension.startup(), extension.awaitMessage("ready")]);
+
+  for (let resolution of [2, 1]) {
+    SpecialPowers.setCharPref(RESOLUTION_PREF, String(resolution));
+    is(window.devicePixelRatio, resolution, "window has the required resolution");
+
+    extension.sendMessage("create-tab");
+    let tabId = yield extension.awaitMessage("created-tab-id");
+
+    checkDimensions(yield extension.awaitMessage("create-dims"), "create");
+    checkDimensions(yield extension.awaitMessage("on-created-dims"), "onCreated");
+
+    extension.sendMessage("update-tab", tabId);
+
+    checkDimensions(yield extension.awaitMessage("update-dims"), "update");
+    checkDimensions(yield extension.awaitMessage("on-updated-dims"), "onUpdated");
+
+    extension.sendMessage("remove-tab", tabId);
+    yield extension.awaitMessage("tab-removed");
+  }
+
+  yield extension.unload();
+  SpecialPowers.clearUserPref(RESOLUTION_PREF);
 });

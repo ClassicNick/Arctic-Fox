@@ -15,7 +15,7 @@ const TEST_URI = `
   <span id="matches" class="matches">Some styled text</span>
 `;
 
-add_task(function*() {
+add_task(function* () {
   yield addTab("data:text/html;charset=utf-8," + encodeURIComponent(TEST_URI));
   let {inspector, view} = yield openComputedView();
   yield selectNode("#matches", inspector);
@@ -33,18 +33,32 @@ function* testToggleDefaultStyles(inspector, computedView) {
 
 function* testAddTextInFilter(inspector, computedView) {
   info("setting filter text to \"color\"");
+  let doc = computedView.styleDocument;
+  let layoutWrapper = doc.querySelector("#layout-wrapper");
   let searchField = computedView.searchField;
   let onRefreshed = inspector.once("computed-view-refreshed");
-  searchField.focus();
-
   let win = computedView.styleWindow;
+
+  // First check to make sure that accel + F doesn't focus search if the
+  // container isn't focused
+  inspector.panelWin.focus();
+  EventUtils.synthesizeKey("f", { accelKey: true });
+  isnot(inspector.panelDoc.activeElement, searchField,
+        "Search field isn't focused");
+
+  computedView.element.focus();
+  EventUtils.synthesizeKey("f", { accelKey: true });
+  is(inspector.panelDoc.activeElement, searchField, "Search field is focused");
+
   synthesizeKeys("color", win);
   yield onRefreshed;
+
+  ok(layoutWrapper.hidden, "Layout view is hidden");
 
   info("check that the correct properties are visible");
 
   let propertyViews = computedView.propertyViews;
-  propertyViews.forEach(function(propView) {
+  propertyViews.forEach(propView => {
     let name = propView.name;
     is(propView.visible, name.indexOf("color") > -1,
       "span " + name + " property visibility check");

@@ -21,7 +21,6 @@
 
 #include "nsTextEditorState.h"
 
-class nsFormSubmission;
 class nsIControllers;
 class nsIDocument;
 class nsPresContext;
@@ -34,6 +33,8 @@ class EventChainPreVisitor;
 class EventStates;
 
 namespace dom {
+
+class HTMLFormSubmission;
 
 class HTMLTextAreaElement final : public nsGenericHTMLFormElementWithState,
                                   public nsIDOMHTMLTextAreaElement,
@@ -72,7 +73,7 @@ public:
   // nsIFormControl
   NS_IMETHOD_(uint32_t) GetType() const override { return NS_FORM_TEXTAREA; }
   NS_IMETHOD Reset() override;
-  NS_IMETHOD SubmitNamesValues(nsFormSubmission* aFormSubmission) override;
+  NS_IMETHOD SubmitNamesValues(HTMLFormSubmission* aFormSubmission) override;
   NS_IMETHOD SaveState() override;
   virtual bool RestoreState(nsPresState* aState) override;
   virtual bool IsDisabledForEvents(EventMessage aMessage) override;
@@ -105,7 +106,7 @@ public:
   NS_IMETHOD_(void) UpdatePlaceholderVisibility(bool aNotify) override;
   NS_IMETHOD_(bool) GetPlaceholderVisibility() override;
   NS_IMETHOD_(void) InitializeKeyboardEventListeners() override;
-  NS_IMETHOD_(void) OnValueChanged(bool aNotify) override;
+  NS_IMETHOD_(void) OnValueChanged(bool aNotify, bool aWasInteractiveUserChange) override;
   NS_IMETHOD_(bool) HasCachedSelection() override;
 
   // nsIContent
@@ -154,8 +155,10 @@ public:
 
   // nsIConstraintValidation
   bool     IsTooLong();
+  bool     IsTooShort();
   bool     IsValueMissing() const;
   void     UpdateTooLongValidityState();
+  void     UpdateTooShortValidityState();
   void     UpdateValueMissingValidityState();
   void     UpdateBarredFromConstraintValidation();
   nsresult GetValidationMessage(nsAString& aValidationMessage,
@@ -179,7 +182,7 @@ public:
     if (aCols == 0) {
       aError.Throw(NS_ERROR_DOM_INDEX_SIZE_ERR);
     } else {
-      SetUnsignedIntAttr(nsGkAtoms::cols, aCols, aError);
+      SetUnsignedIntAttr(nsGkAtoms::cols, aCols, DEFAULT_COLS, aError);
     }
   }
   bool Disabled()
@@ -198,10 +201,24 @@ public:
   }
   void SetMaxLength(int32_t aMaxLength, ErrorResult& aError)
   {
-    if (aMaxLength < 0) {
+    int32_t minLength = MinLength();
+    if (aMaxLength < 0 || (minLength >= 0 && aMaxLength < minLength)) {
       aError.Throw(NS_ERROR_DOM_INDEX_SIZE_ERR);
     } else {
       SetHTMLIntAttr(nsGkAtoms::maxlength, aMaxLength, aError);
+    }
+  }
+  int32_t MinLength()
+  {
+    return GetIntAttr(nsGkAtoms::minlength, -1);
+  }
+  void SetMinLength(int32_t aMinLength, ErrorResult& aError)
+  {
+    int32_t maxLength = MaxLength();
+    if (aMinLength < 0 || (maxLength >= 0 && aMinLength > maxLength)) {
+      aError.Throw(NS_ERROR_DOM_INDEX_SIZE_ERR);
+    } else {
+      SetHTMLIntAttr(nsGkAtoms::minlength, aMinLength, aError);
     }
   }
   // XPCOM GetName is fine
@@ -247,7 +264,7 @@ public:
     if (aRows == 0) {
       aError.Throw(NS_ERROR_DOM_INDEX_SIZE_ERR);
     } else {
-      SetUnsignedIntAttr(nsGkAtoms::rows, aRows, aError);
+      SetUnsignedIntAttr(nsGkAtoms::rows, aRows, DEFAULT_ROWS_TEXTAREA, aError);
     }
   }
   // XPCOM GetWrap is fine
@@ -265,12 +282,13 @@ public:
   // nsIConstraintValidation::GetValidationMessage() is fine.
   // nsIConstraintValidation::CheckValidity() is fine.
   using nsIConstraintValidation::CheckValidity;
+  using nsIConstraintValidation::ReportValidity;
   // nsIConstraintValidation::SetCustomValidity() is fine.
   // XPCOM Select is fine
-  uint32_t GetSelectionStart(ErrorResult& aError);
-  void SetSelectionStart(uint32_t aSelectionStart, ErrorResult& aError);
-  uint32_t GetSelectionEnd(ErrorResult& aError);
-  void SetSelectionEnd(uint32_t aSelectionEnd, ErrorResult& aError);
+  Nullable<uint32_t> GetSelectionStart(ErrorResult& aError);
+  void SetSelectionStart(const Nullable<uint32_t>& aSelectionStart, ErrorResult& aError);
+  Nullable<uint32_t> GetSelectionEnd(ErrorResult& aError);
+  void SetSelectionEnd(const Nullable<uint32_t>& aSelectionEnd, ErrorResult& aError);
   void GetSelectionDirection(nsAString& aDirection, ErrorResult& aError);
   void SetSelectionDirection(const nsAString& aDirection, ErrorResult& aError);
   void SetSelectionRange(uint32_t aSelectionStart, uint32_t aSelectionEnd, const Optional<nsAString>& aDirecton, ErrorResult& aError);
@@ -291,6 +309,8 @@ protected:
   nsCOMPtr<nsIControllers> mControllers;
   /** Whether or not the value has changed since its default value was given. */
   bool                     mValueChanged;
+  /** Whether or not the last change to the value was made interactively by the user. */
+  bool                     mLastValueChangeWasInteractive;
   /** Whether or not we are already handling select event. */
   bool                     mHandlingSelect;
   /** Whether or not we are done adding children (always true if not
@@ -304,9 +324,9 @@ protected:
   bool                     mCanShowInvalidUI;
   /** Whether we should make :-moz-ui-valid apply on the element. **/
   bool                     mCanShowValidUI;
-  
+
   void FireChangeEventIfNeeded();
-  
+
   nsString mFocusedValue;
 
   /** The state of the text editor (selection controller and the editor) **/

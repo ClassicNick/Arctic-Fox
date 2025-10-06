@@ -10,6 +10,7 @@
 #include "nsContainerFrame.h"
 #include "nsIAnonymousContentCreator.h"
 #include "nsCOMPtr.h"
+#include "nsCSSPseudoElements.h"
 
 class nsMeterFrame : public nsContainerFrame,
                      public nsIAnonymousContentCreator
@@ -28,8 +29,8 @@ public:
   virtual void DestroyFrom(nsIFrame* aDestructRoot) override;
 
   virtual void Reflow(nsPresContext*           aCX,
-                      nsHTMLReflowMetrics&     aDesiredSize,
-                      const nsHTMLReflowState& aReflowState,
+                      ReflowOutput&     aDesiredSize,
+                      const ReflowInput& aReflowInput,
                       nsReflowStatus&          aStatus) override;
 
   virtual nsIAtom* GetType() const override;
@@ -75,13 +76,13 @@ public:
    */
   bool ShouldUseNativeStyle() const;
 
-  virtual Element* GetPseudoElement(CSSPseudoElementType aType) override;
+  virtual Element* GetPseudoElement(mozilla::CSSPseudoElementType aType) override;
 
 protected:
   // Helper function which reflow the anonymous div frame.
   void ReflowBarFrame(nsIFrame*                aBarFrame,
                       nsPresContext*           aPresContext,
-                      const nsHTMLReflowState& aReflowState,
+                      const ReflowInput& aReflowInput,
                       nsReflowStatus&          aStatus);
   /**
    * The div used to show the meter bar.

@@ -53,15 +53,15 @@ static const uint32_t kParallelLoadLimit = 15;
 static const int32_t  kCustomProfileQuota = 512000;
 
 //
-// To enable logging (see prlog.h for full details):
+// To enable logging (see mozilla/Logging.h for full details):
 //
-//    set NSPR_LOG_MODULES=nsOfflineCacheUpdate:5
-//    set NSPR_LOG_FILE=offlineupdate.log
+//    set MOZ_LOG=nsOfflineCacheUpdate:5
+//    set MOZ_LOG_FILE=offlineupdate.log
 //
 // this enables LogLevel::Debug level information and places all output in
 // the file offlineupdate.log
 //
-extern PRLogModuleInfo *gOfflineCacheUpdateLog;
+extern LazyLogModule gOfflineCacheUpdateLog;
 
 #undef LOG
 #define LOG(args) MOZ_LOG(gOfflineCacheUpdateLog, mozilla::LogLevel::Debug, args)
@@ -141,12 +141,12 @@ private:
 
     ~nsManifestCheck() {}
 
-    static NS_METHOD ReadManifest(nsIInputStream *aInputStream,
-                                  void *aClosure,
-                                  const char *aFromSegment,
-                                  uint32_t aOffset,
-                                  uint32_t aCount,
-                                  uint32_t *aBytesConsumed);
+    static nsresult ReadManifest(nsIInputStream *aInputStream,
+                                 void *aClosure,
+                                 const char *aFromSegment,
+                                 uint32_t aOffset,
+                                 uint32_t aCount,
+                                 uint32_t *aBytesConsumed);
 
     RefPtr<nsOfflineCacheUpdate> mUpdate;
     nsCOMPtr<nsIURI> mURI;
@@ -206,8 +206,7 @@ nsManifestCheck::Begin()
 // nsManifestCheck <public>
 //-----------------------------------------------------------------------------
 
-/* static */
-NS_METHOD
+/* static */ nsresult
 nsManifestCheck::ReadManifest(nsIInputStream *aInputStream,
                               void *aClosure,
                               const char *aFromSegment,
@@ -324,13 +323,15 @@ nsOfflineCacheUpdateItem::nsOfflineCacheUpdateItem(nsIURI *aURI,
                                                    nsIPrincipal* aLoadingPrincipal,
                                                    nsIApplicationCache *aApplicationCache,
                                                    nsIApplicationCache *aPreviousApplicationCache,
-                                                   uint32_t type)
+                                                   uint32_t type,
+                                                   uint32_t loadFlags)
     : mURI(aURI)
     , mReferrerURI(aReferrerURI)
     , mLoadingPrincipal(aLoadingPrincipal)
     , mApplicationCache(aApplicationCache)
     , mPreviousApplicationCache(aPreviousApplicationCache)
     , mItemType(type)
+    , mLoadFlags(loadFlags)
     , mChannel(nullptr)
     , mState(LoadStatus::UNINITIALIZED)
     , mBytesRead(0)
@@ -362,8 +363,7 @@ nsOfflineCacheUpdateItem::OpenChannel(nsOfflineCacheUpdate *aUpdate)
     NS_ENSURE_SUCCESS(rv, rv);
 
     uint32_t flags = nsIRequest::LOAD_BACKGROUND |
-                     nsICachingChannel::LOAD_ONLY_IF_MODIFIED |
-                     nsICachingChannel::LOAD_CHECK_OFFLINE_CACHE;
+                     nsICachingChannel::LOAD_ONLY_IF_MODIFIED;
 
     if (mApplicationCache == mPreviousApplicationCache) {
         // Same app cache to read from and to write to is used during
@@ -371,6 +371,8 @@ nsOfflineCacheUpdateItem::OpenChannel(nsOfflineCacheUpdate *aUpdate)
         // cache from being modified.
         flags |= nsIRequest::INHIBIT_CACHING;
     }
+
+    flags |= mLoadFlags;
 
     rv = NS_NewChannel(getter_AddRefs(mChannel),
                        mURI,
@@ -499,7 +501,6 @@ nsOfflineCacheUpdateItem::OnStopRequest(nsIRequest *aRequest,
 
     return NS_OK;
 }
-
 
 //-----------------------------------------------------------------------------
 // nsOfflineCacheUpdateItem::nsIRunnable
@@ -686,7 +687,7 @@ nsOfflineManifestItem::nsOfflineManifestItem(nsIURI *aURI,
                                              nsIApplicationCache *aPreviousApplicationCache)
     : nsOfflineCacheUpdateItem(aURI, aReferrerURI, aLoadingPrincipal,
                                aApplicationCache, aPreviousApplicationCache,
-                               nsIApplicationCache::ITEM_MANIFEST)
+                               nsIApplicationCache::ITEM_MANIFEST, 0)
     , mParserState(PARSE_INIT)
     , mNeedsUpdate(true)
     , mStrictFileOriginPolicy(false)
@@ -704,7 +705,7 @@ nsOfflineManifestItem::~nsOfflineManifestItem()
 //-----------------------------------------------------------------------------
 
 /* static */
-NS_METHOD
+nsresult
 nsOfflineManifestItem::ReadManifest(nsIInputStream *aInputStream,
                                     void *aClosure,
                                     const char *aFromSegment,
@@ -754,7 +755,7 @@ nsOfflineManifestItem::ReadManifest(nsIInputStream *aInputStream,
 
     for (iter = begin; iter != end; iter++) {
         if (*iter == '\r' || *iter == '\n') {
-            nsresult rv = manifest->HandleManifestLine(begin, iter);
+            rv = manifest->HandleManifestLine(begin, iter);
 
             if (NS_FAILED(rv)) {
                 LOG(("HandleManifestLine failed with 0x%08x", rv));
@@ -900,6 +901,12 @@ nsOfflineManifestItem::HandleManifestLine(const nsCString::const_iterator &aBegi
             break;
 
         mExplicitURIs.AppendObject(uri);
+
+        if (!NS_SecurityCompareURIs(mURI, uri,
+                                    mStrictFileOriginPolicy)) {
+          mAnonymousURIs.AppendObject(uri);
+        }
+
         break;
     }
 
@@ -925,7 +932,6 @@ nsOfflineManifestItem::HandleManifestLine(const nsCString::const_iterator &aBegi
         rv = namespaceURI->GetAsciiSpec(namespaceSpec);
         if (NS_FAILED(rv))
             break;
-
 
         nsCOMPtr<nsIURI> fallbackURI;
         rv = NS_NewURI(getter_AddRefs(fallbackURI), fallbackSpec, nullptr, mURI);
@@ -1432,6 +1438,13 @@ nsOfflineCacheUpdate::HandleManifest(bool *aDoUpdate)
         NS_ENSURE_SUCCESS(rv, rv);
     }
 
+    const nsCOMArray<nsIURI> &anonURIs = mManifestItem->GetAnonymousURIs();
+    for (int32_t i = 0; i < anonURIs.Count(); i++) {
+      rv = AddURI(anonURIs[i], nsIApplicationCache::ITEM_EXPLICIT,
+                  nsIRequest::LOAD_ANONYMOUS);
+      NS_ENSURE_SUCCESS(rv, rv);
+    }
+
     const nsCOMArray<nsIURI> &fallbackURIs = mManifestItem->GetFallbackURIs();
     for (int32_t i = 0; i < fallbackURIs.Count(); i++) {
         rv = AddURI(fallbackURIs[i], nsIApplicationCache::ITEM_FALLBACK);
@@ -1736,10 +1749,8 @@ nsOfflineCacheUpdate::Begin()
     mItemsInProgress = 0;
 
     if (mState == STATE_CANCELLED) {
-      RefPtr<nsRunnableMethod<nsOfflineCacheUpdate> > errorNotification =
-        NS_NewRunnableMethod(this,
-                             &nsOfflineCacheUpdate::AsyncFinishWithError);
-      nsresult rv = NS_DispatchToMainThread(errorNotification);
+      nsresult rv = NS_DispatchToMainThread(NewRunnableMethod(this,
+                                                              &nsOfflineCacheUpdate::AsyncFinishWithError));
       NS_ENSURE_SUCCESS(rv, rv);
 
       return NS_OK;
@@ -2270,7 +2281,7 @@ nsOfflineCacheUpdate::GetIsUpgrade(bool *aIsUpgrade)
 }
 
 nsresult
-nsOfflineCacheUpdate::AddURI(nsIURI *aURI, uint32_t aType)
+nsOfflineCacheUpdate::AddURI(nsIURI *aURI, uint32_t aType, uint32_t aLoadFlags)
 {
     NS_ENSURE_TRUE(mState >= STATE_INITIALIZED, NS_ERROR_NOT_INITIALIZED);
 
@@ -2288,7 +2299,8 @@ nsOfflineCacheUpdate::AddURI(nsIURI *aURI, uint32_t aType)
     // Don't fetch the same URI twice.
     for (uint32_t i = 0; i < mItems.Length(); i++) {
         bool equals;
-        if (NS_SUCCEEDED(mItems[i]->mURI->Equals(aURI, &equals)) && equals) {
+        if (NS_SUCCEEDED(mItems[i]->mURI->Equals(aURI, &equals)) && equals &&
+            mItems[i]->mLoadFlags == aLoadFlags) {
             // retain both types.
             mItems[i]->mItemType |= aType;
             return NS_OK;
@@ -2301,7 +2313,8 @@ nsOfflineCacheUpdate::AddURI(nsIURI *aURI, uint32_t aType)
                                      mLoadingPrincipal,
                                      mApplicationCache,
                                      mPreviousApplicationCache,
-                                     aType);
+                                     aType,
+                                     aLoadFlags);
     if (!item) return NS_ERROR_OUT_OF_MEMORY;
 
     mItems.AppendElement(item);

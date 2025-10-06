@@ -1,3 +1,4 @@
+
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
  * vim: set ts=8 sts=4 et sw=4 tw=99:
  * This Source Code Form is subject to the terms of the Mozilla Public
@@ -15,7 +16,6 @@
 
 #include "gc/Allocator.h"
 #include "vm/Interpreter.h"
-#include "vm/ScopeObject.h"
 #include "vm/TypedArrayCommon.h"
 
 #include "jsatominlines.h"
@@ -26,8 +26,7 @@ namespace js {
 inline
 StackBaseShape::StackBaseShape(ExclusiveContext* cx, const Class* clasp, uint32_t objectFlags)
   : flags(objectFlags),
-    clasp(clasp),
-    compartment(cx->compartment_)
+    clasp(clasp)
 {}
 
 inline Shape*
@@ -98,6 +97,14 @@ Shape::new_(ExclusiveContext* cx, Handle<StackShape> other, uint32_t nfixed)
     return shape;
 }
 
+inline void
+Shape::updateBaseShapeAfterMovingGC()
+{
+    BaseShape* base = base_.unbarrieredGet();
+    if (IsForwarded(base))
+        base_.unsafeSet(Forwarded(base));
+}
+
 template<class ObjectSubclass>
 /* static */ inline bool
 EmptyShape::ensureInitialCustomShape(ExclusiveContext* cx, Handle<ObjectSubclass*> obj)
@@ -126,7 +133,7 @@ EmptyShape::ensureInitialCustomShape(ExclusiveContext* cx, Handle<ObjectSubclass
 
     // Cache the initial shape for non-prototype objects, however, so that
     // future instances will begin life with that shape.
-    RootedObject proto(cx, obj->getProto());
+    RootedObject proto(cx, obj->staticPrototype());
     EmptyShape::insertInitialShape(cx, shape, proto);
     return true;
 }

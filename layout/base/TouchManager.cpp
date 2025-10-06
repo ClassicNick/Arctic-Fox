@@ -7,7 +7,6 @@
 
 #include "TouchManager.h"
 
-#include "mozilla/TouchEvents.h"
 #include "mozilla/dom/EventTarget.h"
 #include "nsIFrame.h"
 #include "nsPresShell.h"
@@ -15,23 +14,21 @@
 
 namespace mozilla {
 
-using EventTarget = ::mozilla::dom::EventTarget;
-
-nsRefPtrHashtable<nsUint32HashKey, dom::Touch>* TouchManager::gCaptureTouchList;
+nsDataHashtable<nsUint32HashKey, TouchManager::TouchInfo>* TouchManager::sCaptureTouchList;
 
 /*static*/ void
 TouchManager::InitializeStatics()
 {
-  NS_ASSERTION(!gCaptureTouchList, "InitializeStatics called multiple times!");
-  gCaptureTouchList = new nsRefPtrHashtable<nsUint32HashKey, dom::Touch>;
+  NS_ASSERTION(!sCaptureTouchList, "InitializeStatics called multiple times!");
+  sCaptureTouchList = new nsDataHashtable<nsUint32HashKey, TouchManager::TouchInfo>;
 }
 
 /*static*/ void
 TouchManager::ReleaseStatics()
 {
-  NS_ASSERTION(gCaptureTouchList, "ReleaseStatics called without Initialize!");
-  delete gCaptureTouchList;
-  gCaptureTouchList = nullptr;
+  NS_ASSERTION(sCaptureTouchList, "ReleaseStatics called without Initialize!");
+  delete sCaptureTouchList;
+  sCaptureTouchList = nullptr;
 }
 
 void
@@ -49,13 +46,23 @@ TouchManager::Destroy()
   mPresShell = nullptr;
 }
 
-static void
-EvictTouchPoint(RefPtr<dom::Touch>& aTouch,
-                nsIDocument* aLimitToDocument = nullptr)
+static nsIContent*
+GetNonAnonymousAncestor(dom::EventTarget* aTarget)
+{
+  nsCOMPtr<nsIContent> content(do_QueryInterface(aTarget));
+  if (content && content->IsInNativeAnonymousSubtree()) {
+    content = content->FindFirstNonChromeOnlyAccessContent();
+  }
+  return content;
+}
+
+/*static*/ void
+TouchManager::EvictTouchPoint(RefPtr<dom::Touch>& aTouch,
+                              nsIDocument* aLimitToDocument)
 {
   nsCOMPtr<nsINode> node(do_QueryInterface(aTouch->mTarget));
   if (node) {
-    nsIDocument* doc = node->GetCurrentDoc();
+    nsIDocument* doc = node->GetUncomposedDoc();
     if (doc && (!aLimitToDocument || aLimitToDocument == doc)) {
       nsIPresShell* presShell = doc->GetShell();
       if (presShell) {
@@ -65,30 +72,27 @@ EvictTouchPoint(RefPtr<dom::Touch>& aTouch,
           nsCOMPtr<nsIWidget> widget = frame->GetView()->GetNearestWidget(&pt);
           if (widget) {
             WidgetTouchEvent event(true, eTouchEnd, widget);
-            event.widget = widget;
-            event.time = PR_IntervalNow();
-            event.touches.AppendElement(aTouch);
+            event.mTime = PR_IntervalNow();
+            event.mTouches.AppendElement(aTouch);
             nsEventStatus status;
             widget->DispatchEvent(&event, status);
-            return;
           }
         }
       }
     }
   }
   if (!node || !aLimitToDocument || node->OwnerDoc() == aLimitToDocument) {
-    // We couldn't dispatch touchend. Remove the touch from gCaptureTouchList explicitly.
-    TouchManager::gCaptureTouchList->Remove(aTouch->Identifier());
+    sCaptureTouchList->Remove(aTouch->Identifier());
   }
 }
 
-static void
-AppendToTouchList(WidgetTouchEvent::TouchArray* aTouchList)
+/*static*/ void
+TouchManager::AppendToTouchList(WidgetTouchEvent::TouchArray* aTouchList)
 {
-  for (auto iter = TouchManager::gCaptureTouchList->Iter();
+  for (auto iter = sCaptureTouchList->Iter();
        !iter.Done();
        iter.Next()) {
-    RefPtr<dom::Touch>& touch = iter.Data();
+    RefPtr<dom::Touch>& touch = iter.Data().mTouch;
     touch->mChanged = false;
     aTouchList->AppendElement(touch);
   }
@@ -118,7 +122,7 @@ TouchManager::PreHandleEvent(WidgetEvent* aEvent,
       // if there is only one touch in this touchstart event, assume that it is
       // the start of a new touch session and evict any old touches in the
       // queue
-      if (touchEvent->touches.Length() == 1) {
+      if (touchEvent->mTouches.Length() == 1) {
         WidgetTouchEvent::AutoTouchArray touches;
         AppendToTouchList(&touches);
         for (uint32_t i = 0; i < touches.Length(); ++i) {
@@ -126,22 +130,23 @@ TouchManager::PreHandleEvent(WidgetEvent* aEvent,
         }
       }
       // Add any new touches to the queue
-      for (uint32_t i = 0; i < touchEvent->touches.Length(); ++i) {
-        dom::Touch* touch = touchEvent->touches[i];
+      for (uint32_t i = 0; i < touchEvent->mTouches.Length(); ++i) {
+        dom::Touch* touch = touchEvent->mTouches[i];
         int32_t id = touch->Identifier();
-        if (!gCaptureTouchList->Get(id, nullptr)) {
+        if (!sCaptureTouchList->Get(id, nullptr)) {
           // If it is not already in the queue, it is a new touch
           touch->mChanged = true;
         }
         touch->mMessage = aEvent->mMessage;
-        gCaptureTouchList->Put(id, touch);
+        TouchInfo info = { touch, GetNonAnonymousAncestor(touch->mTarget) };
+        sCaptureTouchList->Put(id, info);
       }
       break;
     }
     case eTouchMove: {
       // Check for touches that changed. Mark them add to queue
       WidgetTouchEvent* touchEvent = aEvent->AsTouchEvent();
-      WidgetTouchEvent::TouchArray& touches = touchEvent->touches;
+      WidgetTouchEvent::TouchArray& touches = touchEvent->mTouches;
       bool haveChanged = false;
       for (int32_t i = touches.Length(); i; ) {
         --i;
@@ -152,11 +157,12 @@ TouchManager::PreHandleEvent(WidgetEvent* aEvent,
         int32_t id = touch->Identifier();
         touch->mMessage = aEvent->mMessage;
 
-        RefPtr<dom::Touch> oldTouch = gCaptureTouchList->GetWeak(id);
-        if (!oldTouch) {
+        TouchInfo info;
+        if (!sCaptureTouchList->Get(id, &info)) {
           touches.RemoveElementAt(i);
           continue;
         }
+        RefPtr<dom::Touch> oldTouch = info.mTouch;
         if (!touch->Equals(oldTouch)) {
           touch->mChanged = true;
           haveChanged = true;
@@ -167,9 +173,15 @@ TouchManager::PreHandleEvent(WidgetEvent* aEvent,
           touches.RemoveElementAt(i);
           continue;
         }
+        nsCOMPtr<nsINode> targetNode(do_QueryInterface(targetPtr));
+        if (!targetNode->IsInComposedDoc()) {
+          targetPtr = do_QueryInterface(info.mNonAnonymousTarget);
+        }
         touch->SetTarget(targetPtr);
 
-        gCaptureTouchList->Put(id, touch);
+        info.mTouch = touch;
+        // info.mNonAnonymousTarget is still valid from above
+        sCaptureTouchList->Put(id, info);
         // if we're moving from touchstart to touchmove for this touch
         // we allow preventDefault to prevent mouse events
         if (oldTouch->mMessage != touch->mMessage) {
@@ -185,9 +197,9 @@ TouchManager::PreHandleEvent(WidgetEvent* aEvent,
           // arbitrarily pick the first touch point to be the "changed"
           // touch because firing an event with no changed events doesn't
           // work.
-          for (uint32_t i = 0; i < touchEvent->touches.Length(); ++i) {
-            if (touchEvent->touches[i]) {
-              touchEvent->touches[i]->mChanged = true;
+          for (uint32_t i = 0; i < touchEvent->mTouches.Length(); ++i) {
+            if (touchEvent->mTouches[i]) {
+              touchEvent->mTouches[i]->mChanged = true;
               break;
             }
           }
@@ -205,7 +217,7 @@ TouchManager::PreHandleEvent(WidgetEvent* aEvent,
       // Remove the changed touches
       // need to make sure we only remove touches that are ending here
       WidgetTouchEvent* touchEvent = aEvent->AsTouchEvent();
-      WidgetTouchEvent::TouchArray& touches = touchEvent->touches;
+      WidgetTouchEvent::TouchArray& touches = touchEvent->mTouches;
       for (uint32_t i = 0; i < touches.Length(); ++i) {
         dom::Touch* touch = touches[i];
         if (!touch) {
@@ -215,15 +227,19 @@ TouchManager::PreHandleEvent(WidgetEvent* aEvent,
         touch->mChanged = true;
 
         int32_t id = touch->Identifier();
-        RefPtr<dom::Touch> oldTouch = gCaptureTouchList->GetWeak(id);
-        if (!oldTouch) {
+        TouchInfo info;
+        if (!sCaptureTouchList->Get(id, &info)) {
           continue;
         }
-        nsCOMPtr<EventTarget> targetPtr = oldTouch->mTarget;
+        nsCOMPtr<EventTarget> targetPtr = info.mTouch->mTarget;
+        nsCOMPtr<nsINode> targetNode(do_QueryInterface(targetPtr));
+        if (!targetNode->IsInComposedDoc()) {
+          targetPtr = do_QueryInterface(info.mNonAnonymousTarget);
+        }
 
         aCurrentEventContent = do_QueryInterface(targetPtr);
         touch->SetTarget(targetPtr);
-        gCaptureTouchList->Remove(id);
+        sCaptureTouchList->Remove(id);
       }
       // add any touches left in the touch list, but ensure changed=false
       AppendToTouchList(&touches);
@@ -233,6 +249,43 @@ TouchManager::PreHandleEvent(WidgetEvent* aEvent,
       break;
   }
   return true;
+}
+
+/*static*/ already_AddRefed<nsIContent>
+TouchManager::GetAnyCapturedTouchTarget()
+{
+  nsCOMPtr<nsIContent> result = nullptr;
+  if (sCaptureTouchList->Count() == 0) {
+    return result.forget();
+  }
+  for (auto iter = sCaptureTouchList->Iter(); !iter.Done(); iter.Next()) {
+    RefPtr<dom::Touch>& touch = iter.Data().mTouch;
+    if (touch) {
+      dom::EventTarget* target = touch->GetTarget();
+      if (target) {
+        result = do_QueryInterface(target);
+        break;
+      }
+    }
+  }
+  return result.forget();
+}
+
+/*static*/ bool
+TouchManager::HasCapturedTouch(int32_t aId)
+{
+  return sCaptureTouchList->Contains(aId);
+}
+
+/*static*/ already_AddRefed<dom::Touch>
+TouchManager::GetCapturedTouch(int32_t aId)
+{
+  RefPtr<dom::Touch> touch;
+  TouchInfo info;
+  if (sCaptureTouchList->Get(aId, &info)) {
+    touch = info.mTouch;
+  }
+  return touch.forget();
 }
 
 } // namespace mozilla

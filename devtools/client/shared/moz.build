@@ -1,4 +1,4 @@
-# -*- Mode: python; c-basic-offset: 4; indent-tabs-mode: nil; tab-width: 40 -*-
+# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
 # vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -10,6 +10,7 @@ XPCSHELL_TESTS_MANIFESTS += ['test/unit/xpcshell.ini']
 DIRS += [
     'components',
     'redux',
+    'shim',
     'vendor',
     'widgets',
 ]
@@ -18,11 +19,13 @@ DevToolsModules(
     'AppCacheUtils.jsm',
     'autocomplete-popup.js',
     'browser-loader.js',
-    'css-parsing-utils.js',
+    'css-angle.js',
+    'css-reload.js',
     'Curl.jsm',
     'demangle.js',
-    'DeveloperToolbar.jsm',
+    'developer-toolbar.js',
     'devices.js',
+    'devtools-file-watcher.js',
     'DOMHelpers.jsm',
     'doorhanger.js',
     'file-watcher-worker.js',
@@ -31,16 +34,23 @@ DevToolsModules(
     'getjson.js',
     'inplace-editor.js',
     'Jsbeautify.jsm',
+    'key-shortcuts.js',
+    'keycodes.js',
+    'l10n.js',
     'node-attribute-parser.js',
-    'observable-object.js',
     'options-view.js',
     'output-parser.js',
     'poller.js',
+    'prefs.js',
+    'scroll.js',
     'source-utils.js',
     'SplitView.jsm',
+    'suggestion-picker.js',
     'telemetry.js',
     'theme-switching.js',
     'theme.js',
     'undo.js',
     'view-source.js',
+    'webgl-utils.js',
+    'zoom-keys.js',
 )

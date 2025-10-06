@@ -42,42 +42,21 @@ XPCCallContext::IsValid() const
 inline XPCJSRuntime*
 XPCCallContext::GetRuntime() const
 {
-    CHECK_STATE(HAVE_CONTEXT);
-    return mXPCContext->GetRuntime();
-}
-
-inline XPCContext*
-XPCCallContext::GetXPCContext() const
-{
-    CHECK_STATE(HAVE_CONTEXT);
-    return mXPCContext;
+    CHECK_STATE(HAVE_RUNTIME);
+    return mXPCJSRuntime;
 }
 
 inline JSContext*
 XPCCallContext::GetJSContext() const
 {
-    CHECK_STATE(HAVE_CONTEXT);
+    CHECK_STATE(HAVE_RUNTIME);
     return mJSContext;
-}
-
-inline XPCContext::LangType
-XPCCallContext::GetCallerLanguage() const
-{
-    CHECK_STATE(HAVE_CONTEXT);
-    return mCallerLanguage;
-}
-
-inline XPCContext::LangType
-XPCCallContext::GetPrevCallerLanguage() const
-{
-    CHECK_STATE(HAVE_CONTEXT);
-    return mPrevCallerLanguage;
 }
 
 inline XPCCallContext*
 XPCCallContext::GetPrevCallContext() const
 {
-    CHECK_STATE(HAVE_CONTEXT);
+    CHECK_STATE(HAVE_RUNTIME);
     return mPrevCallContext;
 }
 
@@ -138,12 +117,6 @@ XPCCallContext::GetSet() const
 {
     CHECK_STATE(HAVE_NAME);
     return mSet;
-}
-
-inline bool
-XPCCallContext::CanGetInterface() const
-{
-    return mState >= HAVE_NAME;
 }
 
 inline XPCNativeInterface*
@@ -212,14 +185,14 @@ XPCCallContext::SetRetVal(JS::Value val)
 inline jsid
 XPCCallContext::GetResolveName() const
 {
-    CHECK_STATE(HAVE_CONTEXT);
+    CHECK_STATE(HAVE_RUNTIME);
     return XPCJSRuntime::Get()->GetResolveName();
 }
 
 inline jsid
 XPCCallContext::SetResolveName(JS::HandleId name)
 {
-    CHECK_STATE(HAVE_CONTEXT);
+    CHECK_STATE(HAVE_RUNTIME);
     return XPCJSRuntime::Get()->SetResolveName(name);
 }
 
@@ -342,7 +315,7 @@ XPCNativeSet::FindMember(jsid name, XPCNativeMember** pMember,
 
 inline bool
 XPCNativeSet::FindMember(jsid name, XPCNativeMember** pMember,
-                         XPCNativeInterface** pInterface) const
+                         RefPtr<XPCNativeInterface>* pInterface) const
 {
     uint16_t index;
     if (!FindMember(name, pMember, &index))
@@ -352,21 +325,20 @@ XPCNativeSet::FindMember(jsid name, XPCNativeMember** pMember,
 }
 
 inline bool
-XPCNativeSet::FindMember(jsid name,
+XPCNativeSet::FindMember(JS::HandleId name,
                          XPCNativeMember** pMember,
-                         XPCNativeInterface** pInterface,
+                         RefPtr<XPCNativeInterface>* pInterface,
                          XPCNativeSet* protoSet,
                          bool* pIsLocal) const
 {
     XPCNativeMember* Member;
-    XPCNativeInterface* Interface;
+    RefPtr<XPCNativeInterface> Interface;
     XPCNativeMember* protoMember;
 
     if (!FindMember(name, &Member, &Interface))
         return false;
 
     *pMember = Member;
-    *pInterface = Interface;
 
     *pIsLocal =
         !Member ||
@@ -375,6 +347,8 @@ XPCNativeSet::FindMember(jsid name,
          !protoSet->MatchesSetUpToInterface(this, Interface) &&
          (!protoSet->FindMember(name, &protoMember, (uint16_t*)nullptr) ||
           protoMember != Member));
+
+    *pInterface = Interface.forget();
 
     return true;
 }
@@ -462,26 +436,13 @@ XPCNativeSet::MatchesSetUpToInterface(const XPCNativeSet* other,
 
 inline void XPCNativeSet::Mark()
 {
-    if (IsMarked())
-        return;
-
-    XPCNativeInterface* const * pp = mInterfaces;
-
-    for (int i = (int) mInterfaceCount; i > 0; i--, pp++)
-        (*pp)->Mark();
-
-    MarkSelfOnly();
+    mMarked = 1;
 }
 
 #ifdef DEBUG
 inline void XPCNativeSet::ASSERT_NotMarked()
 {
     MOZ_ASSERT(!IsMarked(), "bad");
-
-    XPCNativeInterface* const * pp = mInterfaces;
-
-    for (int i = (int) mInterfaceCount; i > 0; i--, pp++)
-        MOZ_ASSERT(!(*pp)->IsMarked(), "bad");
 }
 #endif
 
@@ -537,9 +498,7 @@ XPCWrappedNative::HasInterfaceNoQI(const nsIID& iid)
 inline void
 XPCWrappedNative::SweepTearOffs()
 {
-    XPCWrappedNativeTearOffChunk* chunk;
-    for (chunk = &mFirstChunk; chunk; chunk = chunk->mNextChunk) {
-        XPCWrappedNativeTearOff* to = &chunk->mTearOff;
+    for (XPCWrappedNativeTearOff* to = &mFirstTearOff; to; to = to->GetNextTearOff()) {
         bool marked = to->IsMarked();
         to->Unmark();
         if (marked)

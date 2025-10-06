@@ -33,7 +33,10 @@ typedef unsigned long nsSecurityFlags;
 interface nsILoadInfo : nsISupports
 {
   /**
-   * No special security flags:
+   * *** DEPRECATED ***
+   * No LoadInfo created within Gecko should contain this security flag.
+   * Please use any of the five security flags defined underneath.
+   * We only keep this security flag to provide backwards compatibilty.
    */
   const unsigned long SEC_NORMAL = 0;
 
@@ -118,7 +121,10 @@ interface nsILoadInfo : nsISupports
    * is loading the URI "http://b.com/whatever", GetChannelResultPrincipal
    * will return a principal from "http://a.com/".
    *
-   * This flag can not be used together with SEC_SANDBOXED.
+   * This flag can not be used together with SEC_SANDBOXED.  If both are passed
+   * to the LoadInfo constructor then this flag will be dropped.  If you need
+   * to know whether this flag would have been present but was dropped due to
+   * sandboxing, check for the forceInheritPrincipalDropped flag.
    */
   const unsigned long SEC_FORCE_INHERIT_PRINCIPAL = (1<<7);
 
@@ -145,6 +151,11 @@ interface nsILoadInfo : nsISupports
   const unsigned long SEC_ALLOW_CHROME = (1<<10);
 
   /**
+   * Disallow access to javascript: uris.
+   */
+  const unsigned long SEC_DISALLOW_SCRIPT = (1<<11);
+
+  /**
    * Don't follow redirects. Instead the redirect response is returned
    * as a successful response for the channel.
    *
@@ -155,7 +166,22 @@ interface nsILoadInfo : nsISupports
    * the response body might not be available.
    * This can happen if the redirect was cached.
    */
-  const unsigned long SEC_DONT_FOLLOW_REDIRECTS = (1<<11);
+  const unsigned long SEC_DONT_FOLLOW_REDIRECTS = (1<<12);
+
+  /**
+   * Force private browsing. Setting this flag the private browsing can be
+   * enforce even when a loading is not happening in the context of a document.
+   *
+   * If the flag is true, even if a document context is present,
+   * GetUsePrivateBrowsing will always return true.
+   */
+  const unsigned long SEC_FORCE_PRIVATE_BROWSING = (1<<13);
+
+  /**
+   * Load an error page, it should be one of following : about:neterror,
+   * about:certerror, about:blocked, or about:tabcrashed.
+   */
+  const unsigned long SEC_LOAD_ERROR_PAGE = (1<<14);
 
   /**
    * The loadingPrincipal is the principal that is responsible for the load.
@@ -283,15 +309,33 @@ interface nsILoadInfo : nsISupports
   [infallible] readonly attribute boolean aboutBlankInherits;
 
   /**
+   * If usePrivateBrowsing is true, private browsing will be used.
+   * This value equals to originAttributes.privateBrowsingId in *content*
+   * side.
+   */
+  [infallible] readonly attribute boolean usePrivateBrowsing;
+
+  /**
    * If allowChrome is true, then use nsIScriptSecurityManager::ALLOW_CHROME
    * when calling CheckLoadURIWithPrincipal().
    */
   [infallible] readonly attribute boolean allowChrome;
 
   /**
+   * If disallowScript is true, then use nsIScriptSecurityManager::DISALLOW_SCRIPT
+   * when calling CheckLoadURIWithPrincipal().
+   */
+  [infallible] readonly attribute boolean disallowScript;
+
+  /**
    * Returns true if SEC_DONT_FOLLOW_REDIRECTS is set.
    */
   [infallible] readonly attribute boolean dontFollowRedirects;
+
+  /**
+   * Returns true if SEC_LOAD_ERROR_PAGE is set.
+   */
+  [infallible] readonly attribute boolean loadErrorPage;
 
   /**
    * The external contentPolicyType of the channel, used for security checks
@@ -337,12 +381,33 @@ interface nsILoadInfo : nsISupports
   [infallible] readonly attribute boolean upgradeInsecureRequests;
 
   /**
-   * Typically these are the window IDs of the window in which the element being
-   * loaded lives. However, if the element being loaded is <frame
-   * src="foo.html"> (or, more generally, if the element QIs to
-   * nsIFrameLoaderOwner) then the window IDs are for the window containing the
-   * foo.html document. In this case, parentOuterWindowID is the window ID of
-   * the window containing the <frame> element.
+   * If true, the content of the channel is queued up and checked
+   * if it matches a content signature. Note, setting this flag
+   * to true will negatively impact performance since the preloader
+   * can not start until all of the content is fetched from the
+   * netwerk.
+   *
+   * Only use that in combination with TYPE_DOCUMENT.
+   */
+  [infallible] attribute boolean verifySignedContent;
+
+  /**
+   * If true, this load will fail if it has no SRI integrity
+   */
+  [infallible] attribute boolean enforceSRI;
+
+  /**
+   * The SEC_FORCE_INHERIT_PRINCIPAL flag may be dropped when a load info
+   * object is created.  Specifically, it will be dropped if the SEC_SANDBOXED
+   * flag is also present.  This flag is set if SEC_FORCE_INHERIT_PRINCIPAL was
+   * dropped.
+   */
+  [infallible] readonly attribute boolean forceInheritPrincipalDropped;
+
+  /**
+   * These are the window IDs of the window in which the element being
+   * loaded lives. parentOuterWindowID is the window ID of this window's
+   * parent.
    *
    * Note that these window IDs can be 0 if the window is not
    * available. parentOuterWindowID will be the same as outerWindowID if the
@@ -353,8 +418,23 @@ interface nsILoadInfo : nsISupports
   [infallible] readonly attribute unsigned long long parentOuterWindowID;
 
   /**
+   * Only when the element being loaded is <frame src="foo.html">
+   * (or, more generally, if the element QIs to nsIFrameLoaderOwner),
+   * the frameOuterWindowID is the outer window containing the
+   * foo.html document.
+   *
+   * Note: For other cases, frameOuterWindowID is 0.
+   */
+  [infallible] readonly attribute unsigned long long frameOuterWindowID;
+
+  /**
    * Customized NeckoOriginAttributes within LoadInfo to allow overwriting of the
    * default originAttributes from the loadingPrincipal.
+   *
+   * In chrome side, originAttributes.privateBrowsingId will always be 0 even if
+   * the usePrivateBrowsing is true, because chrome docshell won't set
+   * privateBrowsingId on origin attributes (See bug 1278664). This is to make
+   * sure nsILoadInfo and nsILoadContext have the same origin attributes.
    */
   [implicit_jscontext, binaryname(ScriptableOriginAttributes)]
   attribute jsval originAttributes;
@@ -518,16 +598,22 @@ interface nsILoadInfo : nsISupports
   mozilla::LoadTainting GetTainting()
   {
     uint32_t tainting = TAINTING_BASIC;
-    MOZ_ALWAYS_TRUE(NS_SUCCEEDED(GetTainting(&tainting)));
+    MOZ_ALWAYS_SUCCEEDS(GetTainting(&tainting));
     return static_cast<mozilla::LoadTainting>(tainting);
   }
 
   void MaybeIncreaseTainting(mozilla::LoadTainting aTainting)
   {
     uint32_t tainting = static_cast<uint32_t>(aTainting);
-    MOZ_ALWAYS_TRUE(NS_SUCCEEDED(MaybeIncreaseTainting(tainting)));
+    MOZ_ALWAYS_SUCCEEDS(MaybeIncreaseTainting(tainting));
   }
 %}
+
+  /**
+   * Returns true if this load is for top level document.
+   * Note that the load for a sub-frame's document will return false here.
+   */
+  [infallible] readonly attribute boolean isTopLevelLoad;
 
   /**
    * This attribute will be true if this is a load triggered by

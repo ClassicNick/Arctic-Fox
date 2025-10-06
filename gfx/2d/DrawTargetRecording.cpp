@@ -245,7 +245,7 @@ struct AdjustedPattern
         mPattern =
           new (mSurfPat) SurfacePattern(GetSourceSurface(surfPat->mSurface),
                                         surfPat->mExtendMode, surfPat->mMatrix,
-                                        surfPat->mFilter);
+                                        surfPat->mSamplingFilter);
         return mPattern;
       }
     case PatternType::LINEAR_GRADIENT:
@@ -395,11 +395,22 @@ DrawTargetRecording::FillGlyphs(ScaledFont *aFont,
     RecordedFontData fontData(aFont);
     RecordedFontDetails fontDetails;
     if (fontData.GetFontDetails(fontDetails)) {
+      // Try to serialise the whole font, just in case this is a web font that
+      // is not present on the system.
       if (!mRecorder->HasStoredFontData(fontDetails.fontDataKey)) {
         mRecorder->RecordEvent(fontData);
         mRecorder->AddStoredFontData(fontDetails.fontDataKey);
       }
       mRecorder->RecordEvent(RecordedScaledFontCreation(aFont, fontDetails));
+    } else {
+      // If that fails, record just the font description and try to load it from
+      // the system on the other side.
+      RecordedFontDescriptor fontDesc(aFont);
+      if (fontDesc.IsValid()) {
+        mRecorder->RecordEvent(fontDesc);
+      } else {
+        gfxWarning() << "DrawTargetRecording::FillGlyphs failed to serialise ScaledFont";
+      }
     }
 #endif
     RecordingFontUserData *userData = new RecordingFontUserData;
@@ -464,6 +475,12 @@ DrawTargetRecording::Snapshot()
   mRecorder->RecordEvent(RecordedSnapshot(retSurf, this));
 
   return retSurf.forget();
+}
+
+void
+DrawTargetRecording::DetachAllSnapshots()
+{
+  mFinalDT->DetachAllSnapshots();
 }
 
 void
@@ -568,10 +585,10 @@ DrawTargetRecording::PushLayer(bool aOpaque, Float aOpacity,
     EnsureSurfaceStored(mRecorder, aMask, "PushLayer");
   }
 
-  mRecorder->RecordEvent(RecordedPushLayer(this, aOpacity, aOpacity, aMask,
+  mRecorder->RecordEvent(RecordedPushLayer(this, aOpaque, aOpacity, aMask,
                                            aMaskTransform, aBounds,
                                            aCopyBackground));
-  mFinalDT->PushLayer(aOpacity, aOpacity, aMask, aMaskTransform, aBounds,
+  mFinalDT->PushLayer(aOpaque, aOpacity, aMask, aMaskTransform, aBounds,
                       aCopyBackground);
 }
 

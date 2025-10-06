@@ -8,10 +8,9 @@
 #ifndef __nsWindow_h__
 #define __nsWindow_h__
 
-#include "nsAutoPtr.h"
-
 #include "mozcontainer.h"
-
+#include "mozilla/RefPtr.h"
+#include "mozilla/UniquePtr.h"
 #include "nsIDragService.h"
 #include "nsITimer.h"
 #include "nsGkAtoms.h"
@@ -25,7 +24,7 @@
 #include <gdk/gdkx.h>
 #endif /* MOZ_X11 */
 
-#include "nsShmImage.h"
+#include "mozilla/widget/WindowSurface.h"
 
 #ifdef ACCESSIBILITY
 #include "mozilla/a11y/Accessible.h"
@@ -61,7 +60,6 @@ extern PRLogModuleInfo *gWidgetDrawLog;
 
 #endif /* MOZ_LOGGING */
 
-class gfxASurface;
 class gfxPattern;
 class nsPluginNativeWindowGtk;
 
@@ -73,17 +71,20 @@ class CurrentX11TimeGetter;
 class nsWindow : public nsBaseWidget
 {
 public:
+    typedef mozilla::gfx::DrawTarget DrawTarget;
+    typedef mozilla::WidgetEventTime WidgetEventTime;
+
     nsWindow();
 
     static void ReleaseGlobals();
 
     NS_DECL_ISUPPORTS_INHERITED
-    
+
     void CommonCreate(nsIWidget *aParent, bool aListenForResizes);
-    
+
     virtual nsresult DispatchEvent(mozilla::WidgetGUIEvent* aEvent,
                                    nsEventStatus& aStatus) override;
-    
+
     // called when we are destroyed
     virtual void OnDestroy(void) override;
 
@@ -92,14 +93,14 @@ public:
 
     // nsIWidget
     using nsBaseWidget::Create; // for Create signature not overridden here
-    NS_IMETHOD         Create(nsIWidget* aParent,
-                              nsNativeWidget aNativeParent,
-                              const LayoutDeviceIntRect& aRect,
-                              nsWidgetInitData* aInitData) override;
-    NS_IMETHOD         Destroy(void) override;
+    virtual MOZ_MUST_USE nsresult Create(nsIWidget* aParent,
+                                         nsNativeWidget aNativeParent,
+                                         const LayoutDeviceIntRect& aRect,
+                                         nsWidgetInitData* aInitData) override;
+    virtual void       Destroy() override;
     virtual nsIWidget *GetParent() override;
     virtual float      GetDPI() override;
-    virtual double     GetDefaultScaleInternal() override; 
+    virtual double     GetDefaultScaleInternal() override;
     // Under Gtk, we manage windows using device pixels so no scaling is needed:
     mozilla::DesktopToLayoutDeviceScale GetDesktopToDeviceScale() final
     {
@@ -130,11 +131,11 @@ public:
                                    nsIWidget                  *aWidget,
                                    bool                        aActivate) override;
     void               SetZIndex(int32_t aZIndex) override;
-    NS_IMETHOD         SetSizeMode(nsSizeMode aMode) override;
+    virtual void       SetSizeMode(nsSizeMode aMode) override;
     NS_IMETHOD         Enable(bool aState) override;
     NS_IMETHOD         SetFocus(bool aRaise = false) override;
-    NS_IMETHOD         GetScreenBounds(LayoutDeviceIntRect& aRect) override;
-    NS_IMETHOD         GetClientBounds(LayoutDeviceIntRect& aRect) override;
+    virtual LayoutDeviceIntRect GetScreenBounds() override;
+    virtual LayoutDeviceIntRect GetClientBounds() override;
     virtual LayoutDeviceIntSize GetClientSize() override;
     virtual LayoutDeviceIntPoint GetClientOffset() override;
     NS_IMETHOD         SetCursor(nsCursor aCursor) override;
@@ -147,7 +148,6 @@ public:
     NS_IMETHOD         SetIcon(const nsAString& aIconSpec) override;
     NS_IMETHOD         SetWindowClass(const nsAString& xulWinType) override;
     virtual LayoutDeviceIntPoint WidgetToScreenOffset() override;
-    NS_IMETHOD         EnableDragDrop(bool aEnable) override;
     NS_IMETHOD         CaptureMouse(bool aCapture) override;
     NS_IMETHOD         CaptureRollupEvents(nsIRollupListener *aListener,
                                            bool aDoCapture) override;
@@ -161,7 +161,7 @@ public:
                                              uint16_t aDuration,
                                              nsISupports* aData,
                                              nsIRunnable* aCallback) override;
-    NS_IMETHOD         MakeFullScreen(bool aFullScreen,
+    virtual nsresult   MakeFullScreen(bool aFullScreen,
                                       nsIScreen* aTargetScreen = nullptr) override;
     NS_IMETHOD         HideWindowChrome(bool aShouldHide) override;
 
@@ -252,6 +252,8 @@ public:
 #endif /* MOZ_X11 */
 
     void               ThemeChanged(void);
+    void               OnDPIChanged(void);
+    void               OnCheckResize(void);
 
 #ifdef MOZ_X11
     Window             mOldFocusWindow;
@@ -280,6 +282,7 @@ public:
     // otherwise, FALSE.
     bool               DispatchKeyDownEvent(GdkEventKey *aEvent,
                                             bool *aIsCancelled);
+    WidgetEventTime    GetWidgetEventTime(guint32 aEventTime);
     mozilla::TimeStamp GetEventTimeStamp(guint32 aEventTime);
     mozilla::CurrentX11TimeGetter* GetCurrentTimeGetter();
 
@@ -287,6 +290,8 @@ public:
                                       const InputContextAction& aAction) override;
     NS_IMETHOD_(InputContext) GetInputContext() override;
     virtual nsIMEUpdatePreference GetIMEUpdatePreference() override;
+    NS_IMETHOD_(TextEventDispatcherListener*)
+        GetNativeTextEventDispatcherListener() override;
     bool ExecuteNativeKeyBindingRemapped(
                         NativeKeyBindingsType aType,
                         const mozilla::WidgetKeyboardEvent& aEvent,
@@ -311,12 +316,9 @@ public:
    nsresult            UpdateTranslucentWindowAlphaInternal(const nsIntRect& aRect,
                                                             uint8_t* aAlphas, int32_t aStride);
 
-    already_AddRefed<mozilla::gfx::DrawTarget> GetDrawTarget(const LayoutDeviceIntRegion& aRegion,
-                                                             mozilla::layers::BufferMode* aBufferMode);
-
 #if (MOZ_WIDGET_GTK == 2)
-    static already_AddRefed<gfxASurface> GetSurfaceForGdkDrawable(GdkDrawable* aDrawable,
-                                                                  const nsIntSize& aSize);
+    static already_AddRefed<DrawTarget> GetDrawTargetForGdkDrawable(GdkDrawable* aDrawable,
+                                                                    const mozilla::gfx::IntSize& aSize);
 #endif
     NS_IMETHOD         ReparentNativeWidget(nsIWidget* aNewParent) override;
 
@@ -337,6 +339,15 @@ public:
                                                       uint32_t aModifierFlags,
                                                       uint32_t aAdditionalFlags,
                                                       nsIObserver* aObserver) override;
+
+#if GTK_CHECK_VERSION(3,4,0)
+    virtual nsresult SynthesizeNativeTouchPoint(uint32_t aPointerId,
+                                                TouchPointerState aPointerState,
+                                                LayoutDeviceIntPoint aPoint,
+                                                double aPointerPressure,
+                                                uint32_t aPointerOrientation,
+                                                nsIObserver* aObserver) override;
+#endif
 
     // HiDPI scale conversion
     gint GdkScaleFactor();
@@ -368,9 +379,6 @@ protected:
                                       GdkWindow* aNewParentWindow,
                                       GtkWidget* aOldContainer);
 
-    virtual nsresult NotifyIMEInternal(
-                         const IMENotification& aIMENotification) override;
-
     virtual void RegisterTouchWindow() override;
 
     nsCOMPtr<nsIWidget> mParent;
@@ -396,6 +404,8 @@ protected:
 #endif
     // true if this is a drag and drop feedback popup
     bool               mIsDragPopup;
+    // Can we access X?
+    bool               mIsX11Display;
 
 private:
     void               DestroyChildWindows();
@@ -410,10 +420,16 @@ private:
     bool               DispatchContentCommandEvent(mozilla::EventMessage aMsg);
     bool               CheckForRollup(gdouble aMouseX, gdouble aMouseY,
                                       bool aIsWheel, bool aAlwaysRollup);
+    void               CheckForRollupDuringGrab()
+    {
+      CheckForRollup(0, 0, false, true);
+    }
+
     bool               GetDragInfo(mozilla::WidgetMouseEvent* aMouseEvent,
                                    GdkWindow** aWindow, gint* aButton,
                                    gint* aRootX, gint* aRootY);
     void               ClearCachedResources();
+    nsIWidgetListener* GetListener();
 
     GtkWidget          *mShell;
     MozContainer       *mContainer;
@@ -438,17 +454,18 @@ private:
     nsRefPtrHashtable<nsPtrHashKey<GdkEventSequence>, mozilla::dom::Touch> mTouches;
 #endif
 
+    mozilla::UniquePtr<mozilla::widget::WindowSurface> mWindowSurface;
+
 #ifdef MOZ_X11
     Display*            mXDisplay;
-    Drawable            mXWindow;
+    Window              mXWindow;
     Visual*             mXVisual;
     int                 mXDepth;
 #endif
 
-#ifdef MOZ_HAVE_SHMIMAGE
-    // If we're using xshm rendering
-    RefPtr<nsShmImage>  mShmImage;
-#endif
+    // Upper bound on pending ConfigureNotify events to be dispatched to the
+    // window. See bug 1225044.
+    int mPendingConfigures;
 
 #ifdef ACCESSIBILITY
     RefPtr<mozilla::a11y::Accessible> mRootAccessible;
@@ -511,7 +528,7 @@ private:
     // full translucency at this time; each pixel is either fully opaque
     // or fully transparent.
     gchar*       mTransparencyBitmap;
- 
+
     // all of our DND stuff
     void   InitDragEvent(mozilla::WidgetDragEvent& aEvent);
 
@@ -528,12 +545,13 @@ private:
     // nsBaseWidget
     virtual LayerManager* GetLayerManager(PLayerTransactionChild* aShadowManager = nullptr,
                                           LayersBackend aBackendHint = mozilla::layers::LayersBackend::LAYERS_NONE,
-                                          LayerManagerPersistence aPersistence = LAYER_MANAGER_CURRENT,
-                                          bool* aAllowRetaining = nullptr) override;
+                                          LayerManagerPersistence aPersistence = LAYER_MANAGER_CURRENT) override;
 
     void CleanLayerManagerRecursive();
 
     virtual int32_t RoundsWidgetCoordinatesTo() override;
+
+    mozilla::UniquePtr<mozilla::widget::WindowSurface> CreateWindowSurface();
 
     /**
      * |mIMContext| takes all IME related stuff.
@@ -550,7 +568,7 @@ private:
      */
     RefPtr<mozilla::widget::IMContextWrapper> mIMContext;
 
-    nsAutoPtr<mozilla::CurrentX11TimeGetter> mCurrentTimeGetter;
+    mozilla::UniquePtr<mozilla::CurrentX11TimeGetter> mCurrentTimeGetter;
 };
 
 class nsChildWindow : public nsWindow {

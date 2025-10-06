@@ -64,7 +64,7 @@ this.ReaderMode = {
   },
 
   observe: function(aMessage, aTopic, aData) {
-    switch(aTopic) {
+    switch (aTopic) {
       case "nsPref:changed":
         if (aData.startsWith("reader.parse-on-load.")) {
           this.isEnabledForParseOnLoad = this._getStateForParseOnLoad();
@@ -73,6 +73,48 @@ this.ReaderMode = {
         }
         break;
     }
+  },
+
+  /**
+   * Enter the reader mode by going forward one step in history if applicable,
+   * if not, append the about:reader page in the history instead.
+   */
+  enterReaderMode: function(docShell, win) {
+    let url = win.document.location.href;
+    let readerURL = "about:reader?url=" + encodeURIComponent(url);
+    let webNav = docShell.QueryInterface(Ci.nsIWebNavigation);
+    let sh = webNav.sessionHistory;
+    if (webNav.canGoForward) {
+      let forwardEntry = sh.getEntryAtIndex(sh.index + 1, false);
+      let forwardURL = forwardEntry.URI.spec;
+      if (forwardURL && (forwardURL == readerURL || !readerURL)) {
+        webNav.goForward();
+        return;
+      }
+    }
+
+    win.document.location = readerURL;
+  },
+
+  /**
+   * Exit the reader mode by going back one step in history if applicable,
+   * if not, append the original page in the history instead.
+   */
+  leaveReaderMode: function(docShell, win) {
+    let url = win.document.location.href;
+    let originalURL = this.getOriginalUrl(url);
+    let webNav = docShell.QueryInterface(Ci.nsIWebNavigation);
+    let sh = webNav.sessionHistory;
+    if (webNav.canGoBack) {
+      let prevEntry = sh.getEntryAtIndex(sh.index - 1, false);
+      let prevURL = prevEntry.URI.spec;
+      if (prevURL && (prevURL == originalURL || !originalURL)) {
+        webNav.goBack();
+        return;
+      }
+    }
+
+    win.document.location = originalURL;
   },
 
   /**
@@ -182,7 +224,20 @@ this.ReaderMode = {
             let urlIndex = content.indexOf("URL=");
             if (urlIndex > -1) {
               let url = content.substring(urlIndex + 4);
-              this._downloadDocument(url).then((doc) => resolve(doc));
+              let ssm = Services.scriptSecurityManager;
+              let flags = ssm.LOAD_IS_AUTOMATIC_DOCUMENT_REPLACEMENT |
+                          ssm.DISALLOW_INHERIT_PRINCIPAL;
+              try {
+                ssm.checkLoadURIStrWithPrincipal(doc.nodePrincipal, url, flags);
+              } catch (ex) {
+                let errorMsg = "Reader mode disallowed meta refresh (reason: " + ex + ").";
+                if (Services.prefs.getBoolPref("reader.errors.includeURLs"))
+                  errorMsg += " Refresh target URI: '" + url + "'.";
+                reject(errorMsg);
+                return;
+              }
+              // Otherwise, pass an object indicating our new URL:
+              reject({newURL: url});
               return;
             }
           }
@@ -355,6 +410,7 @@ this.ReaderMode = {
       if (!exists) {
         return OS.File.makeDir(dir);
       }
+      return undefined;
     });
   }
 };

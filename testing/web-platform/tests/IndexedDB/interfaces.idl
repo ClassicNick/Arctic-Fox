@@ -83,12 +83,13 @@ interface IDBDatabase : EventTarget {
     IDBTransaction transaction ((DOMString or sequence<DOMString>) storeNames, optional IDBTransactionMode mode = "readonly");
     void           close ();
                 attribute EventHandler       onabort;
+                attribute EventHandler       onclose;
                 attribute EventHandler       onerror;
                 attribute EventHandler       onversionchange;
 };
 
 interface IDBObjectStore {
-    readonly    attribute DOMString      name;
+    attribute DOMString name;
     readonly    attribute any            keyPath;
     readonly    attribute DOMStringList  indexNames;
     readonly    attribute IDBTransaction transaction;
@@ -97,6 +98,7 @@ interface IDBObjectStore {
     IDBRequest add (any value, optional any key);
     IDBRequest delete (any key);
     IDBRequest get (any key);
+    IDBRequest getKey (any key);
     IDBRequest clear ();
     IDBRequest openCursor (optional any range, optional IDBCursorDirection direction = "next");
     IDBIndex   createIndex (DOMString name, (DOMString or sequence<DOMString>) keyPath, optional IDBIndexParameters optionalParameters);
@@ -106,7 +108,7 @@ interface IDBObjectStore {
 };
 
 interface IDBIndex {
-    readonly    attribute DOMString      name;
+    attribute DOMString name;
     readonly    attribute IDBObjectStore objectStore;
     readonly    attribute any            keyPath;
     readonly    attribute boolean        multiEntry;
@@ -126,6 +128,7 @@ interface IDBCursor {
     IDBRequest update (any value);
     void       advance ([EnforceRange] unsigned long count);
     void       continue (optional any key);
+    void       continuePrimaryKey(any key, any primaryKey);
     IDBRequest delete ();
 };
 

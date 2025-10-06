@@ -42,6 +42,7 @@ GonkBufferQueueProducer::GonkBufferQueueProducer(const sp<GonkBufferQueueCore>& 
     mCore(core),
     mSlots(core->mSlots),
     mConsumerName(),
+    mSynchronousMode(true),
     mStickyTransform(0) {}
 
 GonkBufferQueueProducer::~GonkBufferQueueProducer() {}
@@ -321,9 +322,10 @@ status_t GonkBufferQueueProducer::dequeueBuffer(int *outSlot,
             if (mSlots[found].mTextureClient) {
                 mSlots[found].mTextureClient->ClearRecycleCallback();
                 // release TextureClient in ImageBridge thread
-                TextureClientReleaseTask* task = new TextureClientReleaseTask(mSlots[found].mTextureClient);
+                RefPtr<TextureClientReleaseTask> task =
+                  MakeAndAddRef<TextureClientReleaseTask>(mSlots[found].mTextureClient);
                 mSlots[found].mTextureClient = NULL;
-                ImageBridgeChild::GetSingleton()->GetMessageLoop()->PostTask(FROM_HERE, task);
+                ImageBridgeChild::GetSingleton()->GetMessageLoop()->PostTask(task.forget());
             }
 
             returnFlags |= BUFFER_NEEDS_REALLOCATION;
@@ -340,7 +342,7 @@ status_t GonkBufferQueueProducer::dequeueBuffer(int *outSlot,
     } // Autolock scope
 
     if (returnFlags & BUFFER_NEEDS_REALLOCATION) {
-        ISurfaceAllocator* allocator = ImageBridgeChild::GetSingleton();
+        ClientIPCAllocator* allocator = ImageBridgeChild::GetSingleton();
         usage |= GraphicBuffer::USAGE_HW_TEXTURE;
         GrallocTextureData* texData = GrallocTextureData::Create(IntSize(width,height), format,
                                                                  gfx::BackendType::NONE,
@@ -350,7 +352,7 @@ status_t GonkBufferQueueProducer::dequeueBuffer(int *outSlot,
             return -ENOMEM;
         }
         RefPtr<TextureClient> textureClient = TextureClient::CreateWithData(
-            texData, TextureFlags::DEALLOCATE_CLIENT, allocator);
+            texData, TextureFlags::RECYCLE | TextureFlags::DEALLOCATE_CLIENT, allocator);
 
         sp<GraphicBuffer> graphicBuffer = texData->GetGraphicBuffer();
 
@@ -501,6 +503,22 @@ status_t GonkBufferQueueProducer::attachBuffer(int* outSlot,
     return returnFlags;
 }
 
+status_t GonkBufferQueueProducer::setSynchronousMode(bool enabled) {
+    ALOGV("setSynchronousMode: enabled=%d", enabled);
+    Mutex::Autolock lock(mCore->mMutex);
+
+    if (mCore->mIsAbandoned) {
+        ALOGE("setSynchronousMode: BufferQueue has been abandoned!");
+        return NO_INIT;
+    }
+
+    if (mSynchronousMode != enabled) {
+        mSynchronousMode = enabled;
+        mCore->mDequeueCondition.broadcast();
+    }
+    return OK;
+}
+
 status_t GonkBufferQueueProducer::queueBuffer(int slot,
         const QueueBufferInput &input, QueueBufferOutput *output) {
     ATRACE_CALL();
@@ -619,7 +637,7 @@ status_t GonkBufferQueueProducer::queueBuffer(int slot,
             // When the queue is not empty, we need to look at the front buffer
             // state to see if we need to replace it
             GonkBufferQueueCore::Fifo::iterator front(mCore->mQueue.begin());
-            if (front->mIsDroppable) {
+            if (front->mIsDroppable || !mSynchronousMode) {
                 // If the front queued buffer is still being tracked, we first
                 // mark it as freed
                 if (mCore->stillTracking(front)) {
@@ -630,6 +648,7 @@ status_t GonkBufferQueueProducer::queueBuffer(int slot,
                 }
                 // Overwrite the droppable buffer with the incoming one
                 *front = item;
+                listener = mCore->mConsumerListener;
             } else {
                 mCore->mQueue.push_back(item);
                 listener = mCore->mConsumerListener;

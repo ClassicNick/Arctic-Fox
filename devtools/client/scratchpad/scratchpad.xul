@@ -14,7 +14,6 @@
 ]>
 
 <?xml-stylesheet href="chrome://global/skin/global.css"?>
-<?xml-stylesheet href="chrome://devtools/skin/common.css"?>
 <?xml-stylesheet href="chrome://devtools/skin/scratchpad.css"?>
 <?xul-overlay href="chrome://global/content/editMenuOverlay.xul"?>
 
@@ -90,6 +89,9 @@
        modifiers="accel"/>
   <key id="sp-key-larger-font"
        key="&largerFont.commandkey;"
+       command="sp-cmd-larger-font"
+       modifiers="accel"/>
+  <key key="&largerFont.commandkey2;"
        command="sp-cmd-larger-font"
        modifiers="accel"/>
   <key id="sp-key-smaller-font"
@@ -228,7 +230,6 @@
                 label="&lineNumbers.label;"
                 accesskey="&lineNumbers.accesskey;"
                 type="checkbox"
-                checked="true"
                 command="sp-cmd-line-numbers"/>
       <menuitem id="sp-menu-word-wrap"
                 label="&wordWrap.label;"

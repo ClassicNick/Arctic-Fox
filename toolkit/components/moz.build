@@ -1,4 +1,4 @@
-# -*- Mode: python; c-basic-offset: 4; indent-tabs-mode: nil; tab-width: 40 -*-
+# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
 # vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -19,6 +19,7 @@ DIRS += [
     'commandlines',
     'console',
     'contentprefs',
+    'contextualidentity',
     'cookie',
     'crashmonitor',
     'diskspacewatcher',
@@ -33,6 +34,7 @@ DIRS += [
     'gfx',
     'jsdownloads',
     'lz4',
+    'narrate',
     'mediasniffer',
     'microformats',
     'osfile',
@@ -47,6 +49,7 @@ DIRS += [
     'prompts',
     'protobuf',
     'reader',
+    'remotebrowserutils',
     'reflect',
     'securityreporter',
     'sqlite',
@@ -55,6 +58,7 @@ DIRS += [
     'telemetry',
     'thumbnails',
     'timermanager',
+    'tooltiptext',
     'typeaheadfind',
     'utils',
     'urlformatter',
@@ -69,6 +73,9 @@ if CONFIG['MOZ_BUILD_APP'] != 'mobile/android':
     if CONFIG['NS_PRINTING']:
         DIRS += ['printing']
 
+if CONFIG['MOZ_CRASHREPORTER']:
+    DIRS += ['crashes']
+
 if CONFIG['MOZ_SOCIAL']:
     DIRS += ['social']
 
@@ -77,9 +84,6 @@ if CONFIG['BUILD_CTYPES']:
 
 if CONFIG['MOZ_FEEDS']:
     DIRS += ['feeds']
-
-if CONFIG['MOZ_HELP_VIEWER']:
-    DIRS += ['help']
 
 if CONFIG['MOZ_XUL']:
     DIRS += ['autocomplete', 'satchel']
@@ -92,7 +96,7 @@ if CONFIG['MOZ_URL_CLASSIFIER']:
 
 DIRS += ['captivedetect']
 
-if CONFIG['MOZ_WIDGET_TOOLKIT'] != "gonk" and CONFIG['MOZ_WIDGET_TOOLKIT'] != 'android':
+if CONFIG['OS_TARGET'] != 'Android':
     DIRS += ['terminator']
 
 if CONFIG['NIGHTLY_BUILD']: # Bug 1136927 - Performance Monitoring is not ready for prime-time yet

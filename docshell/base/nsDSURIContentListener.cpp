@@ -13,7 +13,6 @@
 #include "nsIDocument.h"
 #include "nsIDOMWindow.h"
 #include "nsNetUtil.h"
-#include "nsAutoPtr.h"
 #include "nsQueryObject.h"
 #include "nsIHttpChannel.h"
 #include "nsIScriptSecurityManager.h"
@@ -332,7 +331,7 @@ nsDSURIContentListener::CheckOneFrameOptionsPolicy(nsIHttpChannel* aHttpChannel,
            curDocShellItem->GetParent(getter_AddRefs(parentDocShellItem))) &&
          parentDocShellItem) {
     nsCOMPtr<nsIDocShell> curDocShell = do_QueryInterface(curDocShellItem);
-    if (curDocShell && curDocShell->GetIsBrowserOrApp()) {
+    if (curDocShell && curDocShell->GetIsMozBrowserOrApp()) {
       break;
     }
 
@@ -449,7 +448,7 @@ nsDSURIContentListener::CheckFrameOptions(nsIRequest* aRequest)
       if (mDocShell) {
         nsCOMPtr<nsIWebNavigation> webNav(do_QueryObject(mDocShell));
         if (webNav) {
-          webNav->LoadURI(MOZ_UTF16("about:blank"),
+          webNav->LoadURI(u"about:blank",
                           0, nullptr, nullptr, nullptr);
         }
       }

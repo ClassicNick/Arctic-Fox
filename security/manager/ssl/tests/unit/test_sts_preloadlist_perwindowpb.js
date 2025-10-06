@@ -3,6 +3,7 @@
 // and login.persona.org because they are Mozilla properties and we are
 // invested in HSTS. Additionally, www.torproject.org was deemed likely to
 // continue to use HSTS.
+"use strict";
 
 var gSSService = Cc["@mozilla.org/ssservice;1"]
                    .getService(Ci.nsISiteSecurityService);
@@ -10,8 +11,9 @@ var gSSService = Cc["@mozilla.org/ssservice;1"]
 function Observer() {}
 Observer.prototype = {
   observe: function(subject, topic, data) {
-    if (topic == "last-pb-context-exited")
+    if (topic == "last-pb-context-exited") {
       run_next_test();
+    }
   }
 };
 

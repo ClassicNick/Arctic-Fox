@@ -6,7 +6,7 @@
 
 #include "RemoteOpenFileChild.h"
 
-#include "mozilla/unused.h"
+#include "mozilla/Unused.h"
 #include "mozilla/ipc/FileDescriptor.h"
 #include "mozilla/ipc/FileDescriptorUtils.h"
 #include "mozilla/ipc/URIUtils.h"
@@ -35,7 +35,7 @@ namespace net {
 // Helper class to dispatch events async on windows/OSX
 //-----------------------------------------------------------------------------
 
-class CallsListenerInNewEvent : public nsRunnable
+class CallsListenerInNewEvent : public Runnable
 {
 public:
     CallsListenerInNewEvent(nsIRemoteOpenFileListener *aListener, nsresult aRv)
@@ -54,7 +54,7 @@ public:
     }
 
 private:
-    NS_IMETHOD Run()
+    NS_IMETHOD Run() override
     {
         MOZ_ASSERT(NS_IsMainThread());
         MOZ_ASSERT(mListener);
@@ -294,7 +294,8 @@ RemoteOpenFileChild::HandleFileDescriptorAndNotifyListener(
   }
 
   if (aFD.IsValid()) {
-    mNSPRFileDesc = PR_ImportFile(aFD.PlatformHandle());
+    auto rawFD = aFD.ClonePlatformHandle();
+    mNSPRFileDesc = PR_ImportFile(rawFD.release());
     if (!mNSPRFileDesc) {
       NS_WARNING("Failed to import file handle!");
     }
@@ -370,6 +371,9 @@ RemoteOpenFileChild::OpenNSPRFileDesc(int32_t aFlags, int32_t aMode,
 
   PROsfd osfd = dup(PR_FileDesc2NativeHandle(mNSPRFileDesc));
   *aRetval = PR_ImportFile(osfd);
+  if (!*aRetval) {
+    return NS_ERROR_NOT_AVAILABLE;
+  }
 
   return NS_OK;
 #endif

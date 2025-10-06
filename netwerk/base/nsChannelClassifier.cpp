@@ -7,6 +7,7 @@
 #include "nsChannelClassifier.h"
 
 #include "mozIThirdPartyUtil.h"
+#include "nsCharSeparatedTokenizer.h"
 #include "nsContentUtils.h"
 #include "nsICacheEntry.h"
 #include "nsICachingChannel.h"
@@ -34,17 +35,17 @@
 #include "mozilla/Logging.h"
 #include "mozilla/Preferences.h"
 
-using mozilla::ArrayLength;
-using mozilla::Preferences;
+namespace mozilla {
+namespace net {
 
 //
-// NSPR_LOG_MODULES=nsChannelClassifier:5
+// MOZ_LOG=nsChannelClassifier:5
 //
-static mozilla::LazyLogModule gChannelClassifierLog("nsChannelClassifier");
+static LazyLogModule gChannelClassifierLog("nsChannelClassifier");
 
 #undef LOG
-#define LOG(args)     MOZ_LOG(gChannelClassifierLog, mozilla::LogLevel::Debug, args)
-#define LOG_ENABLED() MOZ_LOG_TEST(gChannelClassifierLog, mozilla::LogLevel::Debug)
+#define LOG(args)     MOZ_LOG(gChannelClassifierLog, LogLevel::Debug, args)
+#define LOG_ENABLED() MOZ_LOG_TEST(gChannelClassifierLog, LogLevel::Debug)
 
 NS_IMPL_ISUPPORTS(nsChannelClassifier,
                   nsIURIClassifierCallback)
@@ -65,9 +66,9 @@ nsChannelClassifier::ShouldEnableTrackingProtection(nsIChannel *aChannel,
     NS_ENSURE_ARG(result);
     *result = false;
 
-    if (!Preferences::GetBool("privacy.trackingprotection.enabled", false) &&
-        (!Preferences::GetBool("privacy.trackingprotection.pbmode.enabled",
-                               false) || !NS_UsePrivateBrowsing(aChannel))) {
+    nsCOMPtr<nsILoadContext> loadContext;
+    NS_QueryNotificationCallbacks(aChannel, loadContext);
+    if (!loadContext || !(loadContext->UseTrackingProtection())) {
       return NS_OK;
     }
 
@@ -230,8 +231,8 @@ nsChannelClassifier::NotifyTrackingProtectionDisabled(nsIChannel *aChannel)
     if (!docShell) {
       return NS_OK;
     }
-    nsCOMPtr<nsIDocument> doc = do_GetInterface(docShell, &rv);
-    NS_ENSURE_SUCCESS(rv, NS_OK);
+    nsCOMPtr<nsIDocument> doc = docShell->GetDocument();
+    NS_ENSURE_TRUE(doc, NS_OK);
 
     // Notify nsIWebProgressListeners of this security event.
     // Can be used to change the UI state.
@@ -313,6 +314,18 @@ nsChannelClassifier::StartInternal()
     NS_ENSURE_SUCCESS(rv, rv);
     if (hasFlags) return NS_ERROR_UNEXPECTED;
 
+    // Skip whitelisted hostnames.
+    nsAutoCString whitelisted;
+    Preferences::GetCString("urlclassifier.skipHostnames", &whitelisted);
+    if (!whitelisted.IsEmpty()) {
+      ToLowerCase(whitelisted);
+      LOG(("nsChannelClassifier[%p]:StartInternal whitelisted hostnames = %s",
+           this, whitelisted.get()));
+      if (IsHostnameWhitelisted(uri, whitelisted)) {
+        return NS_ERROR_UNEXPECTED;
+      }
+    }
+
     nsCOMPtr<nsIURIClassifier> uriClassifier =
         do_GetService(NS_URICLASSIFIERSERVICE_CONTRACTID, &rv);
     if (rv == NS_ERROR_FACTORY_NOT_REGISTERED ||
@@ -372,6 +385,30 @@ nsChannelClassifier::StartInternal()
     return NS_OK;
 }
 
+bool
+nsChannelClassifier::IsHostnameWhitelisted(nsIURI *aUri,
+                                           const nsACString &aWhitelisted)
+{
+  nsAutoCString host;
+  nsresult rv = aUri->GetHost(host);
+  if (NS_FAILED(rv) || host.IsEmpty()) {
+    return false;
+  }
+  ToLowerCase(host);
+
+  nsCCharSeparatedTokenizer tokenizer(aWhitelisted, ',');
+  while (tokenizer.hasMoreTokens()) {
+    const nsCSubstring& token = tokenizer.nextToken();
+    if (token.Equals(host)) {
+      LOG(("nsChannelClassifier[%p]:StartInternal skipping %s (whitelisted)",
+           this, host.get()));
+      return true;
+    }
+  }
+
+  return false;
+}
+
 // Note in the cache entry that this URL was classified, so that future
 // cached loads don't need to be checked.
 void
@@ -383,6 +420,17 @@ nsChannelClassifier::MarkEntryClassified(nsresult status)
     // Don't cache tracking classifications because we support allowlisting.
     if (status == NS_ERROR_TRACKING_URI || mIsAllowListed) {
         return;
+    }
+
+    if (LOG_ENABLED()) {
+      nsAutoCString errorName;
+      GetErrorName(status, errorName);
+      nsCOMPtr<nsIURI> uri;
+      mChannel->GetURI(getter_AddRefs(uri));
+      nsAutoCString spec;
+      uri->GetAsciiSpec(spec);
+      LOG(("nsChannelClassifier::MarkEntryClassified[%s] %s",
+           errorName.get(), spec.get()));
     }
 
     nsCOMPtr<nsICachingChannel> cachingChannel = do_QueryInterface(mChannel);
@@ -451,8 +499,12 @@ nsChannelClassifier::SameLoadingURI(nsIDocument *aDoc, nsIChannel *aChannel)
   if (!channelLoadInfo || !docURI) {
     return false;
   }
+
   nsCOMPtr<nsIPrincipal> channelLoadingPrincipal = channelLoadInfo->LoadingPrincipal();
   if (!channelLoadingPrincipal) {
+    // TYPE_DOCUMENT loads will not have a channelLoadingPrincipal. But top level
+    // loads should not be blocked by Tracking Protection, so we will return
+    // false
     return false;
   }
   nsCOMPtr<nsIURI> channelLoadingURI;
@@ -491,8 +543,8 @@ nsChannelClassifier::SetBlockedTrackingContent(nsIChannel *channel)
   if (!docShell) {
     return NS_OK;
   }
-  nsCOMPtr<nsIDocument> doc = do_GetInterface(docShell, &rv);
-  NS_ENSURE_SUCCESS(rv, NS_OK);
+  nsCOMPtr<nsIDocument> doc = docShell->GetDocument();
+  NS_ENSURE_TRUE(doc, NS_OK);
 
   // This event might come after the user has navigated to another page.
   // To prevent showing the TrackingProtection UI on the wrong page, we need to
@@ -614,7 +666,7 @@ nsChannelClassifier::OnClassifyComplete(nsresult aErrorCode)
     if (mSuspendedChannel) {
       nsAutoCString errorName;
       if (LOG_ENABLED()) {
-        mozilla::GetErrorName(aErrorCode, errorName);
+        GetErrorName(aErrorCode, errorName);
         LOG(("nsChannelClassifier[%p]:OnClassifyComplete %s (suspended channel)",
              this, errorName.get()));
       }
@@ -649,3 +701,6 @@ nsChannelClassifier::OnClassifyComplete(nsresult aErrorCode)
 
     return NS_OK;
 }
+
+} // namespace net
+} // namespace mozilla

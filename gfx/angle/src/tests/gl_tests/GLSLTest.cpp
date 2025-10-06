@@ -462,6 +462,16 @@ TEST_P(GLSLTest, NamelessScopedStructs)
 
 TEST_P(GLSLTest, ScopedStructsOrderBug)
 {
+    // TODO(geofflang): Find out why this doesn't compile on Apple OpenGL drivers
+    // (http://anglebug.com/1292)
+    // TODO(geofflang): Find out why this doesn't compile on AMD OpenGL drivers
+    // (http://anglebug.com/1291)
+    if (IsDesktopOpenGL() && (IsOSX() || !IsNVIDIA()))
+    {
+        std::cout << "Test disabled on this OpenGL configuration." << std::endl;
+        return;
+    }
+
     const std::string fragmentShaderSource = SHADER_SOURCE
     (
         precision mediump float;
@@ -614,26 +624,6 @@ TEST_P(GLSLTest, TwoElseIfRewriting)
     EXPECT_NE(0u, program);
 }
 
-TEST_P(GLSLTest, InvariantVaryingOut)
-{
-    const std::string fragmentShaderSource = SHADER_SOURCE
-    (
-        precision mediump float;
-        varying float v_varying;
-        void main() { gl_FragColor = vec4(v_varying, 0, 0, 1.0); }
-    );
-
-    const std::string vertexShaderSource = SHADER_SOURCE
-    (
-        attribute vec4 a_position;
-        invariant varying float v_varying;
-        void main() { v_varying = a_position.x; gl_Position = a_position; }
-    );
-
-    GLuint program = CompileProgram(vertexShaderSource, fragmentShaderSource);
-    EXPECT_NE(0u, program);
-}
-
 TEST_P(GLSLTest, FrontFacingAndVarying)
 {
     EGLPlatformParameters platform = GetParam().eglParameters;
@@ -685,75 +675,214 @@ TEST_P(GLSLTest, FrontFacingAndVarying)
     EXPECT_NE(0u, program);
 }
 
+// Verify that linking shaders declaring different shading language versions fails.
+TEST_P(GLSLTest_ES3, VersionMismatch)
+{
+    const std::string fragmentShaderSource100 =
+        "precision mediump float;\n"
+        "varying float v_varying;\n"
+        "void main() { gl_FragColor = vec4(v_varying, 0, 0, 1.0); }\n";
+
+    const std::string vertexShaderSource100 =
+        "attribute vec4 a_position;\n"
+        "varying float v_varying;\n"
+        "void main() { v_varying = a_position.x; gl_Position = a_position; }\n";
+
+    const std::string fragmentShaderSource300 =
+        "#version 300 es\n"
+        "precision mediump float;\n"
+        "in float v_varying;\n"
+        "out vec4 my_FragColor;\n"
+        "void main() { my_FragColor = vec4(v_varying, 0, 0, 1.0); }\n";
+
+    const std::string vertexShaderSource300 =
+        "#version 300 es\n"
+        "in vec4 a_position;\n"
+        "out float v_varying;\n"
+        "void main() { v_varying = a_position.x; gl_Position = a_position; }\n";
+
+    GLuint program = CompileProgram(vertexShaderSource300, fragmentShaderSource100);
+    EXPECT_EQ(0u, program);
+
+    program = CompileProgram(vertexShaderSource100, fragmentShaderSource300);
+    EXPECT_EQ(0u, program);
+}
+
+// Verify that declaring varying as invariant only in vertex shader fails in ESSL 1.00.
+TEST_P(GLSLTest, InvariantVaryingOut)
+{
+    const std::string fragmentShaderSource =
+        "precision mediump float;\n"
+        "varying float v_varying;\n"
+        "void main() { gl_FragColor = vec4(v_varying, 0, 0, 1.0); }\n";
+
+    const std::string vertexShaderSource =
+        "attribute vec4 a_position;\n"
+        "invariant varying float v_varying;\n"
+        "void main() { v_varying = a_position.x; gl_Position = a_position; }\n";
+
+    GLuint program = CompileProgram(vertexShaderSource, fragmentShaderSource);
+    EXPECT_EQ(0u, program);
+}
+
+// Verify that declaring varying as invariant only in vertex shader succeeds in ESSL 3.00.
+TEST_P(GLSLTest_ES3, InvariantVaryingOut)
+{
+    // TODO: ESSL 3.00 -> GLSL 1.20 translation should add "invariant" in fragment shader
+    // for varyings which are invariant in vertex shader (http://anglebug.com/1293)
+    if (IsDesktopOpenGL())
+    {
+        std::cout << "Test disabled on OpenGL." << std::endl;
+        return;
+    }
+
+    const std::string fragmentShaderSource =
+        "#version 300 es\n"
+        "precision mediump float;\n"
+        "in float v_varying;\n"
+        "out vec4 my_FragColor;\n"
+        "void main() { my_FragColor = vec4(v_varying, 0, 0, 1.0); }\n";
+
+    const std::string vertexShaderSource =
+        "#version 300 es\n"
+        "in vec4 a_position;\n"
+        "invariant out float v_varying;\n"
+        "void main() { v_varying = a_position.x; gl_Position = a_position; }\n";
+
+    GLuint program = CompileProgram(vertexShaderSource, fragmentShaderSource);
+    EXPECT_NE(0u, program);
+}
+
+// Verify that declaring varying as invariant only in fragment shader fails in ESSL 1.00.
 TEST_P(GLSLTest, InvariantVaryingIn)
 {
-    const std::string fragmentShaderSource = SHADER_SOURCE
-    (
-        precision mediump float;
-        invariant varying float v_varying;
-        void main() { gl_FragColor = vec4(v_varying, 0, 0, 1.0); }
-    );
+    const std::string fragmentShaderSource =
+        "precision mediump float;\n"
+        "invariant varying float v_varying;\n"
+        "void main() { gl_FragColor = vec4(v_varying, 0, 0, 1.0); }\n";
 
-    const std::string vertexShaderSource = SHADER_SOURCE
-    (
-        attribute vec4 a_position;
-        varying float v_varying;
-        void main() { v_varying = a_position.x; gl_Position = a_position; }
-    );
+    const std::string vertexShaderSource =
+        "attribute vec4 a_position;\n"
+        "varying float v_varying;\n"
+        "void main() { v_varying = a_position.x; gl_Position = a_position; }\n";
 
     GLuint program = CompileProgram(vertexShaderSource, fragmentShaderSource);
-    EXPECT_NE(0u, program);
+    EXPECT_EQ(0u, program);
 }
 
+// Verify that declaring varying as invariant only in fragment shader fails in ESSL 3.00.
+TEST_P(GLSLTest_ES3, InvariantVaryingIn)
+{
+    const std::string fragmentShaderSource =
+        "#version 300 es\n"
+        "precision mediump float;\n"
+        "invariant in float v_varying;\n"
+        "out vec4 my_FragColor;\n"
+        "void main() { my_FragColor = vec4(v_varying, 0, 0, 1.0); }\n";
+
+    const std::string vertexShaderSource =
+        "#version 300 es\n"
+        "in vec4 a_position;\n"
+        "out float v_varying;\n"
+        "void main() { v_varying = a_position.x; gl_Position = a_position; }\n";
+
+    GLuint program = CompileProgram(vertexShaderSource, fragmentShaderSource);
+    EXPECT_EQ(0u, program);
+}
+
+// Verify that declaring varying as invariant in both shaders succeeds in ESSL 1.00.
 TEST_P(GLSLTest, InvariantVaryingBoth)
 {
-    const std::string fragmentShaderSource = SHADER_SOURCE
-    (
-        precision mediump float;
-        invariant varying float v_varying;
-        void main() { gl_FragColor = vec4(v_varying, 0, 0, 1.0); }
-    );
+    const std::string fragmentShaderSource =
+        "precision mediump float;\n"
+        "invariant varying float v_varying;\n"
+        "void main() { gl_FragColor = vec4(v_varying, 0, 0, 1.0); }\n";
 
-    const std::string vertexShaderSource = SHADER_SOURCE
-    (
-        attribute vec4 a_position;
-        invariant varying float v_varying;
-        void main() { v_varying = a_position.x; gl_Position = a_position; }
-    );
+    const std::string vertexShaderSource =
+        "attribute vec4 a_position;\n"
+        "invariant varying float v_varying;\n"
+        "void main() { v_varying = a_position.x; gl_Position = a_position; }\n";
 
     GLuint program = CompileProgram(vertexShaderSource, fragmentShaderSource);
     EXPECT_NE(0u, program);
 }
 
+// Verify that declaring varying as invariant in both shaders fails in ESSL 3.00.
+TEST_P(GLSLTest_ES3, InvariantVaryingBoth)
+{
+    const std::string fragmentShaderSource =
+        "#version 300 es\n"
+        "precision mediump float;\n"
+        "invariant in float v_varying;\n"
+        "out vec4 my_FragColor;\n"
+        "void main() { my_FragColor = vec4(v_varying, 0, 0, 1.0); }\n";
+
+    const std::string vertexShaderSource =
+        "#version 300 es\n"
+        "in vec4 a_position;\n"
+        "invariant out float v_varying;\n"
+        "void main() { v_varying = a_position.x; gl_Position = a_position; }\n";
+
+    GLuint program = CompileProgram(vertexShaderSource, fragmentShaderSource);
+    EXPECT_EQ(0u, program);
+}
+
+// Verify that declaring gl_Position as invariant succeeds in ESSL 1.00.
 TEST_P(GLSLTest, InvariantGLPosition)
 {
-    const std::string fragmentShaderSource = SHADER_SOURCE
-    (
-        precision mediump float;
-        varying float v_varying;
-        void main() { gl_FragColor = vec4(v_varying, 0, 0, 1.0); }
-    );
+    const std::string fragmentShaderSource =
+        "precision mediump float;\n"
+        "varying float v_varying;\n"
+        "void main() { gl_FragColor = vec4(v_varying, 0, 0, 1.0); }\n";
 
-    const std::string vertexShaderSource = SHADER_SOURCE
-    (
-        attribute vec4 a_position;
-        invariant gl_Position;
-        varying float v_varying;
-        void main() { v_varying = a_position.x; gl_Position = a_position; }
-    );
+    const std::string vertexShaderSource =
+        "attribute vec4 a_position;\n"
+        "invariant gl_Position;\n"
+        "varying float v_varying;\n"
+        "void main() { v_varying = a_position.x; gl_Position = a_position; }\n";
 
     GLuint program = CompileProgram(vertexShaderSource, fragmentShaderSource);
     EXPECT_NE(0u, program);
 }
 
-TEST_P(GLSLTest, InvariantAll)
+// Verify that declaring gl_Position as invariant succeeds in ESSL 3.00.
+TEST_P(GLSLTest_ES3, InvariantGLPosition)
 {
-    const std::string fragmentShaderSource = SHADER_SOURCE
-    (
-        precision mediump float;
-        varying float v_varying;
-        void main() { gl_FragColor = vec4(v_varying, 0, 0, 1.0); }
-    );
+    const std::string fragmentShaderSource =
+        "#version 300 es\n"
+        "precision mediump float;\n"
+        "in float v_varying;\n"
+        "out vec4 my_FragColor;\n"
+        "void main() { my_FragColor = vec4(v_varying, 0, 0, 1.0); }\n";
+
+    const std::string vertexShaderSource =
+        "#version 300 es\n"
+        "in vec4 a_position;\n"
+        "invariant gl_Position;\n"
+        "out float v_varying;\n"
+        "void main() { v_varying = a_position.x; gl_Position = a_position; }\n";
+
+    GLuint program = CompileProgram(vertexShaderSource, fragmentShaderSource);
+    EXPECT_NE(0u, program);
+}
+
+// Verify that using invariant(all) in both shaders succeeds in ESSL 1.00.
+TEST_P(GLSLTest, InvariantAllBoth)
+{
+    // TODO: ESSL 1.00 -> GLSL 1.20 translation should add "invariant" in fragment shader
+    // for varyings which are invariant in vertex shader individually,
+    // and remove invariant(all) from fragment shader (http://anglebug.com/1293)
+    if (IsDesktopOpenGL())
+    {
+        std::cout << "Test disabled on OpenGL." << std::endl;
+        return;
+    }
+
+    const std::string fragmentShaderSource =
+        "#pragma STDGL invariant(all)\n"
+        "precision mediump float;\n"
+        "varying float v_varying;\n"
+        "void main() { gl_FragColor = vec4(v_varying, 0, 0, 1.0); }\n";
 
     const std::string vertexShaderSource =
         "#pragma STDGL invariant(all)\n"
@@ -765,8 +894,127 @@ TEST_P(GLSLTest, InvariantAll)
     EXPECT_NE(0u, program);
 }
 
+// Verify that using invariant(all) in both shaders fails in ESSL 3.00.
+TEST_P(GLSLTest_ES3, InvariantAllBoth)
+{
+    const std::string fragmentShaderSource =
+        "#version 300 es\n"
+        "#pragma STDGL invariant(all)\n"
+        "precision mediump float;\n"
+        "in float v_varying;\n"
+        "out vec4 my_FragColor;\n"
+        "void main() { my_FragColor = vec4(v_varying, 0, 0, 1.0); }\n";
+
+    const std::string vertexShaderSource =
+        "#version 300 es\n"
+        "#pragma STDGL invariant(all)\n"
+        "in vec4 a_position;\n"
+        "out float v_varying;\n"
+        "void main() { v_varying = a_position.x; gl_Position = a_position; }\n";
+
+    GLuint program = CompileProgram(vertexShaderSource, fragmentShaderSource);
+    EXPECT_EQ(0u, program);
+}
+
+// Verify that using invariant(all) only in fragment shader fails in ESSL 1.00.
+TEST_P(GLSLTest, InvariantAllIn)
+{
+    const std::string fragmentShaderSource =
+        "#pragma STDGL invariant(all)\n"
+        "precision mediump float;\n"
+        "varying float v_varying;\n"
+        "void main() { gl_FragColor = vec4(v_varying, 0, 0, 1.0); }\n";
+
+    const std::string vertexShaderSource =
+        "attribute vec4 a_position;\n"
+        "varying float v_varying;\n"
+        "void main() { v_varying = a_position.x; gl_Position = a_position; }\n";
+
+    GLuint program = CompileProgram(vertexShaderSource, fragmentShaderSource);
+    EXPECT_EQ(0u, program);
+}
+
+// Verify that using invariant(all) only in fragment shader fails in ESSL 3.00.
+TEST_P(GLSLTest_ES3, InvariantAllIn)
+{
+    const std::string fragmentShaderSource =
+        "#version 300 es\n"
+        "#pragma STDGL invariant(all)\n"
+        "precision mediump float;\n"
+        "in float v_varying;\n"
+        "out vec4 my_FragColor;\n"
+        "void main() { my_FragColor = vec4(v_varying, 0, 0, 1.0); }\n";
+
+    const std::string vertexShaderSource =
+        "#version 300 es\n"
+        "in vec4 a_position;\n"
+        "out float v_varying;\n"
+        "void main() { v_varying = a_position.x; gl_Position = a_position; }\n";
+
+    GLuint program = CompileProgram(vertexShaderSource, fragmentShaderSource);
+    EXPECT_EQ(0u, program);
+}
+
+// Verify that using invariant(all) only in vertex shader fails in ESSL 1.00.
+TEST_P(GLSLTest, InvariantAllOut)
+{
+    const std::string fragmentShaderSource =
+        "precision mediump float;\n"
+        "varying float v_varying;\n"
+        "void main() { gl_FragColor = vec4(v_varying, 0, 0, 1.0); }\n";
+
+    const std::string vertexShaderSource =
+        "#pragma STDGL invariant(all)\n"
+        "attribute vec4 a_position;\n"
+        "varying float v_varying;\n"
+        "void main() { v_varying = a_position.x; gl_Position = a_position; }\n";
+
+    GLuint program = CompileProgram(vertexShaderSource, fragmentShaderSource);
+    EXPECT_EQ(0u, program);
+}
+
+// Verify that using invariant(all) only in vertex shader succeeds in ESSL 3.00.
+TEST_P(GLSLTest_ES3, InvariantAllOut)
+{
+    // TODO: ESSL 3.00 -> GLSL 1.20 translation should add "invariant" in fragment shader
+    // for varyings which are invariant in vertex shader,
+    // because of invariant(all) being used in vertex shader (http://anglebug.com/1293)
+    if (IsDesktopOpenGL())
+    {
+        std::cout << "Test disabled on OpenGL." << std::endl;
+        return;
+    }
+
+    const std::string fragmentShaderSource =
+        "#version 300 es\n"
+        "precision mediump float;\n"
+        "in float v_varying;\n"
+        "out vec4 my_FragColor;\n"
+        "void main() { my_FragColor = vec4(v_varying, 0, 0, 1.0); }\n";
+
+    const std::string vertexShaderSource =
+        "#version 300 es\n"
+        "#pragma STDGL invariant(all)\n"
+        "in vec4 a_position;\n"
+        "out float v_varying;\n"
+        "void main() { v_varying = a_position.x; gl_Position = a_position; }\n";
+
+    GLuint program = CompileProgram(vertexShaderSource, fragmentShaderSource);
+    EXPECT_NE(0u, program);
+}
+
 TEST_P(GLSLTest, MaxVaryingVec4)
 {
+#if defined(__APPLE__)
+    // TODO(geofflang): Find out why this doesn't compile on Apple AND OpenGL drivers
+    // (http://anglebug.com/1291)
+    if (IsAMD() && getPlatformRenderer() == EGL_PLATFORM_ANGLE_TYPE_OPENGL_ANGLE)
+    {
+        std::cout << "Test disabled on Apple AMD OpenGL." << std::endl;
+        return;
+    }
+#endif
+
     GLint maxVaryings = 0;
     glGetIntegerv(GL_MAX_VARYING_VECTORS, &maxVaryings);
 
@@ -784,6 +1032,13 @@ TEST_P(GLSLTest, MaxMinusTwoVaryingVec4PlusTwoSpecialVariables)
 
 TEST_P(GLSLTest, MaxMinusTwoVaryingVec4PlusThreeSpecialVariables)
 {
+    // TODO(geofflang): Figure out why this fails on OpenGL AMD (http://anglebug.com/1291)
+    if (IsAMD() && getPlatformRenderer() == EGL_PLATFORM_ANGLE_TYPE_OPENGL_ANGLE)
+    {
+        std::cout << "Test disabled on OpenGL." << std::endl;
+        return;
+    }
+
     GLint maxVaryings = 0;
     glGetIntegerv(GL_MAX_VARYING_VECTORS, &maxVaryings);
 
@@ -791,7 +1046,9 @@ TEST_P(GLSLTest, MaxMinusTwoVaryingVec4PlusThreeSpecialVariables)
     VaryingTestBase(0, 0, 0, 0, 0, 0, maxVaryings - 2, 0, true, true, true, true);
 }
 
-TEST_P(GLSLTest, MaxVaryingVec4PlusFragCoord)
+// Disabled because drivers are allowed to successfully compile shaders that have more than the
+// maximum number of varyings. (http://anglebug.com/1296)
+TEST_P(GLSLTest, DISABLED_MaxVaryingVec4PlusFragCoord)
 {
     GLint maxVaryings = 0;
     glGetIntegerv(GL_MAX_VARYING_VECTORS, &maxVaryings);
@@ -801,7 +1058,9 @@ TEST_P(GLSLTest, MaxVaryingVec4PlusFragCoord)
     VaryingTestBase(0, 0, 0, 0, 0, 0, maxVaryings, 0, true, false, false, false);
 }
 
-TEST_P(GLSLTest, MaxVaryingVec4PlusPointCoord)
+// Disabled because drivers are allowed to successfully compile shaders that have more than the
+// maximum number of varyings. (http://anglebug.com/1296)
+TEST_P(GLSLTest, DISABLED_MaxVaryingVec4PlusPointCoord)
 {
     GLint maxVaryings = 0;
     glGetIntegerv(GL_MAX_VARYING_VECTORS, &maxVaryings);
@@ -830,7 +1089,7 @@ TEST_P(GLSLTest, MaxVaryingVec3Array)
 // Disabled because of a failure in D3D9
 TEST_P(GLSLTest, MaxVaryingVec3AndOneFloat)
 {
-    if (isD3D9())
+    if (IsD3D9())
     {
         std::cout << "Test disabled on D3D9." << std::endl;
         return;
@@ -845,7 +1104,7 @@ TEST_P(GLSLTest, MaxVaryingVec3AndOneFloat)
 // Disabled because of a failure in D3D9
 TEST_P(GLSLTest, MaxVaryingVec3ArrayAndOneFloatArray)
 {
-    if (isD3D9())
+    if (IsD3D9())
     {
         std::cout << "Test disabled on D3D9." << std::endl;
         return;
@@ -860,11 +1119,28 @@ TEST_P(GLSLTest, MaxVaryingVec3ArrayAndOneFloatArray)
 // Disabled because of a failure in D3D9
 TEST_P(GLSLTest, TwiceMaxVaryingVec2)
 {
-    if (isD3D9())
+    if (IsD3D9())
     {
         std::cout << "Test disabled on D3D9." << std::endl;
         return;
     }
+
+    if (getPlatformRenderer() == EGL_PLATFORM_ANGLE_TYPE_OPENGLES_ANGLE)
+    {
+        // TODO(geofflang): Figure out why this fails on NVIDIA's GLES driver
+        std::cout << "Test disabled on OpenGL ES." << std::endl;
+        return;
+    }
+
+#if defined(__APPLE__)
+    // TODO(geofflang): Find out why this doesn't compile on Apple AND OpenGL drivers
+    // (http://anglebug.com/1291)
+    if (IsAMD() && getPlatformRenderer() == EGL_PLATFORM_ANGLE_TYPE_OPENGL_ANGLE)
+    {
+        std::cout << "Test disabled on Apple AMD OpenGL." << std::endl;
+        return;
+    }
+#endif
 
     GLint maxVaryings = 0;
     glGetIntegerv(GL_MAX_VARYING_VECTORS, &maxVaryings);
@@ -875,11 +1151,28 @@ TEST_P(GLSLTest, TwiceMaxVaryingVec2)
 // Disabled because of a failure in D3D9
 TEST_P(GLSLTest, MaxVaryingVec2Arrays)
 {
-    if (isD3DSM3())
+    if (IsD3DSM3())
     {
         std::cout << "Test disabled on SM3." << std::endl;
         return;
     }
+
+    if (getPlatformRenderer() == EGL_PLATFORM_ANGLE_TYPE_OPENGLES_ANGLE)
+    {
+        // TODO(geofflang): Figure out why this fails on NVIDIA's GLES driver
+        std::cout << "Test disabled on OpenGL ES." << std::endl;
+        return;
+    }
+
+#if defined(__APPLE__)
+    // TODO(geofflang): Find out why this doesn't compile on Apple AND OpenGL drivers
+    // (http://anglebug.com/1291)
+    if (IsAMD() && getPlatformRenderer() == EGL_PLATFORM_ANGLE_TYPE_OPENGL_ANGLE)
+    {
+        std::cout << "Test disabled on Apple AMD OpenGL." << std::endl;
+        return;
+    }
+#endif
 
     GLint maxVaryings = 0;
     glGetIntegerv(GL_MAX_VARYING_VECTORS, &maxVaryings);
@@ -887,7 +1180,9 @@ TEST_P(GLSLTest, MaxVaryingVec2Arrays)
     VaryingTestBase(0, 0, 0, maxVaryings, 0, 0, 0, 0, false, false, false, true);
 }
 
-TEST_P(GLSLTest, MaxPlusOneVaryingVec3)
+// Disabled because drivers are allowed to successfully compile shaders that have more than the
+// maximum number of varyings. (http://anglebug.com/1296)
+TEST_P(GLSLTest, DISABLED_MaxPlusOneVaryingVec3)
 {
     GLint maxVaryings = 0;
     glGetIntegerv(GL_MAX_VARYING_VECTORS, &maxVaryings);
@@ -895,7 +1190,9 @@ TEST_P(GLSLTest, MaxPlusOneVaryingVec3)
     VaryingTestBase(0, 0, 0, 0, maxVaryings + 1, 0, 0, 0, false, false, false, false);
 }
 
-TEST_P(GLSLTest, MaxPlusOneVaryingVec3Array)
+// Disabled because drivers are allowed to successfully compile shaders that have more than the
+// maximum number of varyings. (http://anglebug.com/1296)
+TEST_P(GLSLTest, DISABLED_MaxPlusOneVaryingVec3Array)
 {
     GLint maxVaryings = 0;
     glGetIntegerv(GL_MAX_VARYING_VECTORS, &maxVaryings);
@@ -903,7 +1200,9 @@ TEST_P(GLSLTest, MaxPlusOneVaryingVec3Array)
     VaryingTestBase(0, 0, 0, 0, 0, maxVaryings / 2 + 1, 0, 0, false, false, false, false);
 }
 
-TEST_P(GLSLTest, MaxVaryingVec3AndOneVec2)
+// Disabled because drivers are allowed to successfully compile shaders that have more than the
+// maximum number of varyings. (http://anglebug.com/1296)
+TEST_P(GLSLTest, DISABLED_MaxVaryingVec3AndOneVec2)
 {
     GLint maxVaryings = 0;
     glGetIntegerv(GL_MAX_VARYING_VECTORS, &maxVaryings);
@@ -911,7 +1210,9 @@ TEST_P(GLSLTest, MaxVaryingVec3AndOneVec2)
     VaryingTestBase(0, 0, 1, 0, maxVaryings, 0, 0, 0, false, false, false, false);
 }
 
-TEST_P(GLSLTest, MaxPlusOneVaryingVec2)
+// Disabled because drivers are allowed to successfully compile shaders that have more than the
+// maximum number of varyings. (http://anglebug.com/1296)
+TEST_P(GLSLTest, DISABLED_MaxPlusOneVaryingVec2)
 {
     GLint maxVaryings = 0;
     glGetIntegerv(GL_MAX_VARYING_VECTORS, &maxVaryings);
@@ -919,7 +1220,9 @@ TEST_P(GLSLTest, MaxPlusOneVaryingVec2)
     VaryingTestBase(0, 0, 2 * maxVaryings + 1, 0, 0, 0, 0, 0, false, false, false, false);
 }
 
-TEST_P(GLSLTest, MaxVaryingVec3ArrayAndMaxPlusOneFloatArray)
+// Disabled because drivers are allowed to successfully compile shaders that have more than the
+// maximum number of varyings. (http://anglebug.com/1296)
+TEST_P(GLSLTest, DISABLED_MaxVaryingVec3ArrayAndMaxPlusOneFloatArray)
 {
     GLint maxVaryings = 0;
     glGetIntegerv(GL_MAX_VARYING_VECTORS, &maxVaryings);
@@ -957,6 +1260,19 @@ TEST_P(GLSLTest, NegativeShaderLength)
     GLint compileResult;
     glGetShaderiv(shader, GL_COMPILE_STATUS, &compileResult);
     EXPECT_NE(compileResult, 0);
+}
+
+// Check that having an invalid char after the "." doesn't cause an assert.
+TEST_P(GLSLTest, InvalidFieldFirstChar)
+{
+    GLuint shader      = glCreateShader(GL_VERTEX_SHADER);
+    const char *source = "void main() {vec4 x; x.}";
+    glShaderSource(shader, 1, &source, 0);
+    glCompileShader(shader);
+
+    GLint compileResult;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &compileResult);
+    EXPECT_EQ(0, compileResult);
 }
 
 // Verify that a length array with mixed positive and negative values compiles.
@@ -1253,6 +1569,13 @@ TEST_P(GLSLTest, VerifyMaxVertexUniformVectors)
 // can actually be used along with the maximum number of texture samplers.
 TEST_P(GLSLTest, VerifyMaxVertexUniformVectorsWithSamplers)
 {
+    if (GetParam().eglParameters.renderer == EGL_PLATFORM_ANGLE_TYPE_OPENGL_ANGLE ||
+        GetParam().eglParameters.renderer == EGL_PLATFORM_ANGLE_TYPE_OPENGLES_ANGLE)
+    {
+        std::cout << "Test disabled on OpenGL." << std::endl;
+        return;
+    }
+
     int maxUniforms = 10000;
     glGetIntegerv(GL_MAX_VERTEX_UNIFORM_VECTORS, &maxUniforms);
     EXPECT_GL_NO_ERROR();
@@ -1292,6 +1615,13 @@ TEST_P(GLSLTest, VerifyMaxFragmentUniformVectors)
 // can actually be used along with the maximum number of texture samplers.
 TEST_P(GLSLTest, VerifyMaxFragmentUniformVectorsWithSamplers)
 {
+    if (GetParam().eglParameters.renderer == EGL_PLATFORM_ANGLE_TYPE_OPENGL_ANGLE ||
+        GetParam().eglParameters.renderer == EGL_PLATFORM_ANGLE_TYPE_OPENGLES_ANGLE)
+    {
+        std::cout << "Test disabled on OpenGL." << std::endl;
+        return;
+    }
+
     int maxUniforms = 10000;
     glGetIntegerv(GL_MAX_FRAGMENT_UNIFORM_VECTORS, &maxUniforms);
     EXPECT_GL_NO_ERROR();
@@ -1315,8 +1645,184 @@ TEST_P(GLSLTest, VerifyMaxFragmentUniformVectorsExceeded)
     CompileGLSLWithUniformsAndSamplers(0, maxUniforms + 1, 0, 0, false);
 }
 
-// Use this to select which configurations (e.g. which renderer, which GLES major version) these tests should be run against.
-ANGLE_INSTANTIATE_TEST(GLSLTest, ES2_D3D9(), ES2_D3D11(), ES2_D3D11_FL9_3());
+// Test that two constructors which have vec4 and mat2 parameters get disambiguated (issue in
+// HLSL).
+TEST_P(GLSLTest_ES3, AmbiguousConstructorCall2x2)
+{
+    const std::string fragmentShaderSource =
+        "#version 300 es\n"
+        "precision highp float;\n"
+        "out vec4 my_FragColor;\n"
+        "void main()\n"
+        "{\n"
+        "    my_FragColor = vec4(0.0);\n"
+        "}";
+
+    const std::string vertexShaderSource =
+        "#version 300 es\n"
+        "precision highp float;\n"
+        "in vec4 a_vec;\n"
+        "in mat2 a_mat;\n"
+        "void main()\n"
+        "{\n"
+        "    gl_Position = vec4(a_vec) + vec4(a_mat);\n"
+        "}";
+
+    GLuint program = CompileProgram(vertexShaderSource, fragmentShaderSource);
+    EXPECT_NE(0u, program);
+}
+
+// Test that two constructors which have mat2x3 and mat3x2 parameters get disambiguated.
+// This was suspected to be an issue in HLSL, but HLSL seems to be able to natively choose between
+// the function signatures in this case.
+TEST_P(GLSLTest_ES3, AmbiguousConstructorCall2x3)
+{
+    const std::string fragmentShaderSource =
+        "#version 300 es\n"
+        "precision highp float;\n"
+        "out vec4 my_FragColor;\n"
+        "void main()\n"
+        "{\n"
+        "    my_FragColor = vec4(0.0);\n"
+        "}";
+
+    const std::string vertexShaderSource =
+        "#version 300 es\n"
+        "precision highp float;\n"
+        "in mat3x2 a_matA;\n"
+        "in mat2x3 a_matB;\n"
+        "void main()\n"
+        "{\n"
+        "    gl_Position = vec4(a_matA) + vec4(a_matB);\n"
+        "}";
+
+    GLuint program = CompileProgram(vertexShaderSource, fragmentShaderSource);
+    EXPECT_NE(0u, program);
+}
+
+// Test that two functions which have vec4 and mat2 parameters get disambiguated (issue in HLSL).
+TEST_P(GLSLTest_ES3, AmbiguousFunctionCall2x2)
+{
+    const std::string fragmentShaderSource =
+        "#version 300 es\n"
+        "precision highp float;\n"
+        "out vec4 my_FragColor;\n"
+        "void main()\n"
+        "{\n"
+        "    my_FragColor = vec4(0.0);\n"
+        "}";
+
+    const std::string vertexShaderSource =
+        "#version 300 es\n"
+        "precision highp float;\n"
+        "in vec4 a_vec;\n"
+        "in mat2 a_mat;\n"
+        "vec4 foo(vec4 a)\n"
+        "{\n"
+        "    return a;\n"
+        "}\n"
+        "vec4 foo(mat2 a)\n"
+        "{\n"
+        "    return vec4(a[0][0]);\n"
+        "}\n"
+        "void main()\n"
+        "{\n"
+        "    gl_Position = foo(a_vec) + foo(a_mat);\n"
+        "}";
+
+    GLuint program = CompileProgram(vertexShaderSource, fragmentShaderSource);
+    EXPECT_NE(0u, program);
+}
+
+// Test that an user-defined function with a large number of float4 parameters doesn't fail due to
+// the function name being too long.
+TEST_P(GLSLTest_ES3, LargeNumberOfFloat4Parameters)
+{
+    const std::string fragmentShaderSource =
+        "#version 300 es\n"
+        "precision highp float;\n"
+        "out vec4 my_FragColor;\n"
+        "void main()\n"
+        "{\n"
+        "    my_FragColor = vec4(0.0);\n"
+        "}";
+
+    std::stringstream vertexShaderStream;
+    const unsigned int paramCount = 1024u;
+
+    vertexShaderStream << "#version 300 es\n"
+                          "precision highp float;\n"
+                          "in vec4 a_vec;\n"
+                          "vec4 lotsOfVec4Parameters(";
+    for (unsigned int i = 0; i < paramCount; ++i)
+    {
+        vertexShaderStream << "vec4 a" << i << ", ";
+    }
+    vertexShaderStream << "vec4 aLast)\n"
+                          "{\n"
+                          "    return ";
+    for (unsigned int i = 0; i < paramCount; ++i)
+    {
+        vertexShaderStream << "a" << i << " + ";
+    }
+    vertexShaderStream << "aLast;\n"
+                          "}\n"
+                          "void main()\n"
+                          "{\n"
+                          "    gl_Position = lotsOfVec4Parameters(";
+    for (unsigned int i = 0; i < paramCount; ++i)
+    {
+        vertexShaderStream << "a_vec, ";
+    }
+    vertexShaderStream << "a_vec);\n"
+                          "}";
+
+    GLuint program = CompileProgram(vertexShaderStream.str(), fragmentShaderSource);
+    EXPECT_NE(0u, program);
+}
+
+// This test was written specifically to stress DeferGlobalInitializers AST transformation.
+// Test a shader where a global constant array is initialized with an expression containing array
+// indexing. This initializer is tricky to constant fold, so if it's not constant folded it needs to
+// be handled in a way that doesn't generate statements in the global scope in HLSL output.
+// Also includes multiple array initializers in one declaration, where only the second one has
+// array indexing. This makes sure that the qualifier for the declaration is set correctly if
+// transformations are applied to the declaration also in the case of ESSL output.
+TEST_P(GLSLTest_ES3, InitGlobalArrayWithArrayIndexing)
+{
+    const std::string vertexShaderSource =
+        "#version 300 es\n"
+        "precision highp float;\n"
+        "in vec4 a_vec;\n"
+        "void main()\n"
+        "{\n"
+        "    gl_Position = vec4(a_vec);\n"
+        "}";
+
+    const std::string fragmentShaderSource =
+        "#version 300 es\n"
+        "precision highp float;\n"
+        "out vec4 my_FragColor;\n"
+        "const highp float f[2] = float[2](0.1, 0.2);\n"
+        "const highp float[2] g = float[2](0.3, 0.4), h = float[2](0.5, f[1]);\n"
+        "void main()\n"
+        "{\n"
+        "    my_FragColor = vec4(h[1]);\n"
+        "}";
+
+    GLuint program = CompileProgram(vertexShaderSource, fragmentShaderSource);
+    EXPECT_NE(0u, program);
+}
 
 // Use this to select which configurations (e.g. which renderer, which GLES major version) these tests should be run against.
-ANGLE_INSTANTIATE_TEST(GLSLTest_ES3, ES3_D3D11());
+ANGLE_INSTANTIATE_TEST(GLSLTest,
+                       ES2_D3D9(),
+                       ES2_D3D11(),
+                       ES2_D3D11_FL9_3(),
+                       ES2_OPENGL(),
+                       ES3_OPENGL(),
+                       ES2_OPENGLES(),
+                       ES3_OPENGLES());
+
+// Use this to select which configurations (e.g. which renderer, which GLES major version) these tests should be run against.
+ANGLE_INSTANTIATE_TEST(GLSLTest_ES3, ES3_D3D11(), ES3_OPENGL(), ES3_OPENGLES());

@@ -10,7 +10,6 @@
 #include "basic/BasicLayers.h"          // for BasicLayerManager
 #include "mozilla/gfx/BaseRect.h"       // for BaseRect
 #include "mozilla/mozalloc.h"           // for operator new
-#include "nsAutoPtr.h"                  // for nsRefPtr
 #include "nsCOMPtr.h"                   // for already_AddRefed
 #include "nsISupportsImpl.h"            // for Layer::AddRef, etc
 #include "nsPoint.h"                    // for nsIntPoint
@@ -83,7 +82,7 @@ BasicContainerLayer::ComputeEffectiveTransforms(const Matrix4x4& aTransformToSur
     GetMaskLayer() ||
     GetForceIsolatedGroup() ||
     (GetMixBlendMode() != CompositionOp::OP_OVER && HasMultipleChildren()) ||
-    (GetEffectiveOpacity() != 1.0 && (HasMultipleChildren() || hasSingleBlendingChild));
+    (GetEffectiveOpacity() != 1.0 && ((HasMultipleChildren() && !Extend3DContext()) || hasSingleBlendingChild));
 
   if (!Extend3DContext()) {
     idealTransform.ProjectTo2D();

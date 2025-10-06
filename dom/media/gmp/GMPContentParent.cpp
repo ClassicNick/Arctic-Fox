@@ -12,7 +12,8 @@
 #include "GMPVideoEncoderParent.h"
 #include "mozIGeckoMediaPluginService.h"
 #include "mozilla/Logging.h"
-#include "mozilla/unused.h"
+#include "mozilla/Unused.h"
+#include "base/task.h"
 
 namespace mozilla {
 
@@ -43,11 +44,9 @@ GMPContentParent::GMPContentParent(GMPParent* aParent)
 
 GMPContentParent::~GMPContentParent()
 {
-  XRE_GetIOMessageLoop()->PostTask(FROM_HERE,
-                                   new DeleteTask<Transport>(GetTransport()));
 }
 
-class ReleaseGMPContentParent : public nsRunnable
+class ReleaseGMPContentParent : public Runnable
 {
 public:
   explicit ReleaseGMPContentParent(GMPContentParent* aToRelease)
@@ -55,7 +54,7 @@ public:
   {
   }
 
-  NS_IMETHOD Run()
+  NS_IMETHOD Run() override
   {
     return NS_OK;
   }
@@ -134,8 +133,8 @@ GMPContentParent::CloseIfUnused()
         GeckoMediaPluginServiceChild::GetSingleton());
       gmp->RemoveGMPContentParent(toClose);
     }
-    NS_DispatchToCurrentThread(NS_NewRunnableMethod(toClose,
-                                                    &GMPContentParent::Close));
+    NS_DispatchToCurrentThread(NewRunnableMethod(toClose,
+                                                 &GMPContentParent::Close));
   }
 }
 

@@ -127,6 +127,12 @@ nsNullPrincipalURI::SetHostPort(const nsACString &aHost)
 }
 
 NS_IMETHODIMP
+nsNullPrincipalURI::SetHostAndPort(const nsACString &aHost)
+{
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
 nsNullPrincipalURI::GetOriginCharset(nsACString &_charset)
 {
   _charset.Truncate();
@@ -267,6 +273,14 @@ nsNullPrincipalURI::CloneIgnoringRef(nsIURI **_newURI)
 {
   // GetRef/SetRef not supported by nsNullPrincipalURI, so
   // CloneIgnoringRef() is the same as Clone().
+  return Clone(_newURI);
+}
+
+NS_IMETHODIMP
+nsNullPrincipalURI::CloneWithNewRef(const nsACString& newRef, nsIURI **_newURI)
+{
+  // GetRef/SetRef not supported by nsNullPrincipalURI, so
+  // CloneWithNewRef() is the same as Clone().
   return Clone(_newURI);
 }
 

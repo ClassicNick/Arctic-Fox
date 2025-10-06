@@ -12,6 +12,7 @@ namespace mozilla {
 
 namespace gfx {
 class DataSourceSurface;
+class DrawTarget;
 class SourceSurface;
 }
 
@@ -53,10 +54,8 @@ public:
 
   NS_IMETHOD SetDimensions(int32_t aWidth, int32_t aHeight) override;
 
-  NS_IMETHOD InitializeWithSurface(nsIDocShell* aDocShell,
-                                   gfxASurface* aSurface,
-                                   int32_t aWidth,
-                                   int32_t aHeight) override;
+  NS_IMETHOD InitializeWithDrawTarget(nsIDocShell* aDocShell,
+                                      NotNull<gfx::DrawTarget*> aTarget) override;
 
   virtual mozilla::UniquePtr<uint8_t[]> GetImageBuffer(int32_t* aFormat) override;
   NS_IMETHOD GetInputStream(const char* aMimeType,
@@ -71,7 +70,8 @@ public:
   NS_IMETHOD Reset() override;
   virtual already_AddRefed<Layer> GetCanvasLayer(nsDisplayListBuilder* aBuilder,
                                                  Layer* aOldLayer,
-                                                 LayerManager* aManager) override;
+                                                 LayerManager* aManager,
+                                                 bool aMirror = false) override;
   virtual void MarkContextClean() override;
 
   NS_IMETHOD Redraw(const gfxRect& aDirty) override;

@@ -11,10 +11,10 @@ user_pref("dom.disable_open_during_load", false);
 user_pref("dom.experimental_forms", true); // on for testing
 user_pref("dom.forms.number", true); // on for testing
 user_pref("dom.forms.color", true); // on for testing
+user_pref("dom.forms.datetime", true); // on for testing
 user_pref("dom.max_script_run_time", 0); // no slow script dialogs
 user_pref("hangmonitor.timeout", 0); // no hang monitor
 user_pref("dom.max_chrome_script_run_time", 0);
-user_pref("dom.max_child_script_run_time", 0);
 user_pref("dom.ipc.reportProcessHangs", false); // process hang monitor
 user_pref("dom.popup_maximum", -1);
 user_pref("dom.send_after_paint_to_content", true);
@@ -24,6 +24,8 @@ user_pref("browser.shell.checkDefaultBrowser", false);
 user_pref("shell.checkDefaultClient", false);
 user_pref("browser.warnOnQuit", false);
 user_pref("accessibility.typeaheadfind.autostart", false);
+user_pref("findbar.highlightAll", false);
+user_pref("findbar.modalHighlight", false);
 user_pref("javascript.options.showInConsole", true);
 user_pref("devtools.browsertoolbox.panel", "jsdebugger");
 user_pref("devtools.errorconsole.enabled", true);
@@ -46,8 +48,10 @@ user_pref("app.update.url.android", "");
 // Make sure GMPInstallManager won't hit the network.
 user_pref("media.gmp-manager.url.override", "http://%(server)s/dummy-gmp-manager.xml");
 user_pref("dom.w3c_touch_events.enabled", 1);
+user_pref("layout.accessiblecaret.enabled_on_touch", false);
 user_pref("dom.undo_manager.enabled", true);
 user_pref("dom.webcomponents.enabled", true);
+user_pref("dom.webcomponents.customelements.enabled", true);
 user_pref("dom.htmlimports.enabled", true);
 // Existing tests assume there is no font size inflation.
 user_pref("font.size.inflation.emPerLine", 0);
@@ -79,6 +83,9 @@ user_pref("geo.wifi.timeToWaitBeforeSending", 2000);
 user_pref("geo.wifi.scan", false);
 user_pref("geo.wifi.logging.enabled", true);
 
+// Prevent connection to the push server for tests.
+user_pref("dom.push.connection.enabled", false);
+
 // Make url-classifier updates so rare that they won't affect tests
 user_pref("urlclassifier.updateinterval", 172800);
 // Point the url-classifier to the local testing server for fast failures
@@ -90,11 +97,15 @@ user_pref("browser.trackingprotection.updateURL", "http://%(server)s/safebrowsin
 // Point update checks to the local testing server for fast failures
 user_pref("extensions.update.url", "http://%(server)s/extensions-dummy/updateURL");
 user_pref("extensions.update.background.url", "http://%(server)s/extensions-dummy/updateBackgroundURL");
+user_pref("extensions.blocklist.detailsURL", "http://%(server)s/extensions-dummy/blocklistDetailsURL");
+user_pref("extensions.blocklist.itemURL", "http://%(server)s/extensions-dummy/blocklistItemURL");
 user_pref("extensions.blocklist.url", "http://%(server)s/extensions-dummy/blocklistURL");
 user_pref("extensions.hotfix.url", "http://%(server)s/extensions-dummy/hotfixURL");
 user_pref("extensions.systemAddon.update.url", "http://%(server)s/dummy-system-addons.xml");
 // Turn off extension updates so they don't bother tests
 user_pref("extensions.update.enabled", false);
+// Bug 1235627 Turn off pocket add-on so it doesn't bother tests
+user_pref("extensions.pocket.enabled", false);
 // Make sure opening about:addons won't hit the network
 user_pref("extensions.webservice.discoverURL", "http://%(server)s/extensions-dummy/discoveryURL");
 // Make sure AddonRepository won't hit the network
@@ -103,8 +114,8 @@ user_pref("extensions.getAddons.get.url", "http://%(server)s/extensions-dummy/re
 user_pref("extensions.getAddons.getWithPerformance.url", "http://%(server)s/extensions-dummy/repositoryGetWithPerformanceURL");
 user_pref("extensions.getAddons.search.browseURL", "http://%(server)s/extensions-dummy/repositoryBrowseURL");
 user_pref("extensions.getAddons.search.url", "http://%(server)s/extensions-dummy/repositorySearchURL");
-// Make sure that opening the plugins check page won't hit the network
-user_pref("plugins.update.url", "http://%(server)s/plugins-dummy/updateCheckURL");
+// Ensure blocklist updates don't hit the network
+user_pref("services.settings.server", "http://%(server)s/dummy-kinto/v1");
 // Make sure SNTP requests don't hit the network
 user_pref("network.sntp.pools", "%(server)s");
 // We know the SNTP request will fail, since localhost isn't listening on
@@ -129,6 +140,7 @@ user_pref("security.turn_off_all_security_so_that_viruses_can_take_over_this_com
 // use an additional pref here to allow automation to use the "normal" behavior.
 user_pref("dom.use_xbl_scopes_for_remote_xul", true);
 
+user_pref("captivedetect.canonicalURL", "http://%(server)s/captive-detect/success.txt");
 // Get network events.
 user_pref("network.activity.blipIntervalMilliseconds", 250);
 
@@ -147,9 +159,13 @@ user_pref("layout.css.report_errors", true);
 
 // Enable CSS Grid for testing
 user_pref("layout.css.grid.enabled", true);
+user_pref("layout.css.grid-template-subgrid-value.enabled", true);
 
 // Enable CSS 'contain' for testing
 user_pref("layout.css.contain.enabled", true);
+
+// Enable CSS initial-letter for testing
+user_pref("layout.css.initial-letter.enabled", true);
 
 // Enable CSS object-fit & object-position for testing
 user_pref("layout.css.object-fit-and-position.enabled", true);
@@ -159,6 +175,9 @@ user_pref("layout.css.prefixes.webkit", true);
 
 // Enable -webkit-{min|max}-device-pixel-ratio media queries for testing
 user_pref("layout.css.prefixes.device-pixel-ratio-webkit", true);
+
+// Enable CSS shape-outside for testing
+user_pref("layout.css.shape-outside.enabled", true);
 
 // Disable spammy layout warnings because they pollute test logs
 user_pref("layout.spammy_warnings.enabled", false);
@@ -196,9 +215,6 @@ user_pref("browser.download.panel.shown", true);
 // Assume the about:newtab page's intro panels have been shown to not depend on
 // which test runs first and happens to open about:newtab
 user_pref("browser.newtabpage.introShown", true);
-
-// Tell the PBackground infrastructure to run a test at startup.
-user_pref("pbackground.testing", true);
 
 // Enable webapps testing mode, which bypasses native installation.
 user_pref("browser.webapps.testing", true);
@@ -249,6 +265,17 @@ user_pref("identity.fxaccounts.remote.signin.uri", "https://%(server)s/fxa-signi
 user_pref("identity.fxaccounts.settings.uri", "https://%(server)s/fxa-settings");
 user_pref('identity.fxaccounts.remote.webchannel.uri', 'https://%(server)s/');
 
+// We don't want browser tests to perform FxA device registration.
+user_pref('identity.fxaccounts.skipDeviceRegistration', true);
+
+// Increase the APZ content response timeout in tests to 1 minute.
+// This is to accommodate the fact that test environments tends to be slower
+// than production environments (with the b2g emulator being the slowest of them
+// all), resulting in the production timeout value sometimes being exceeded
+// and causing false-positive test failures. See bug 1176798, bug 1177018,
+// bug 1210465.
+user_pref("apz.content_response_timeout", 60000);
+
 // Make sure SSL Error reports don't hit the network
 user_pref("security.ssl.errorReporting.url", "https://example.com/browser/browser/base/content/test/general/ssl_error_reports.sjs?succeed");
 
@@ -266,16 +293,6 @@ user_pref("dom.apps.customization.enabled", true);
 user_pref("browser.newtabpage.directory.source", 'data:application/json,{"testing":1}');
 user_pref("browser.newtabpage.directory.ping", "");
 
-// Enable Loop
-user_pref("loop.debug.loglevel", "All");
-user_pref("loop.enabled", true);
-user_pref("loop.throttled", false);
-user_pref("loop.oauth.google.URL", "http://%(server)s/browser/browser/components/loop/test/mochitest/google_service.sjs?action=");
-user_pref("loop.oauth.google.getContactsURL", "http://%(server)s/browser/browser/components/loop/test/mochitest/google_service.sjs?action=contacts");
-user_pref("loop.oauth.google.getGroupsURL", "http://%(server)s/browser/browser/components/loop/test/mochitest/google_service.sjs?action=groups");
-user_pref("loop.server", "http://%(server)s/browser/browser/components/loop/test/mochitest/loop_fxa.sjs?");
-user_pref("loop.CSP","default-src 'self' about: file: chrome: data: wss://* http://* https://*");
-
 // Ensure UITour won't hit the network
 user_pref("browser.uitour.pinnedTabUrl", "http://%(server)s/uitour-dummy/pinnedTab");
 user_pref("browser.uitour.url", "http://%(server)s/uitour-dummy/tour");
@@ -291,14 +308,11 @@ user_pref("browser.search.geoSpecificDefaults", false);
 user_pref("browser.selfsupport.url", "https://%(server)s/selfsupport-dummy/");
 
 user_pref("media.eme.enabled", true);
-user_pref("media.eme.apiVisible", true);
 
 #if defined(XP_WIN)
 user_pref("media.decoder.heuristic.dormant.timeout", 0);
 #endif
 
-// Don't prompt about e10s
-user_pref("browser.displayedE10SPrompt.1", 5);
 // Don't use auto-enabled e10s
 user_pref("browser.tabs.remote.autostart.1", false);
 user_pref("browser.tabs.remote.autostart.2", false);
@@ -326,6 +340,12 @@ user_pref("media.webspeech.synth.test", true);
 // connections.
 user_pref("browser.urlbar.suggest.searches", false);
 
+// Turn off the location bar search suggestions opt-in.  It interferes with
+// tests that don't expect it to be there.
+user_pref("browser.urlbar.userMadeSearchSuggestionsChoice", true);
+
 user_pref("dom.audiochannel.mutedByDefault", false);
 
 user_pref("webextensions.tests", true);
+user_pref("startup.homepage_welcome_url", "about:blank");
+user_pref("dom.html_fragment_serialisation.appendLF", true);

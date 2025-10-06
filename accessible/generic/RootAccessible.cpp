@@ -59,9 +59,8 @@ NS_IMPL_ISUPPORTS_INHERITED0(RootAccessible, DocAccessible)
 // Constructor/destructor
 
 RootAccessible::
-  RootAccessible(nsIDocument* aDocument, nsIContent* aRootContent,
-                 nsIPresShell* aPresShell) :
-  DocAccessibleWrap(aDocument, aRootContent, aPresShell)
+  RootAccessible(nsIDocument* aDocument, nsIPresShell* aPresShell) :
+  DocAccessibleWrap(aDocument, aPresShell)
 {
   mType = eRootType;
 }
@@ -78,7 +77,7 @@ RootAccessible::Name(nsString& aName)
 {
   aName.Truncate();
 
-  if (mRoleMapEntry) {
+  if (ARIARoleMap()) {
     Accessible::Name(aName);
     if (!aName.IsEmpty())
       return eNameOK;

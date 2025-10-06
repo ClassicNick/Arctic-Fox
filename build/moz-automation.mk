@@ -11,11 +11,13 @@ else
 endif
 endif
 
+ifndef JS_STANDALONE
 include $(topsrcdir)/toolkit/mozapps/installer/package-name.mk
 include $(topsrcdir)/toolkit/mozapps/installer/upload-files.mk
 
 # Clear out DIST_FILES if it was set by upload-files.mk (for Android builds)
 DIST_FILES =
+endif
 
 # Helper variables to convert from MOZ_AUTOMATION_* variables to the
 # corresponding the make target
@@ -86,6 +88,12 @@ automation/pretty-package: automation/buildsymbols
 automation/installer: automation/package
 automation/sdk: automation/installer automation/package
 
+# Universal builds need package staging happening before buildsymbols
+# (bug 834228)
+ifdef UNIVERSAL_BINARY
+automation/buildsymbols: automation/package
+endif
+
 # The 'pretty' versions of targets run before the regular ones to avoid
 # conflicts in writing to the same files.
 automation/installer: automation/pretty-installer
@@ -101,20 +109,20 @@ automation/build: $(addprefix automation/,$(MOZ_AUTOMATION_TIERS))
 AUTOMATION_EXTRA_CMDLINE-l10n-check = -j1
 AUTOMATION_EXTRA_CMDLINE-pretty-l10n-check = -j1
 
-# And force -j1 here until bug 1077670 is fixed.
-AUTOMATION_EXTRA_CMDLINE-package-tests = -j1
-AUTOMATION_EXTRA_CMDLINE-pretty-package-tests = -j1
-
 # The commands only run if the corresponding MOZ_AUTOMATION_* variable is
 # enabled. This means, for example, if we enable MOZ_AUTOMATION_UPLOAD, then
 # 'buildsymbols' will only run if MOZ_AUTOMATION_BUILD_SYMBOLS is also set.
 # However, the target automation/buildsymbols will still be executed in this
 # case because it is a prerequisite of automation/upload.
 define automation_commands
-$(call BUILDSTATUS,TIER_START $1)
-@$(MAKE) $1 $(AUTOMATION_EXTRA_CMDLINE-$1)
+@+$(MAKE) $1 $(AUTOMATION_EXTRA_CMDLINE-$1)
 $(call BUILDSTATUS,TIER_FINISH $1)
 endef
 
-automation/%:
+# The tier start message is in a separate target so make doesn't buffer it
+# until the step completes with output syncing enabled.
+automation-start/%:
+	$(if $(filter $*,$(MOZ_AUTOMATION_TIERS)),$(call BUILDSTATUS,TIER_START $*))
+
+automation/%: automation-start/%
 	$(if $(filter $*,$(MOZ_AUTOMATION_TIERS)),$(call automation_commands,$*))

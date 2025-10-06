@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: sw=2 ts=2 et :
- */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -20,6 +19,7 @@
 
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/PaintTracker.h"
+#include "mozilla/WindowsVersion.h"
 
 using namespace mozilla;
 using namespace mozilla::ipc;
@@ -1057,12 +1057,71 @@ SuppressedNeuteringRegion::~SuppressedNeuteringRegion()
 
 bool SuppressedNeuteringRegion::sSuppressNeutering = false;
 
+#if defined(ACCESSIBILITY)
+bool
+MessageChannel::WaitForSyncNotifyWithA11yReentry()
+{
+  mMonitor->AssertCurrentThreadOwns();
+  MonitorAutoUnlock unlock(*mMonitor);
+
+  const DWORD waitStart = ::GetTickCount();
+  DWORD elapsed = 0;
+  DWORD timeout = mTimeoutMs == kNoTimeout ? INFINITE :
+                  static_cast<DWORD>(mTimeoutMs);
+  bool timedOut = false;
+
+  while (true) {
+    { // Scope for lock
+      MonitorAutoLock lock(*mMonitor);
+      if (!Connected()) {
+        break;
+      }
+    }
+    if (timeout != static_cast<DWORD>(kNoTimeout)) {
+      elapsed = ::GetTickCount() - waitStart;
+    }
+    if (elapsed >= timeout) {
+      timedOut = true;
+      break;
+    }
+    DWORD waitResult = 0;
+    ::SetLastError(ERROR_SUCCESS);
+    HRESULT hr = ::CoWaitForMultipleHandles(COWAIT_ALERTABLE,
+                                            timeout - elapsed,
+                                            1, &mEvent, &waitResult);
+    if (hr == RPC_S_CALLPENDING) {
+      timedOut = true;
+      break;
+    }
+    if (hr == S_OK) {
+      if (waitResult == 0) {
+        // mEvent is signaled
+        break;
+      }
+      if (waitResult == WAIT_IO_COMPLETION) {
+        // APC fired, keep waiting
+        continue;
+      }
+    }
+    NS_WARN_IF_FALSE(SUCCEEDED(hr), "CoWaitForMultipleHandles failed");
+  }
+
+  return WaitResponse(timedOut);
+}
+#endif
+
 bool
 MessageChannel::WaitForSyncNotify(bool aHandleWindowsMessages)
 {
   mMonitor->AssertCurrentThreadOwns();
 
   MOZ_ASSERT(gUIThreadId, "InitUIThread was not called!");
+
+#if defined(ACCESSIBILITY)
+  if (IsVistaOrLater() && (mFlags & REQUIRE_A11Y_REENTRY)) {
+    return WaitForSyncNotifyWithA11yReentry();
+  }
+#endif
 
   // Use a blocking wait if this channel does not require
   // Windows message deferral behavior.
@@ -1134,7 +1193,12 @@ MessageChannel::WaitForSyncNotify(bool aHandleWindowsMessages)
                                                QS_ALLINPUT);
       if (result == WAIT_OBJECT_0) {
         // Our NotifyWorkerThread event was signaled
-        ResetEvent(mEvent);
+        BOOL success = ResetEvent(mEvent);
+        if (!success) {
+          gfxDevCrash(mozilla::gfx::LogReason::MessageChannelInvalidHandle) <<
+                      "WindowsMessageChannel::WaitForSyncNotify failed to reset event. GetLastError: " <<
+                      GetLastError();
+        }
         break;
       } else
       if (result != (WAIT_OBJECT_0 + 1)) {
@@ -1238,7 +1302,12 @@ MessageChannel::WaitForInterruptNotify()
       }
       DeneuteredWindowRegion deneuteredRgn;
       SpinInternalEventLoop();
-      ResetEvent(mEvent);
+      BOOL success = ResetEvent(mEvent);
+      if (!success) {
+        gfxDevCrash(mozilla::gfx::LogReason::MessageChannelInvalidHandle) <<
+                    "WindowsMessageChannel::WaitForInterruptNotify::SpinNestedEvents failed to reset event. GetLastError: " <<
+                    GetLastError();
+      }
       return true;
     }
 
@@ -1264,7 +1333,12 @@ MessageChannel::WaitForInterruptNotify()
                                              QS_ALLINPUT);
     if (result == WAIT_OBJECT_0) {
       // Our NotifyWorkerThread event was signaled
-      ResetEvent(mEvent);
+      BOOL success = ResetEvent(mEvent);
+      if (!success) {
+        gfxDevCrash(mozilla::gfx::LogReason::MessageChannelInvalidHandle) <<
+                    "WindowsMessageChannel::WaitForInterruptNotify::WaitForMultipleObjects failed to reset event. GetLastError: " <<
+                    GetLastError();
+      }
       break;
     } else
     if (result != (WAIT_OBJECT_0 + 1)) {
@@ -1317,9 +1391,12 @@ MessageChannel::NotifyWorkerThread()
     return;
   }
 
-  NS_ASSERTION(mEvent, "No signal event to set, this is really bad!");
+  MOZ_RELEASE_ASSERT(mEvent, "No signal event to set, this is really bad!");
   if (!SetEvent(mEvent)) {
     NS_WARNING("Failed to set NotifyWorkerThread event!");
+    gfxDevCrash(mozilla::gfx::LogReason::MessageChannelInvalidHandle) <<
+                "WindowsMessageChannel failed to SetEvent. GetLastError: " <<
+                GetLastError();
   }
 }
 

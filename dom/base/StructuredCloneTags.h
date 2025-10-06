@@ -17,7 +17,6 @@ namespace dom {
 enum StructuredCloneTags {
   SCTAG_BASE = JS_SCTAG_USER_MIN,
 
-  // These tags are used only for main thread structured clone.
   SCTAG_DOM_BLOB,
 
   // This tag is obsolete and exists only for backwards compatibility with
@@ -52,6 +51,11 @@ enum StructuredCloneTags {
   SCTAG_DOM_CANVAS,
 
   SCTAG_DOM_EXPANDED_PRINCIPAL,
+
+  SCTAG_DOM_DIRECTORY,
+
+  // This tag is used by both main thread and workers.
+  SCTAG_DOM_URLSEARCHPARAMS,
 
   SCTAG_DOM_MAX
 };

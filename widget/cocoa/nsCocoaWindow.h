@@ -10,9 +10,9 @@
 
 #import <Cocoa/Cocoa.h>
 
+#include "mozilla/RefPtr.h"
 #include "nsBaseWidget.h"
 #include "nsPIWidgetCocoa.h"
-#include "nsAutoPtr.h"
 #include "nsCocoaUtils.h"
 
 class nsCocoaWindow;
@@ -212,7 +212,7 @@ typedef struct _nsCocoaWindowList {
 
 @class ToolbarWindow;
 
-// NSColor subclass that allows us to draw separate colors both in the titlebar 
+// NSColor subclass that allows us to draw separate colors both in the titlebar
 // and for background of the window.
 @interface TitlebarAndBackgroundColor : NSColor
 {
@@ -247,6 +247,8 @@ typedef struct _nsCocoaWindowList {
 - (void)placeFullScreenButton:(NSRect)aRect;
 - (NSPoint)windowButtonsPositionWithDefaultPosition:(NSPoint)aDefaultPosition;
 - (NSPoint)fullScreenButtonPositionWithDefaultPosition:(NSPoint)aDefaultPosition;
+- (void)setTemporaryBackgroundColor;
+- (void)restoreBackgroundColor;
 @end
 
 class nsCocoaWindow : public nsBaseWidget, public nsPIWidgetCocoa
@@ -261,17 +263,19 @@ public:
     NS_DECL_ISUPPORTS_INHERITED
     NS_DECL_NSPIWIDGETCOCOA
 
-    NS_IMETHOD              Create(nsIWidget* aParent,
-                                   nsNativeWidget aNativeParent,
-                                   const DesktopIntRect& aRect,
-                                   nsWidgetInitData* aInitData = nullptr) override;
+    virtual MOZ_MUST_USE nsresult Create(nsIWidget* aParent,
+                                         nsNativeWidget aNativeParent,
+                                         const DesktopIntRect& aRect,
+                                         nsWidgetInitData* aInitData = nullptr)
+                                         override;
 
-    NS_IMETHOD              Create(nsIWidget* aParent,
-                                   nsNativeWidget aNativeParent,
-                                   const LayoutDeviceIntRect& aRect,
-                                   nsWidgetInitData* aInitData = nullptr) override;
+    virtual MOZ_MUST_USE nsresult Create(nsIWidget* aParent,
+                                         nsNativeWidget aNativeParent,
+                                         const LayoutDeviceIntRect& aRect,
+                                         nsWidgetInitData* aInitData = nullptr)
+                                         override;
 
-    NS_IMETHOD              Destroy() override;
+    virtual void            Destroy() override;
 
     NS_IMETHOD              Show(bool aState) override;
     virtual nsIWidget*      GetSheetWindowParent(void) override;
@@ -294,7 +298,7 @@ public:
     NS_IMETHOD              Move(double aX, double aY) override;
     NS_IMETHOD              PlaceBehind(nsTopLevelWidgetZPlacement aPlacement,
                                         nsIWidget *aWidget, bool aActivate) override;
-    NS_IMETHOD              SetSizeMode(nsSizeMode aMode) override;
+    virtual void            SetSizeMode(nsSizeMode aMode) override;
     NS_IMETHOD              HideWindowChrome(bool aShouldHide) override;
 
     void EnteredFullScreen(bool aFullScreen, bool aNativeMode = true);
@@ -303,7 +307,7 @@ public:
                                              uint16_t aDuration,
                                              nsISupports* aData,
                                              nsIRunnable* aCallback) override;
-    NS_IMETHOD MakeFullScreen(
+    virtual nsresult MakeFullScreen(
       bool aFullScreen, nsIScreen* aTargetScreen = nullptr) override final;
     NS_IMETHOD MakeFullScreenWithNativeTransition(
       bool aFullScreen, nsIScreen* aTargetScreen = nullptr) override final;
@@ -318,8 +322,8 @@ public:
 
     NS_IMETHOD              Resize(double aWidth, double aHeight, bool aRepaint) override;
     NS_IMETHOD              Resize(double aX, double aY, double aWidth, double aHeight, bool aRepaint) override;
-    NS_IMETHOD              GetClientBounds(LayoutDeviceIntRect& aRect) override;
-    NS_IMETHOD              GetScreenBounds(LayoutDeviceIntRect& aRect) override;
+    virtual LayoutDeviceIntRect GetClientBounds() override;
+    virtual LayoutDeviceIntRect GetScreenBounds() override;
     void                    ReportMoveEvent();
     void                    ReportSizeEvent();
     NS_IMETHOD              SetCursor(nsCursor aCursor) override;
@@ -340,8 +344,7 @@ public:
     virtual nsresult ConfigureChildren(const nsTArray<Configuration>& aConfigurations) override;
     virtual LayerManager* GetLayerManager(PLayerTransactionChild* aShadowManager = nullptr,
                                           LayersBackend aBackendHint = mozilla::layers::LayersBackend::LAYERS_NONE,
-                                          LayerManagerPersistence aPersistence = LAYER_MANAGER_CURRENT,
-                                          bool* aAllowRetaining = nullptr) override;
+                                          LayerManagerPersistence aPersistence = LAYER_MANAGER_CURRENT) override;
     NS_IMETHOD DispatchEvent(mozilla::WidgetGUIEvent* aEvent,
                              nsEventStatus& aStatus) override;
     NS_IMETHOD CaptureRollupEvents(nsIRollupListener * aListener, bool aDoCapture) override;
@@ -367,7 +370,7 @@ public:
     void DispatchSizeModeEvent();
 
     // be notified that a some form of drag event needs to go into Gecko
-    virtual bool DragEvent(unsigned int aMessage, Point aMouseGlobal, UInt16 aKeyModifiers);
+    virtual bool DragEvent(unsigned int aMessage, mozilla::gfx::Point aMouseGlobal, UInt16 aKeyModifiers);
 
     bool HasModalDescendents() { return mNumModalDescendents > 0; }
     NSWindow *GetCocoaWindow() { return mWindow; }
@@ -391,6 +394,7 @@ public:
     void SetPopupWindowLevel();
 
     NS_IMETHOD         ReparentNativeWidget(nsIWidget* aNewParent) override;
+
 protected:
   virtual ~nsCocoaWindow();
 
@@ -417,9 +421,6 @@ protected:
     nsCOMPtr<nsIWidget> widget = do_CreateInstance(kCPopUpCID);
     return widget.forget();
   }
-
-  virtual nsresult NotifyIMEInternal(
-                     const IMENotification& aIMENotification) override;
 
   nsIWidget*           mParent;         // if we're a popup, this is our parent [WEAK]
   nsIWidget*           mAncestorLink;   // link to traverse ancestors [WEAK]

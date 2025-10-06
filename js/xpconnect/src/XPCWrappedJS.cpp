@@ -103,10 +103,9 @@ NS_CYCLE_COLLECTION_CLASSNAME(nsXPCWrappedJS)::Traverse
     if (cb.WantDebugInfo()) {
         char name[72];
         if (tmp->GetClass())
-            JS_snprintf(name, sizeof(name), "nsXPCWrappedJS (%s)",
-                        tmp->GetClass()->GetInterfaceName());
+            snprintf(name, sizeof(name), "nsXPCWrappedJS (%s)", tmp->GetClass()->GetInterfaceName());
         else
-            JS_snprintf(name, sizeof(name), "nsXPCWrappedJS");
+            snprintf(name, sizeof(name), "nsXPCWrappedJS");
         cb.DescribeRefCountedNode(refcnt, name);
     } else {
         NS_IMPL_CYCLE_COLLECTION_DESCRIBE(nsXPCWrappedJS, refcnt)
@@ -204,6 +203,18 @@ nsXPCWrappedJS::QueryInterface(REFNSIID aIID, void** aInstancePtr)
     if (!IsValid())
         return NS_ERROR_UNEXPECTED;
 
+    if (aIID.Equals(NS_GET_IID(nsIXPConnectWrappedJSUnmarkGray))) {
+        *aInstancePtr = nullptr;
+
+        // No need to null check mJSObj because IsValid() call above did
+        // that already.
+        JS::ExposeObjectToActiveJS(mJSObj);
+
+        // Just return some error value since one isn't supposed to use
+        // nsIXPConnectWrappedJSUnmarkGray objects for anything.
+        return NS_ERROR_FAILURE;
+    }
+
     // Always check for this first so that our 'outer' can get this interface
     // from us without recurring into a call to the outer's QI!
     if (aIID.Equals(NS_GET_IID(nsIXPConnectWrappedJS))) {
@@ -228,8 +239,8 @@ nsXPCWrappedJS::QueryInterface(REFNSIID aIID, void** aInstancePtr)
 MozExternalRefCountType
 nsXPCWrappedJS::AddRef(void)
 {
-    if (!MOZ_LIKELY(NS_IsMainThread()))
-        MOZ_CRASH();
+    MOZ_RELEASE_ASSERT(NS_IsMainThread(),
+                       "nsXPCWrappedJS::AddRef called off main thread");
 
     MOZ_ASSERT(int32_t(mRefCnt) >= 0, "illegal refcnt");
     nsISupports* base = NS_CYCLE_COLLECTION_CLASSNAME(nsXPCWrappedJS)::Upcast(this);
@@ -247,8 +258,8 @@ nsXPCWrappedJS::AddRef(void)
 MozExternalRefCountType
 nsXPCWrappedJS::Release(void)
 {
-    if (!MOZ_LIKELY(NS_IsMainThread()))
-        MOZ_CRASH();
+    MOZ_RELEASE_ASSERT(NS_IsMainThread(),
+                       "nsXPCWrappedJS::Release called off main thread");
     MOZ_ASSERT(int32_t(mRefCnt) > 0, "dup release");
     NS_ASSERT_OWNINGTHREAD(nsXPCWrappedJS);
 
@@ -319,8 +330,8 @@ nsXPCWrappedJS::GetNewOrUsed(JS::HandleObject jsObj,
                              nsXPCWrappedJS** wrapperResult)
 {
     // Do a release-mode assert against accessing nsXPCWrappedJS off-main-thread.
-    if (!MOZ_LIKELY(NS_IsMainThread()))
-        MOZ_CRASH();
+    MOZ_RELEASE_ASSERT(NS_IsMainThread(),
+                       "nsXPCWrappedJS::GetNewOrUsed called off main thread");
 
     AutoJSContext cx;
 
@@ -445,7 +456,7 @@ XPCJSRuntime::RemoveWrappedJS(nsXPCWrappedJS* wrapper)
 
 #ifdef DEBUG
 static void
-NotHasWrapperAssertionCallback(JSRuntime* rt, void* data, JSCompartment* comp)
+NotHasWrapperAssertionCallback(JSContext* cx, void* data, JSCompartment* comp)
 {
     auto wrapper = static_cast<nsXPCWrappedJS*>(data);
     auto xpcComp = xpc::CompartmentPrivate::Get(comp);
@@ -460,7 +471,7 @@ XPCJSRuntime::AssertInvalidWrappedJSNotInTable(nsXPCWrappedJS* wrapper) const
     if (!wrapper->IsValid()) {
         MOZ_ASSERT(!GetMultiCompartmentWrappedJSMap()->HasWrapper(wrapper));
         if (!mGCIsRunning)
-            JS_IterateCompartments(Runtime(), wrapper, NotHasWrapperAssertionCallback);
+            JS_IterateCompartments(Context(), wrapper, NotHasWrapperAssertionCallback);
     }
 #endif
 }
@@ -594,8 +605,8 @@ nsXPCWrappedJS::CallMethod(uint16_t methodIndex,
                            nsXPTCMiniVariant* params)
 {
     // Do a release-mode assert against accessing nsXPCWrappedJS off-main-thread.
-    if (!MOZ_LIKELY(NS_IsMainThread()))
-        MOZ_CRASH();
+    MOZ_RELEASE_ASSERT(NS_IsMainThread(),
+                       "nsXPCWrappedJS::CallMethod called off main thread");
 
     if (!IsValid())
         return NS_ERROR_UNEXPECTED;
@@ -660,7 +671,7 @@ NS_IMETHODIMP
 nsXPCWrappedJS::GetEnumerator(nsISimpleEnumerator * *aEnumerate)
 {
     AutoJSContext cx;
-    XPCCallContext ccx(NATIVE_CALLER, cx);
+    XPCCallContext ccx(cx);
     if (!ccx.IsValid())
         return NS_ERROR_UNEXPECTED;
 
@@ -672,7 +683,7 @@ NS_IMETHODIMP
 nsXPCWrappedJS::GetProperty(const nsAString & name, nsIVariant** _retval)
 {
     AutoJSContext cx;
-    XPCCallContext ccx(NATIVE_CALLER, cx);
+    XPCCallContext ccx(cx);
     if (!ccx.IsValid())
         return NS_ERROR_UNEXPECTED;
 

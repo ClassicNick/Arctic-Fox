@@ -117,6 +117,23 @@ Tokenizer::SkipWhites(WhiteSkipping aIncludeNewLines)
   mRollback = rollback;
 }
 
+void
+Tokenizer::SkipUntil(Token const& aToken)
+{
+  nsACString::const_char_iterator rollback = mCursor;
+  const Token eof = Token::EndOfFile();
+
+  Token t;
+  while (Next(t)) {
+    if (aToken.Equals(t) || eof.Equals(t)) {
+      Rollback();
+      break;
+    }
+  }
+
+  mRollback = rollback;
+}
+
 bool
 Tokenizer::CheckChar(bool (*aClassifier)(const char aChar))
 {
@@ -190,6 +207,35 @@ Tokenizer::ReadWord(nsDependentCSubstring& aValue)
 
   aValue.Rebind(t.AsString().BeginReading(), t.AsString().Length());
   return true;
+}
+
+bool
+Tokenizer::ReadUntil(Token const& aToken, nsACString& aResult, ClaimInclusion aInclude)
+{
+  nsDependentCSubstring substring;
+  bool rv = ReadUntil(aToken, substring, aInclude);
+  aResult.Assign(substring);
+  return rv;
+}
+
+bool
+Tokenizer::ReadUntil(Token const& aToken, nsDependentCSubstring& aResult, ClaimInclusion aInclude)
+{
+  Record();
+  nsACString::const_char_iterator rollback = mCursor;
+
+  bool found = false;
+  Token t;
+  while (Next(t)) {
+    if (aToken.Equals(t)) {
+      found = true;
+      break;
+    }
+  }
+
+  Claim(aResult, aInclude);
+  mRollback = rollback;
+  return found;
 }
 
 void

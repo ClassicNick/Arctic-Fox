@@ -9,7 +9,7 @@
 #include "mozilla/BasePrincipal.h"
 #include "mozilla/dom/TabParent.h"
 #include "mozilla/ipc/URIUtils.h"
-#include "mozilla/unused.h"
+#include "mozilla/Unused.h"
 #include "nsContentUtils.h"
 #include "nsOfflineCacheUpdate.h"
 #include "nsIApplicationCache.h"
@@ -23,15 +23,15 @@ using mozilla::PrincipalOriginAttributes;
 using mozilla::dom::TabParent;
 
 //
-// To enable logging (see prlog.h for full details):
+// To enable logging (see mozilla/Logging.h for full details):
 //
-//    set NSPR_LOG_MODULES=nsOfflineCacheUpdate:5
-//    set NSPR_LOG_FILE=offlineupdate.log
+//    set MOZ_LOG=nsOfflineCacheUpdate:5
+//    set MOZ_LOG_FILE=offlineupdate.log
 //
 // this enables LogLevel::Debug level information and places all output in
 // the file offlineupdate.log
 //
-extern PRLogModuleInfo *gOfflineCacheUpdateLog;
+extern mozilla::LazyLogModule gOfflineCacheUpdateLog;
 
 #undef LOG
 #define LOG(args) MOZ_LOG(gOfflineCacheUpdateLog, mozilla::LogLevel::Debug, args)
@@ -125,16 +125,20 @@ OfflineCacheUpdateParent::Schedule(const URIParams& aManifestURI,
     if (!update) {
         update = new nsOfflineCacheUpdate();
 
-        // Leave aDocument argument null. Only glues and children keep 
+        // Leave aDocument argument null. Only glues and children keep
         // document instances.
         rv = update->Init(manifestURI, documentURI, mLoadingPrincipal, nullptr, nullptr);
         NS_ENSURE_SUCCESS(rv, rv);
 
+        // Must add before Schedule() call otherwise we would miss
+        // oncheck event notification.
+        update->AddObserver(this, false);
+
         rv = update->Schedule();
         NS_ENSURE_SUCCESS(rv, rv);
+    } else {
+        update->AddObserver(this, false);
     }
-
-    update->AddObserver(this, false);
 
     if (stickDocument) {
         nsCOMPtr<nsIURI> stickURI;
@@ -259,10 +263,10 @@ OfflineCacheUpdateParent::SetRemoteTabs(bool aUseRemoteTabs)
 }
 
 NS_IMETHODIMP
-OfflineCacheUpdateParent::GetIsInBrowserElement(bool *aIsInBrowserElement)
+OfflineCacheUpdateParent::GetIsInIsolatedMozBrowserElement(bool *aIsInIsolatedMozBrowserElement)
 {
     NS_ENSURE_TRUE(mLoadingPrincipal, NS_ERROR_UNEXPECTED);
-    return mLoadingPrincipal->GetIsInBrowserElement(aIsInBrowserElement);
+    return mLoadingPrincipal->GetIsInIsolatedMozBrowserElement(aIsInIsolatedMozBrowserElement);
 }
 
 NS_IMETHODIMP
@@ -284,6 +288,12 @@ OfflineCacheUpdateParent::GetOriginAttributes(JS::MutableHandleValue aAttrs)
     NS_ENSURE_SUCCESS(rv, rv);
 
     return NS_OK;
+}
+
+NS_IMETHODIMP
+OfflineCacheUpdateParent::IsTrackingProtectionOn(bool* aIsTrackingProtectionOn)
+{
+    return NS_ERROR_NOT_IMPLEMENTED;
 }
 
 } // namespace docshell

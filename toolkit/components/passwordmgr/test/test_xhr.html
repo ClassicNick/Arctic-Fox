@@ -1,8 +1,9 @@
 <!DOCTYPE HTML>
 <html>
 <head>
-  <title>Test for Login Manager</title>
-  <script type="text/javascript" src="/tests/SimpleTest/SimpleTest.js"></script>  
+  <meta charset="utf-8">
+  <title>Test for XHR prompts</title>
+  <script type="text/javascript" src="/tests/SimpleTest/SimpleTest.js"></script>
   <script type="text/javascript" src="pwmgr_common.js"></script>
   <script type="text/javascript" src="prompt_common.js"></script>
   <link rel="stylesheet" type="text/css" href="/tests/SimpleTest/test.css" />
@@ -57,7 +58,7 @@ function handleDialog(doc, testNum) {
   var password = passfield.getAttribute("value");
   var dialog    = doc.getElementById("commonDialog");
 
-  switch(testNum) {
+  switch (testNum) {
     case 1:
         is(username, "xhruser1", "Checking provided username");
         is(password, "xhrpass1", "Checking provided password");
@@ -128,7 +129,7 @@ function xhrLoad(xmlDoc) {
   var authok = xmlDoc.getElementById("ok").textContent;
 
 
-  switch(testNum) {
+  switch (testNum) {
     case 1:
         is(username, "xhruser1", "Checking provided username");
         is(password, "xhrpass1", "Checking provided password");
@@ -145,17 +146,17 @@ function xhrLoad(xmlDoc) {
         ok(false, "Uhh, unhandled switch for testNum #" + testNum);
         break;
   }
-  
+
   doTest();
 }
 
 function doTest() {
-  switch(++testNum) {
+  switch (++testNum) {
     case 1:
         startCallbackTimer();
         makeRequest("authenticate.sjs?user=xhruser1&pass=xhrpass1&realm=xhr");
         break;
-        
+
     case 2:
         // Test correct parenting, by opening another tab in the foreground,
         // and making sure the prompt re-focuses the original tab when shown:

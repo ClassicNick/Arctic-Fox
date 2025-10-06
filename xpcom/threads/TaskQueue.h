@@ -11,7 +11,7 @@
 #include "mozilla/MozPromise.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/TaskDispatcher.h"
-#include "mozilla/unused.h"
+#include "mozilla/Unused.h"
 
 #include <queue>
 
@@ -43,10 +43,17 @@ public:
                 DispatchFailureHandling aFailureHandling = AssertDispatchSuccess,
                 DispatchReason aReason = NormalDispatch) override
   {
-    MonitorAutoLock mon(mQueueMonitor);
-    nsresult rv = DispatchLocked(Move(aRunnable), AbortIfFlushing, aFailureHandling, aReason);
-    MOZ_DIAGNOSTIC_ASSERT(aFailureHandling == DontAssertDispatchSuccess || NS_SUCCEEDED(rv));
-    Unused << rv;
+    nsCOMPtr<nsIRunnable> r = aRunnable;
+    {
+      MonitorAutoLock mon(mQueueMonitor);
+      nsresult rv = DispatchLocked(/* passed by ref */r, AbortIfFlushing, aFailureHandling, aReason);
+      MOZ_DIAGNOSTIC_ASSERT(aFailureHandling == DontAssertDispatchSuccess || NS_SUCCEEDED(rv));
+      Unused << rv;
+    }
+    // If the ownership of |r| is not transferred in DispatchLocked() due to
+    // dispatch failure, it will be deleted here outside the lock. We do so
+    // since the destructor of the runnable might access TaskQueue and result
+    // in deadlocks.
   }
 
   // Puts the queue in a shutdown state and returns immediately. The queue will
@@ -81,7 +88,8 @@ protected:
 
   enum DispatchMode { AbortIfFlushing, IgnoreFlushing };
 
-  nsresult DispatchLocked(already_AddRefed<nsIRunnable> aRunnable, DispatchMode aMode,
+  nsresult DispatchLocked(nsCOMPtr<nsIRunnable>& aRunnable,
+                          DispatchMode aMode,
                           DispatchFailureHandling aFailureHandling,
                           DispatchReason aReason = NormalDispatch);
 
@@ -141,6 +149,7 @@ protected:
       sCurrentThreadTLS.set(nullptr);
       mQueue->mTailDispatcher = nullptr;
     }
+
   private:
   TaskQueue* mQueue;
   };
@@ -158,13 +167,13 @@ protected:
   // True if we're flushing; we reject new tasks if we're flushing.
   bool mIsFlushing;
 
-  class Runner : public nsRunnable {
+  class Runner : public Runnable {
   public:
     explicit Runner(TaskQueue* aQueue)
       : mQueue(aQueue)
     {
     }
-    NS_METHOD Run() override;
+    NS_IMETHOD Run() override;
   private:
     RefPtr<TaskQueue> mQueue;
   };
