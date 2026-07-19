@@ -1149,16 +1149,6 @@ class JS_PUBLIC_API(RuntimeOptions) {
         wasm_ = !wasm_;
         return *this;
     }
-	
-	bool wasmAlwaysBaseline() const { return wasmAlwaysBaseline_; }
-    RuntimeOptions& setWasmAlwaysBaseline(bool flag) {
-        wasmAlwaysBaseline_ = flag;
-        return *this;
-    }
-    RuntimeOptions& toggleWasmAlwaysBaseline() {
-        wasmAlwaysBaseline_ = !wasmAlwaysBaseline_;
-        return *this;
-    }
 
     bool wasmAlwaysBaseline() const { return wasmAlwaysBaseline_; }
     RuntimeOptions& setWasmAlwaysBaseline(bool flag) {

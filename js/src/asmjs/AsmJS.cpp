@@ -2900,7 +2900,7 @@ class MOZ_STACK_CLASS FunctionValidator
             }
         }
 
-        return m_.mg().finishFuncDef(funcIndex, &fg_);
+        return m_.mg().finishFuncDef(funcIndex, generateTime, &fg_);
     }
 
     bool fail(ParseNode* pn, const char* str) {
