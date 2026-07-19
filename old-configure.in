@@ -4437,8 +4437,8 @@ if test -n "$MOZ_ANGLE_RENDERER"; then
     fi
 
     if test -n "$MOZ_REQUIRE_ALL_D3DCS" -a -z "$MOZ_FOUND_BOTH_D3D_COMPILERS"; then
-      AC_MSG_ERROR([Both D3D compilers _43 and _46+ are required by --enable-require-d3d-compilers.])
-      AC_MSG_ERROR([  Install Windows SDK 8.0+, as well as DirectX SDK (June 2010 version or newer), or reconfigure without this flag.])
+      AC_MSG_WARN([Both D3D compilers _43 and _46+ are required by --enable-require-d3d-compilers.])
+      AC_MSG_WARN([  Install Windows SDK 8.0+, as well as DirectX SDK (June 2010 version or newer), or reconfigure without this flag.])
     fi
   fi
 fi # MOZ_ANGLE_RENDERER

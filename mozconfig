@@ -1,0 +1,14 @@
+mk_add_options MOZ_OBJDIR=f:/obj-afvc14-release
+ac_add_options --enable-application=browser
+ac_add_options --target=i686-pc-mingw32
+ac_add_options --with-windows-version=603
+ac_add_options --disable-debug
+ac_add_options --disable-tests
+ac_add_options --disable-crashreporter
+ac_add_options --disable-updater
+ac_add_options --disable-jemalloc
+ac_add_options --enable-strip
+ac_add_options --disable-eme
+ac_add_options --disable-skia
+ac_add_options --disable-debug-symbols
+ac_add_options --disable-maintenance-service
