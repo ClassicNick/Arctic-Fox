@@ -79,7 +79,7 @@ gfxWindowsSurface::gfxWindowsSurface(HDC dc, const mozilla::gfx::IntSize& realSi
     mOwnsDC(false), mForPrinting(false), mWnd(nullptr)
 {
     mozilla::gfx::IntSize size(realSize);
-    if (!CheckSurfaceSize(size))
+    if (!mozilla::gfx::Factory::CheckSurfaceSize(size))
         MakeInvalid(size);
 
     cairo_format_t cformat = GfxFormatToCairoFormat(imageFormat);
