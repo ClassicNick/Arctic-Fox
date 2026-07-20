@@ -388,11 +388,13 @@
                           key="key_sanitize"
                           command="Tools:Sanitize"/>
                 <menuseparator id="sanitizeSeparator"/>
+#ifdef MOZ_SERVICES_SYNC
                 <menuitem id="sync-tabs-menuitem"
                           class="syncTabsMenuItem"
                           label="&syncTabsMenu2.label;"
                           oncommand="BrowserOpenSyncTabs();"
                           disabled="true"/>
+#endif
                 <menuitem id="historyRestoreLastSession"
                           label="&historyRestoreLastSession.label;"
                           command="Browser:RestoreLastSession"/>
@@ -539,6 +541,7 @@
                         label="&permissions.label;"
                         command="Tools:Permissions"
                         accesskey="&permissions.accesskey;"/>
+#ifdef MOZ_SERVICES_SYNC
               <!-- only one of sync-setup or sync-menu will be showing at once -->
               <menuitem id="sync-setup"
                         label="&syncSetup.label;"
@@ -555,6 +558,7 @@
                         accesskey="&syncReAuthItem.accesskey;"
                         observes="sync-reauth-state"
                         oncommand="gSyncUI.openSignInAgainPage('menubar');"/>
+#endif
               <menuseparator id="devToolsSeparator"/>
               <menu id="webDeveloperMenu"
                     label="&webDeveloperMenu.label;"
